@@ -13,7 +13,7 @@ export default function App() {
 
   return (
     <div className="bg-[#333] flex justify-center min-h-screen m-0 font-sans">
-      <div className="w-full max-w-[414px] bg-white min-h-screen shadow-[0_0_20px_rgba(0,0,0,0.5)] flex flex-col relative overflow-hidden">
+      <div className="w-full max-w-[414px] bg-white min-h-screen shadow-[0_0_20px_rgba(0,0,0,0.5)] flex flex-col relative overflow-hidden pb-20">
         
         {/* Encabezado Fijo */}
         <Header />

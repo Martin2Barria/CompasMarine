@@ -3,15 +3,6 @@ import { FolderOpen, Loader2, FileText, AlertCircle, Download, User, Tag } from 
 import { getApiUrl } from '../config/api';
 import { readControlDocSnapshot, saveControlDocSnapshot } from '../storage/controlDocOffline';
 
-const PassportCard = () => (
-  <div className="bg-white rounded-2xl p-5 relative overflow-hidden shadow-sm border border-gray-100 mb-4">
-    <div className="flex items-center gap-2 mb-3">
-      <FileText className="w-5 h-5 text-[#921E30]" />
-      <h3 className="font-bold text-[#394049] text-sm uppercase">Pasaporte Marítimo</h3>
-    </div>
-    <p className="text-xs text-gray-500 mt-1">Documento estático de prueba</p>
-  </div>
-);
 
 const urls = {
   documents: getApiUrl('/controldoc/documents'),
@@ -298,16 +289,9 @@ export const ViewDocumentos = () => {
 
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50 p-6">
         
-        <div className="mb-6">
-          <h3 className="font-bold text-[#394049] text-sm mb-3 uppercase tracking-wider text-gray-500">Documento Fijo</h3>
-          <PassportCard />
-        </div>
         
         <div className="border-t border-gray-200 pt-6">
           <div className="flex justify-between items-center mb-4">
-            <h3 className="font-bold text-[#394049] text-lg border-b-2 border-[#921E30] pb-1 inline-block">
-              Mis Registros ControlDoc
-            </h3>
             {apiData.documents.length > 0 && (
                 <span className="text-xs bg-gray-200 text-gray-600 px-2 py-1 rounded-full font-bold">
                 {filteredDocuments.length} / {apiData.documents.length}
@@ -344,7 +328,9 @@ export const ViewDocumentos = () => {
 
                 {/* Filtro por Usuario (Solo relevantes) */}
                 <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-2 uppercase">Usuario (Entidad)</label>
+                  
+                {/*elimine entidad para que no aparesca al lado del buscador */}
+                  <label className="block text-xs font-semibold text-gray-700 mb-2 uppercase">Usuario</label>
                   <select 
                     value={selectedEntityId}
                     onChange={(e) => setSelectedEntityId(e.target.value)}
