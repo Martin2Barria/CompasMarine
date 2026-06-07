@@ -1,4 +1,4 @@
-const API_BASE_URL = process.env.APP_API_BASE_URL || 'http://localhost:8787/api';
+const API_BASE_URL = process.env.APP_API_BASE_URL || 'https://compasmarine-production.up.railway.app/';
 
 const endpoints = [
   '/controldoc/document-types',
