@@ -1,0 +1,329 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.scrollable-content::-webkit-scrollbar { display: none; }
+.scrollable-content { -ms-overflow-style: none; scrollbar-width: none; }
+
+@keyframes fadeIn { 
+  from { opacity: 0; transform: translateY(5px); } 
+  to { opacity: 1; transform: translateY(0); } 
+}
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+/* ── Header ── */
+/*le da forma a el header, se usara para futuras modificaciones*/
+.header-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: white;
+  padding: 0.75rem 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #f3f4f6;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.header-logo {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+
+.header-logo-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1;
+  gap: 2px;
+}
+
+.header-logo-title {
+  font-weight: 800;
+  color: #394049;
+  font-size: 1.8rem;
+  letter-spacing: -0.02em;
+}
+
+.header-logo-subtitle {
+  font-size: 1.2rem;
+  color: #921E30;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.header-theme-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 9999px;
+  padding: 0.55rem 0.9rem;
+  background: #f3f4f6;
+  color: #374151;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.header-theme-button:hover {
+  background: #e5e7eb;
+}
+
+.header-theme-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.dark body {
+  background: #020617;
+  color: #e5e7eb;
+}
+
+.dark .bg-\[\#333\] {
+  background-color: #020617 !important;
+}
+
+.dark .bg-white {
+  background-color: #0f172a !important;
+  color: #e5e7eb;
+}
+
+.dark .bg-gray-50 {
+  background-color: #111827 !important;
+}
+
+.dark .bg-gray-200 {
+  background-color: #1f2937 !important;
+}
+
+.dark .border-gray-100 {
+  border-color: #334155 !important;
+}
+
+.dark .border-gray-200 {
+  border-color: #475569 !important;
+}
+
+.dark .text-gray-500,
+.dark .text-gray-400 {
+  color: #94a3b8 !important;
+}
+
+.dark .text-gray-600,
+.dark .text-gray-700,
+.dark .text-gray-800 {
+  color: #e2e8f0 !important;
+}
+
+.dark .header-nav {
+  background: rgba(15, 23, 42, 0.96);
+  border-color: #1f2937;
+  box-shadow: 0 2px 20px rgba(0, 0, 0, 0.45);
+}
+
+.dark .header-logo-title {
+  color: #f8fafc;
+}
+
+.dark .header-theme-button {
+  background: rgba(148, 163, 184, 0.14);
+  border-color: rgba(148, 163, 184, 0.3);
+  color: #f8fafc;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+}
+
+.dark .header-theme-button:hover {
+  background: rgba(148, 163, 184, 0.2);
+}
+
+.dark .header-theme-icon {
+  color: #f8fafc;
+}
+
+.dark .passport-card {
+  background: #111827;
+  border-color: #1f2937;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.2);
+}
+
+.dark .passport-card-bg {
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.dark .passport-card-title h3,
+.dark .passport-card-dates p,
+.dark .passport-card-dates span.value {
+  color: #e2e8f0;
+}
+
+/* ── PassportCard ── */
+/*le da un forma simple a a el passapordcard*/
+.passport-card {
+  background: white;
+  border-radius: 1rem;
+  padding: 1.25rem;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  border: 1px solid #f3f4f6;
+  transition: all 0.2s ease;
+}
+
+.passport-card-bg {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8rem;
+  height: 8rem;
+  background: #f9fafb;
+  border-bottom-left-radius: 100%;
+  z-index: 0;
+}
+
+.passport-card-body {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: relative;
+  z-index: 1;
+}
+
+.passport-card-info {
+  flex: 1;
+  padding-right: 1rem;
+}
+
+.passport-card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.passport-card-title-icon {
+  width: 20px;
+  height: 20px;
+  color: #921E30;
+}
+
+.passport-card-title h3 {
+  font-weight: 700;
+  color: #394049;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.passport-card-dates {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.passport-card-dates p {
+  font-size: 0.75rem;
+  color: #6b7280;
+  display: flex;
+  justify-content: space-between;
+}
+
+.passport-card-dates span.value {
+  font-weight: 500;
+  color: #374151;
+}
+
+.passport-status {
+  font-size: 0.7rem;
+  font-weight: 700;
+  margin-top: 0.75rem;
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  border: 1px solid;
+}
+
+/* Status: vigente */
+.status-ok {
+  background: #f0fdf4;
+  color: #15803d;
+  border-color: #bbf7d0;
+}
+
+/* Status: próximo a vencer */
+.status-warning {
+  background: #fefce8;
+  color: #a16207;
+  border-color: #fef08a;
+}
+
+/* Status: expirado */
+.status-expired {
+  background: #fff1f2;
+  color: #921E30;
+  border-color: #fecdd3;
+}
+
+/* ── Círculo de días ── */
+.passport-days-wrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.passport-days-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  filter: blur(8px);
+  opacity: 0.2;
+}
+
+.passport-days-circle {
+  width: 5rem;
+  height: 5rem;
+  border-radius: 9999px;
+  border: 4px solid;
+  background: white;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0.25rem;
+  position: relative;
+  z-index: 1;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.06);
+}
+
+.passport-days-number {
+  font-weight: 900;
+  font-size: 1.5rem;
+  line-height: 1;
+  letter-spacing: -0.05em;
+}
+
+.passport-days-label {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+  margin-top: 4px;
+  line-height: 1.2;
+  text-align: center;
+}
+
+/* Colores por estado — círculo */
+.days-ok   { border-color: #22c55e; color: #16a34a; }
+.days-ok   .passport-days-glow { background: #22c55e; }
+
+.days-warn { border-color: #facc15; color: #ca8a04; }
+.days-warn .passport-days-glow { background: #facc15; }
+
+.days-exp  { border-color: #921E30; color: #921E30; }
+.days-exp  .passport-days-glow { background: #921E30; }
