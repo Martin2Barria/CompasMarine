@@ -15,7 +15,7 @@ loadEnvFiles([
 ]);
 
 const port = Number(process.env.SERVER_PORT || process.env.PORT || 8787);
-const host = process.env.SERVER_HOST || '127.0.0.1';
+const host = process.env.SERVER_HOST || '0.0.0.0';
 const controlDocBaseUrl = trimTrailingSlash(
   process.env.CONTROLDOC_BASE_URL || 'https://compliance.controldoc.legal'
 );
