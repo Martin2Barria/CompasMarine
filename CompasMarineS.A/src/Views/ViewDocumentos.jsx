@@ -19,7 +19,8 @@ const ApiDocumentCard = ({ doc, entities, documentTypes }) => {
   const typeName = docType?.name || docType?.label || docType?.id || doc.document_type_id;
 
   let status = { text: 'Sin Fecha', days: '--', bgClass: 'bg-gray-100 text-gray-600', borderClass: 'border-gray-500', textClass: 'text-gray-600', glowClass: 'bg-gray-500' };
-  const isBlocked = doc.aasm_state === 'blocked';
+  let isBlocked = doc.aasm_state === 'blocked';
+  isBlocked = false; 
 
   if (doc.expires_at) {
     const expirationDate = new Date(doc.expires_at);
