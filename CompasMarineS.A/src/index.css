@@ -154,13 +154,24 @@
 }
 
 .dark .passport-card-bg {
-  background: rgba(148, 163, 184, 0.08);
+  background: rgba(0, 0, 0, 0.08);
 }
 
 .dark .passport-card-title h3,
 .dark .passport-card-dates p,
 .dark .passport-card-dates span.value {
   color: #e2e8f0;
+}
+
+.dark .passport-days-circle {
+  background: #1f2937; /* un gris oscuro */
+  color: #f8fafc;      /* texto claro */
+  border-color: #630000;
+}
+
+.dark .passport-days-glow {
+  background: rgba(59, 130, 246, 0.25); /* un azul tenue translúcido */
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.35); /* glow más oscuro */
 }
 
 /* ── PassportCard ── */
@@ -171,7 +182,7 @@
   padding: 1.25rem;
   position: relative;
   overflow: hidden;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  box-shadow: 0 1px 3px rgba(122, 10, 10, 0.06);
   border: 1px solid #f3f4f6;
   transition: all 0.2s ease;
 }
@@ -297,7 +308,7 @@
   padding: 0.25rem;
   position: relative;
   z-index: 1;
-  box-shadow: inset 0 2px 4px rgba(0,0,0,0.06);
+  box-shadow: inset 0 2px 4px rgba(182, 9, 9, 0.06);
 }
 
 .passport-days-number {
