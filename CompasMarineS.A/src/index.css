@@ -330,19 +330,23 @@
 
 /*notificacion de logo*/
 
-@keyframes popIn {
+@keyframes overlayIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes overlayOut {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+/* — Imagen: escala + opacidad — */
+@keyframes imageIn {
   from { opacity: 0; transform: scale(0.85); }
   to   { opacity: 1; transform: scale(1); }
 }
-@keyframes popOut {
+@keyframes imageOut {
   from { opacity: 1; transform: scale(1); }
   to   { opacity: 0; transform: scale(0.85); }
-}
-
-/* Barra de progreso que se consume */
-@keyframes shrink {
-  from { width: 100%; }
-  to   { width: 0%; }
 }
 
 .popup-overlay {
@@ -356,24 +360,10 @@
   justify-content: center;
   align-items: center;
   z-index: 9999;
-  animation: fadeIn 0.35s ease forwards;
 }
 
 .popup-overlay.closing {
-  animation: fadeOut 0.4s ease forwards;
-}
-
-.popup-content {
-  position: relative;
-  background: transparent;
-  padding: 0;
-  text-align: center;
-  display: inline-block;
-  animation: popIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
-}
-
-.popup-content.closing {
-  animation: popOut 0.4s ease forwards;
+  animation: overlayOut 0.8s ease forwards; 
 }
 
 .popup-image {
@@ -383,48 +373,9 @@
   height: auto;
   border-radius: 12px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  animation: imageIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; /* ← escala + fade de ENTRADA del logo */
 }
 
-/* Barra de progreso sobre la imagen */
-.popup-progress {
-  position: absolute;
-  bottom: 6px;
-  left: 6px;
-  right: 6px;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.3);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.popup-progress-bar {
-  height: 100%;
-  background: #ffffff;
-  border-radius: 2px;
-  animation: shrink linear forwards;
-  transform-origin: left;
-}
-
-.popup-close {
-  position: absolute;
-  top: -15px;
-  right: -15px;
-  background: #ffffff;
-  border: none;
-  border-radius: 50%;
-  width: 32px;
-  height: 32px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  cursor: pointer;
-  color: #1e293b;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
-  transition: transform 0.2s ease, background-color 0.2s ease;
-  z-index: 10000;
-}
-
-.popup-close:hover {
-  transform: scale(1.1);
-  background: #f1f5f9;
+.popup-overlay.closing .popup-image {
+  animation: imageOut 0.8s ease forwards;   /* ← escala + fade de SALIDA del logo */
 }
