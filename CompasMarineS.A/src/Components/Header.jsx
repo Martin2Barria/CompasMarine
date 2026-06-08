@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Moon, Sun } from 'lucide-react';
+import { Moon, Sun, X } from 'lucide-react';
+import logo50Anios from '../assets/images/compas marine 50 años.jpeg'; 
 
 export const Header = () => {
   const [darkMode, setDarkMode] = useState(false);
+  const [showPopup, setShowPopup] = useState(true);
 
   useEffect(() => {
     const storedTheme = localStorage.getItem('theme');
@@ -30,6 +32,7 @@ export const Header = () => {
           <span className="header-logo-subtitle">marine</span>
         </div>
       </div>
+
       <button
         type="button"
         className="header-theme-button"
@@ -39,6 +42,21 @@ export const Header = () => {
         {darkMode ? <Sun className="header-theme-icon" /> : <Moon className="header-theme-icon" />}
         <span>{darkMode ? 'Claro' : 'Oscuro'}</span>
       </button>
+
+      {showPopup && (
+        <div className="popup-overlay">
+          <div className="popup-content">
+            <button className="popup-close" onClick={() => setShowPopup(false)}>
+              <X size={20} />
+            </button>
+            <img
+              src={logo50Anios}
+              alt="Compas Marine 50 años"
+              className="popup-image"
+            />
+          </div>
+        </div>
+      )}
     </header>
   );
 };
