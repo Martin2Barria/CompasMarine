@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import { Moon, Sun } from 'lucide-react';
 import logo50Anios from '../assets/images/compas marine 50 años.jpeg';
 
-const POPUP_DURATION = 2000; // ← segundos que el logo permanece visible (2s)
-const FADE_DURATION  = 800;  // ← segundos del difuminado de salida (0.8s) — debe coincidir con fadeOut en CSS
+const POPUP_DURATION = 1500; // ← segundos que el logo permanece visible (2s)
+const FADE_DURATION  = 900;  // ← segundos del difuminado de salida (0.8s) — debe coincidir con fadeOut en CSS
 
 export const Header = () => {
   const [darkMode,  setDarkMode]  = useState(false);
