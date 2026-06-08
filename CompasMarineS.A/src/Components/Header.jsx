@@ -1,55 +1,41 @@
 import { useEffect, useState } from 'react';
-import { Moon, Sun, X } from 'lucide-react';
+import { Moon, Sun } from 'lucide-react';
 import logo50Anios from '../assets/images/compas marine 50 años.jpeg';
 
-const POPUP_DURATION = 5000; // ms que permanece visible
-const FADE_DURATION  = 400;  // ms de la animación de salida
+const POPUP_DURATION = 2000; // ← segundos que el logo permanece visible (2s)
+const FADE_DURATION  = 800;  // ← segundos del difuminado de salida (0.8s) — debe coincidir con fadeOut en CSS
 
 export const Header = () => {
-  const [darkMode,   setDarkMode]   = useState(false);
-  const [showPopup,  setShowPopup]  = useState(true);
-  const [isClosing,  setIsClosing]  = useState(false);
+  const [darkMode,  setDarkMode]  = useState(false);
+  const [showPopup, setShowPopup] = useState(true);
+  const [isClosing, setIsClosing] = useState(false);
 
-  // Leer tema guardado
   useEffect(() => {
-    const stored       = localStorage.getItem('theme');
-    const prefersDark  = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const initial      = stored ? stored === 'dark' : prefersDark;
+    const stored      = localStorage.getItem('theme');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const initial     = stored ? stored === 'dark' : prefersDark;
     setDarkMode(initial);
     document.documentElement.classList.toggle('dark', initial);
   }, []);
 
-  // Sincronizar tema
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
     localStorage.setItem('theme', darkMode ? 'dark' : 'light');
   }, [darkMode]);
 
-  // ✅ Auto-cierre del popup
   useEffect(() => {
     if (!showPopup) return;
 
-    const autoClose = setTimeout(() => {
-      // 1. Disparar animación de salida
-      setIsClosing(true);
-      // 2. Quitar el DOM al terminar la animación
+    const timer = setTimeout(() => {
+      setIsClosing(true);             // arranca el fade de salida
       setTimeout(() => {
-        setShowPopup(false);
+        setShowPopup(false);          // desmonta el componente al terminar el fade
         setIsClosing(false);
-      }, FADE_DURATION);
-    }, POPUP_DURATION);
+      }, FADE_DURATION);              // ← espera el mismo tiempo que dura el CSS
+    }, POPUP_DURATION);               // ← espera antes de empezar a desvanecerse
 
-    return () => clearTimeout(autoClose); // limpia si el usuario cierra antes
+    return () => clearTimeout(timer);
   }, [showPopup]);
-
-  // Cierre manual (botón ✕)
-  const handleClose = () => {
-    setIsClosing(true);
-    setTimeout(() => {
-      setShowPopup(false);
-      setIsClosing(false);
-    }, FADE_DURATION);
-  };
 
   const toggleTheme = () => setDarkMode(prev => !prev);
 
@@ -76,25 +62,11 @@ export const Header = () => {
 
       {showPopup && (
         <div className={`popup-overlay ${isClosing ? 'closing' : ''}`}>
-          <div className={`popup-content ${isClosing ? 'closing' : ''}`}>
-            <button className="popup-close" onClick={handleClose}>
-              <X size={20} />
-            </button>
-
-            <img
-              src={logo50Anios}
-              alt="Compas Marine 50 años"
-              className="popup-image"
-            />
-
-            {/* Barra de progreso */}
-            <div className="popup-progress">
-              <div
-                className="popup-progress-bar"
-                style={{ animationDuration: `${POPUP_DURATION}ms` }}
-              />
-            </div>
-          </div>
+          <img
+            src={logo50Anios}
+            alt="Compas Marine 50 años"
+            className="popup-image"
+          />
         </div>
       )}
     </header>
