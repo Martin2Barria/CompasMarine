@@ -47,8 +47,16 @@ export const ViewCapacitaciones = () => {
       
       const showCached = () => {
         const snap = readControlDocSnapshot();
-        if (snap) setApiData(snap.data);
+        if (snap) {
+          setApiData(snap.data);
+          return true;
+        }
+        return false;
       };
+
+      // Cargar cache de inmediato y quitar spinner si ya hay datos
+      const hasCache = showCached();
+      if (hasCache) setIsLoading(false);
 
       const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
       let hadFetchError = false;
@@ -85,12 +93,14 @@ export const ViewCapacitaciones = () => {
       };
 
       try {
-        const types = await fetchAllPages(urls.documentTypes, "Tipos");
-        const entities = await fetchAllPages(urls.entities, "Usuarios");
-        const docs = await fetchAllPages(urls.documents, "Documentos");
+        // Ejecutar las peticiones en paralelo para reducir el tiempo total
+        const [types, entities, docs] = await Promise.all([
+          fetchAllPages(urls.documentTypes, "Tipos"),
+          fetchAllPages(urls.entities, "Usuarios"),
+          fetchAllPages(urls.documents, "Documentos")
+        ]);
         
         const nextData = { documents: docs, entities: entities, documentTypes: types };
-        if (hadFetchError && docs.length === 0 && showCached()) return;
         
         setApiData(nextData);
         if (!hadFetchError) saveControlDocSnapshot(nextData);
