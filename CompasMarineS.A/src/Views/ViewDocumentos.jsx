@@ -5,7 +5,6 @@ import { readControlDocSnapshot, saveControlDocSnapshot } from '../storage/contr
 import { ApiDocumentCard } from './ApiDocumentCard'; 
 
 const urls = {
-  // NUEVO: Agregamos el endpoint de sincronización masiva
   documentsSync: getApiUrl('/controldoc/documents/sync'), 
   entities: getApiUrl('/controldoc/entities'),
   documentTypes: getApiUrl('/controldoc/document-types')
@@ -35,11 +34,15 @@ export const ViewDocumentos = () => {
 
   const [visibleCount, setVisibleCount] = useState(50);
 
+  // 1. Resetear el contador al filtrar
   useEffect(() => {
     setVisibleCount(50);
   }, [selectedType, selectedEntityId, statusFilter, signatureFilter, sortBy]);
 
+  // 2. Carga principal de datos
   useEffect(() => {
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
     const showCachedSnapshot = () => {
       const snapshot = readControlDocSnapshot();
       if (!snapshot) return false;
@@ -53,21 +56,15 @@ export const ViewDocumentos = () => {
     };
 
     const fetchAllData = async () => {
-      // Stale-While-Revalidate: Quitamos la pantalla de carga si ya hay caché
       const hasCachedData = showCachedSnapshot();
       setIsLoading(!hasCachedData); 
       setError(null);
       setCacheNotice('');
       
-      const requestOptions = {
-        method: 'GET',
-        credentials: 'same-origin',
-        redirect: 'follow'
-      };
-      
+      const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
       let hadFetchError = false;
 
-      // Paginación solo para diccionarios pequeños (Entidades y Tipos)
+      // --- Paginación protegida para diccionarios (Entidades y Tipos) ---
       const fetchAllPages = async (baseUrl, name) => {
         let allItems = [];
         let page = 1;
@@ -77,12 +74,24 @@ export const ViewDocumentos = () => {
             if(!hasCachedData) setProgressInfo(`Cargando diccionarios ${name}...`);
             const separator = baseUrl.includes('?') ? '&' : '?';
             const response = await fetch(`${baseUrl}${separator}page=${page}&per_page=100`, requestOptions);
+            
+            if (response.status === 429) {
+                console.warn(`Límite 429 en diccionario ${name}. Pausando...`);
+                await delay(2000);
+                continue;
+            }
+
             if (!response.ok) throw new Error(`HTTP: ${response.status}`);
             const json = await response.json();
             let items = Array.isArray(json) ? json : (Object.keys(json).find(k => Array.isArray(json[k])) ? json[Object.keys(json).find(k => Array.isArray(json[k]))] : []);
             
-            if (!items || items.length === 0) hasMore = false;
-            else { allItems.push(...items); page++; }
+            if (!items || items.length === 0) {
+                hasMore = false;
+            } else { 
+                allItems.push(...items); 
+                page++; 
+                await delay(200); 
+            }
           } catch (error) {
              hadFetchError = true; hasMore = false; 
           }
@@ -91,26 +100,45 @@ export const ViewDocumentos = () => {
       };
 
       try {
-        // 1. Cargar diccionarios pequeños
         const allTypes = await fetchAllPages(urls.documentTypes, "Tipos");
         const allEntities = await fetchAllPages(urls.entities, "Usuarios");
         
-        // 2. NUEVO: Llamada a nuestro súper-endpoint en Railway para los 6720 documentos
-        if(!hasCachedData) setProgressInfo("Descargando base de datos masiva...");
+        // --- Sincronización Masiva con espera (Polling para el 503) ---
         let allDocs = [];
-        try {
-          const syncResponse = await fetch(urls.documentsSync, requestOptions);
-          if (syncResponse.ok) {
-            allDocs = await syncResponse.json();
-          } else {
-            throw new Error(`Error Sync: ${syncResponse.status}`);
-          }
-        } catch (syncErr) {
-          console.error("Fallo endpoint de sincronización", syncErr);
-          hadFetchError = true;
+        let syncSuccess = false;
+        let attempts = 0;
+        const maxAttempts = 6; 
+
+        while (!syncSuccess && attempts < maxAttempts) {
+            try {
+                if(!hasCachedData) setProgressInfo(`Sincronizando base de datos masiva... (Intento ${attempts + 1}/${maxAttempts})`);
+                const syncResponse = await fetch(urls.documentsSync, requestOptions);
+                
+                if (syncResponse.status === 503) {
+                    console.warn("Railway ocupado descargando (503). Esperando 5 segundos...");
+                    await delay(5000);
+                    attempts++;
+                    continue; 
+                }
+
+                if (syncResponse.ok) {
+                    allDocs = await syncResponse.json();
+                    syncSuccess = true;
+                } else {
+                    throw new Error(`Error Sync: ${syncResponse.status}`);
+                }
+            } catch (syncErr) {
+                console.error("Fallo endpoint de sincronización", syncErr);
+                await delay(3000); 
+                attempts++;
+                if (attempts >= maxAttempts) hadFetchError = true;
+            }
         }
 
-        // 3. Filtrar palabras excluidas (Capacitaciones)
+        if (!syncSuccess) {
+            throw new Error("Tiempo de espera agotado sincronizando documentos. Intenta recargar la página.");
+        }
+
         const excludedKeywords = [
           'curso', 'capacitacion', 'autocuidado', 'higiene y manipulacion', 'oxicorte',
           'manejo manual de carga', 'navegacion segura', 'uso de extintores',
@@ -140,9 +168,7 @@ export const ViewDocumentos = () => {
         }
         
         setApiData(nextApiData);
-        if (!hadFetchError) {
-          saveControlDocSnapshot(nextApiData);
-        }
+        if (!hadFetchError) saveControlDocSnapshot(nextApiData);
         
         setProgressInfo('');
       } catch (err) {
@@ -153,7 +179,7 @@ export const ViewDocumentos = () => {
     };
 
     fetchAllData();
-  }, []);
+  }, []); // Cierre correcto del useEffect de carga
 
   const activeEntityIds = [...new Set(apiData.documents.map(d => d.entity_id?.toString()))];
   const relevantEntities = apiData.entities.filter(e => activeEntityIds.includes(e.id?.toString()));
