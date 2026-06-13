@@ -25,7 +25,15 @@ const controlDocRoutes = new Map([
   ['/api/controldoc/entities', '/api/v1/abstract/entities'],
   ['/api/controldoc/documents', '/api/v1/abstract/documents']
 ]);
+
 const pushSubscriptions = new Map();
+
+// --- VARIABLES GLOBALES DE CACHÉ PARA SINCRONIZACIÓN MASIVA ---
+let documentsSyncCache = null;
+let lastDocumentsSyncTime = null;
+const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutos
+let isSyncing = false;
+// --------------------------------------------------------------
 
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
@@ -60,6 +68,13 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // --- NUEVA RUTA INTERCEPTADA: Sincronización Masiva ---
+    if (requestUrl.pathname === '/api/controldoc/documents/sync') {
+      await handleDocumentsSync(req, res, requestUrl);
+      return;
+    }
+    // ------------------------------------------------------
+
     if (controlDocRoutes.has(requestUrl.pathname)) {
       await proxyControlDocRequest(req, res, requestUrl);
       return;
@@ -80,6 +95,99 @@ const server = createServer(async (req, res) => {
 server.listen(port, host, () => {
   console.log(`Compas Marine server listening on http://${host}:${port}`);
 });
+
+// --- FUNCIÓN DE VOLCADO MASIVO Y CACHÉ (NUEVO) ---
+async function handleDocumentsSync(req, res, requestUrl) {
+  if (req.method !== 'GET') {
+    sendJson(res, 405, { error: 'Method not allowed' });
+    return;
+  }
+
+  const now = Date.now();
+  if (documentsSyncCache && lastDocumentsSyncTime && (now - lastDocumentsSyncTime < CACHE_DURATION_MS)) {
+    console.log('Retornando documentos masivos desde la caché de Railway...');
+    sendJson(res, 200, documentsSyncCache);
+    return;
+  }
+
+  if (isSyncing) {
+    if (documentsSyncCache) {
+      sendJson(res, 200, documentsSyncCache);
+    } else {
+      sendJson(res, 503, { error: 'Sincronizando base de datos inicial, intenta en 10 segundos.' });
+    }
+    return;
+  }
+
+  isSyncing = true;
+
+  try {
+    console.log('Iniciando volcado masivo de documentos desde CDOC...');
+    const credentials = resolveControlDocCredentials(req);
+
+    if (!credentials.email || !credentials.token || !credentials.customerId || !credentials.entityTypeId) {
+      sendJson(res, 500, { error: 'Credenciales incompletas en el servidor' });
+      return;
+    }
+
+    const upstreamPath = '/api/v1/abstract/documents';
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-User-Email': credentials.email,
+      'X-User-Token': credentials.token,
+      'Customer-Id': credentials.customerId,
+      'Entity-Type-Id': credentials.entityTypeId
+    };
+
+    if (credentials.authorization) {
+      headers.AUTHORIZATION = credentials.authorization;
+    }
+
+    let allItems = [];
+    let page = 1;
+    let hasMore = true;
+    const MAX_PAGES = 500;
+
+    while (hasMore && page <= MAX_PAGES) {
+      const upstreamUrl = new URL(upstreamPath, controlDocBaseUrl);
+      upstreamUrl.searchParams.append('page', page);
+      upstreamUrl.searchParams.append('per_page', '100');
+
+      const response = await fetch(upstreamUrl, { method: 'GET', headers, redirect: 'follow' });
+
+      if (response.status === 429) {
+        console.warn(`Límite 429 en página ${page}. Pausando 2 segundos...`);
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+
+      if (!response.ok) throw new Error(`Error HTTP ${response.status}`);
+
+      const json = await response.json();
+      let items = Array.isArray(json) ? json : (Object.keys(json).find(k => Array.isArray(json[k])) ? json[Object.keys(json).find(k => Array.isArray(json[k]))] : []);
+
+      if (!items || items.length === 0) {
+        hasMore = false;
+      } else {
+        allItems.push(...items);
+        page++;
+        await new Promise(r => setTimeout(r, 150)); 
+      }
+    }
+
+    documentsSyncCache = allItems;
+    lastDocumentsSyncTime = Date.now();
+    console.log(`¡Volcado completo! ${allItems.length} documentos en memoria.`);
+    
+    sendJson(res, 200, allItems);
+  } catch (error) {
+    console.error('Error sincronización:', error);
+    sendJson(res, 500, { error: 'Fallo al sincronizar' });
+  } finally {
+    isSyncing = false; 
+  }
+}
+// -------------------------------------------------
 
 async function proxyControlDocRequest(req, res, requestUrl) {
   if (req.method !== 'GET') {
@@ -293,7 +401,6 @@ function unquoteEnvValue(value) {
   ) {
     return value.slice(1, -1);
   }
-
   return value;
 }
 
