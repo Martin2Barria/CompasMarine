@@ -36,6 +36,7 @@ export const ViewNotificaciones = ({ setView }) => {
         <div className="bg-white rounded-2xl p-5 shadow-sm relative overflow-hidden">
           <div className="absolute left-0 top-0 bottom-0 w-2 bg-[#394049]"></div>
           <div className="flex gap-4 items-start">
+                  {/* arreglo visual al entrar en modo oscuro */}
             <div className="notification-badge-icon flex items-center justify-center flex-shrink-0 mt-1">
               <BellRing className="icon-element" />
             </div>
