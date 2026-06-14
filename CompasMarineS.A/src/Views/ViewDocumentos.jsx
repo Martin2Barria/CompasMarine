@@ -140,11 +140,7 @@ export const ViewDocumentos = () => {
         }
 
         const excludedKeywords = [
-          'curso', 'capacitacion', 'autocuidado', 'higiene y manipulacion', 'oxicorte',
-          'manejo manual de carga', 'navegacion segura', 'uso de extintores',
-          'uso de winches', 'uso y cuidado epp', 'uso epp buceo', 
-          'pts fondeo de robot', 'supervision en faenas', 'primeros auxilios',
-          'uso de bote auxiliar', 'uso de grua hidraulica', 'uso de art', 'induccion mow'
+
         ];
 
         const validTypes = allTypes.filter(type => {
