@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { FolderOpen, Loader2, FileText, AlertCircle, Filter } from 'lucide-react';
 import { getApiUrl } from '../config/api';
 import { readControlDocSnapshot, saveControlDocSnapshot } from '../storage/controlDocOffline';
@@ -19,6 +19,61 @@ const getDaysRemaining = (dateString) => {
   return Math.ceil(diff / (1000 * 3600 * 24));
 };
 
+const hasPendingSignature = (doc) => {
+  if (!doc || typeof doc !== 'object') return false;
+
+  const normalizedString = (value) => {
+    if (typeof value !== 'string') return '';
+    return value.trim().toLowerCase();
+  };
+
+  const matchesPendingText = (value) => {
+    const lower = normalizedString(value);
+    return (
+      lower === 'true' ||
+      lower === '1' ||
+      lower === 'pending' ||
+      lower === 'pendiente' ||
+      lower.includes('pendiente') ||
+      lower.includes('pending') ||
+      lower.includes('por firmar') ||
+      lower.includes('sin firmar') ||
+      lower.includes('to sign') ||
+      lower.includes('needs signature') ||
+      lower.includes('signature') && lower.includes('pending')
+    );
+  };
+
+  const keysToCheck = [
+    'pending_signature',
+    'signature_pending',
+    'pending_signatures',
+    'pending_signatures_count',
+    'signature_status',
+    'signature_state',
+    'aasm_state',
+    'state',
+    'status',
+    'workflow_state'
+  ];
+
+  for (const key of keysToCheck) {
+    const value = doc[key];
+    if (value === true) return true;
+    if (typeof value === 'number' && value > 0) return true;
+    if (matchesPendingText(value)) return true;
+  }
+
+  return Object.entries(doc).some(([key, value]) => {
+    if (!/pending.*sign|sign.*pending|signature.*pending|pending.*signature|firma|firmas/i.test(key)) {
+      return false;
+    }
+    if (value === true) return true;
+    if (typeof value === 'number' && value > 0) return true;
+    return matchesPendingText(value);
+  });
+};
+
 export const ViewDocumentos = () => {
   const [apiData, setApiData] = useState({ documents: [], entities: [], documentTypes: [] });
   const [isLoading, setIsLoading] = useState(false);
@@ -30,14 +85,13 @@ export const ViewDocumentos = () => {
   const [selectedEntityId, setSelectedEntityId] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [signatureFilter, setSignatureFilter] = useState('all');
-  const [sortBy, setSortBy] = useState('default');
 
   const [visibleCount, setVisibleCount] = useState(50);
 
   // 1. Resetear el contador al filtrar
   useEffect(() => {
     setVisibleCount(50);
-  }, [selectedType, selectedEntityId, statusFilter, signatureFilter, sortBy]);
+  }, [selectedType, selectedEntityId, statusFilter, signatureFilter]);
 
   // 2. Carga principal de datos
   useEffect(() => {
@@ -92,7 +146,7 @@ export const ViewDocumentos = () => {
                 page++; 
                 await delay(200); 
             }
-          } catch (error) {
+          } catch {
              hadFetchError = true; hasMore = false; 
           }
         }
@@ -180,6 +234,25 @@ export const ViewDocumentos = () => {
   const activeEntityIds = [...new Set(apiData.documents.map(d => d.entity_id?.toString()))];
   const relevantEntities = apiData.entities.filter(e => activeEntityIds.includes(e.id?.toString()));
 
+  const progressMetrics = useMemo(() => {
+    if (selectedEntityId === 'all') {
+      return { percentage: 0, count: 0, total: 0 };
+    }
+
+    const userDocs = apiData.documents.filter(doc => doc.entity_id?.toString() === selectedEntityId);
+    const total = userDocs.length;
+    const count = userDocs.filter((doc) => {
+      const days = getDaysRemaining(doc.expires_at);
+      return days === null || days > 30;
+    }).length;
+
+    return {
+      percentage: total > 0 ? Math.round((count / total) * 100) : 0,
+      count,
+      total,
+    };
+  }, [apiData.documents, selectedEntityId]);
+
   let processedDocuments = apiData.documents.filter(doc => {
     const docTypeId = doc.document_type_id?.toString();
     const docEntityId = doc.entity_id?.toString();
@@ -187,13 +260,14 @@ export const ViewDocumentos = () => {
     
     const typeMatch = selectedType === 'all' || docTypeId === selectedType;
     const entityMatch = selectedEntityId === 'all' || docEntityId === selectedEntityId;
-    const signatureMatch = signatureFilter === 'all' || (signatureFilter === 'pending' && doc.pending_signature === true);
+    const signaturePending = hasPendingSignature(doc);
+    const signatureMatch = signatureFilter === 'all' || (signatureFilter === 'pending' && signaturePending);
 
     let statusMatch = true;
     if (statusFilter !== 'all') {
-      if (statusFilter === 'non_expiring') statusMatch = daysRemaining === null;
-      else if (daysRemaining === null) statusMatch = false; 
-      else if (statusFilter === 'expired') statusMatch = daysRemaining < 0;
+      if (daysRemaining === null) {
+        statusMatch = statusFilter === 'valid';
+      } else if (statusFilter === 'expired') statusMatch = daysRemaining < 0;
       else if (statusFilter === 'critical') statusMatch = daysRemaining >= 0 && daysRemaining <= 30;
       else if (statusFilter === 'warning') statusMatch = daysRemaining > 30 && daysRemaining <= 60;
       else if (statusFilter === 'valid') statusMatch = daysRemaining > 60;
@@ -202,15 +276,19 @@ export const ViewDocumentos = () => {
     return typeMatch && entityMatch && signatureMatch && statusMatch;
   });
 
-  if (sortBy === 'days_expired') {
-    processedDocuments.sort((a, b) => {
-      const daysA = getDaysRemaining(a.expires_at);
-      const daysB = getDaysRemaining(b.expires_at);
-      if (daysA === null) return 1;
-      if (daysB === null) return -1;
-      return daysA - daysB;
-    });
-  }
+  processedDocuments.sort((a, b) => {
+    const daysA = getDaysRemaining(a.expires_at);
+    const daysB = getDaysRemaining(b.expires_at);
+
+    const urgencyValue = (days) => {
+      if (days === null) return 10000;
+      if (days < 0) return days;
+      if (days <= 60) return days;
+      return 1000 + days;
+    };
+
+    return urgencyValue(daysA) - urgencyValue(daysB);
+  });
 
   const documentsToRender = processedDocuments.slice(0, visibleCount);
 
@@ -224,11 +302,32 @@ export const ViewDocumentos = () => {
 
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50 p-6">
         <div className="border-t border-gray-200 pt-6">
-          <div className="flex justify-between items-center mb-4">
+          <div className="flex flex-col gap-4 mb-4">
             {apiData.documents.length > 0 && (
-                <span className="text-xs bg-gray-200 text-gray-600 px-3 py-1.5 rounded-full font-bold shadow-sm">
-                  Mostrando {documentsToRender.length} de {processedDocuments.length} filtrados (Total: {apiData.documents.length})
-                </span>
+              <span className="text-xs bg-gray-200 text-gray-600 px-3 py-1.5 rounded-full font-bold shadow-sm inline-flex items-center">
+                Mostrando {documentsToRender.length} de {processedDocuments.length} filtrados (Total: {apiData.documents.length})
+              </span>
+            )}
+
+            {selectedEntityId !== 'all' && (
+              <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+                <div className="flex justify-between items-end mb-2">
+                  <div>
+                    <h3 className="text-sm font-bold text-[#394049] uppercase">Avance del Trabajador</h3>
+                    <p className="text-xs text-gray-500">Documentos vigentes del trabajador seleccionado</p>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-2xl font-black text-[#921E30]">{progressMetrics.percentage}%</span>
+                    <p className="text-xs font-semibold text-gray-500">{progressMetrics.count} de {progressMetrics.total} documentos</p>
+                  </div>
+                </div>
+                <div className="w-full bg-gray-100 rounded-full h-3 mt-3 overflow-hidden">
+                  <div
+                    className="bg-[#921E30] h-3 rounded-full transition-all duration-1000 ease-out"
+                    style={{ width: `${progressMetrics.percentage}%` }}
+                  ></div>
+                </div>
+              </div>
             )}
           </div>
 
@@ -268,7 +367,6 @@ export const ViewDocumentos = () => {
                     <option value="critical">Vencen en 30 días</option>
                     <option value="warning">Vencen en 30 a 60 días</option>
                     <option value="valid">Vigentes (+60 días)</option>
-                    <option value="non_expiring">No caducables</option>
                   </select>
                 </div>
                 <div>
@@ -276,13 +374,6 @@ export const ViewDocumentos = () => {
                   <select value={signatureFilter} onChange={(e) => setSignatureFilter(e.target.value)} className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white">
                     <option value="all">Todas</option>
                     <option value="pending">Firmas Pendientes</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-wider">Ordenar por</label>
-                  <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white">
-                    <option value="default">Por defecto</option>
-                    <option value="days_expired">Días Vencidos (Críticos primero)</option>
                   </select>
                 </div>
               </div>
