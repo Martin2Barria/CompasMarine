@@ -1,5 +1,60 @@
 import { FileText, User, Tag, Download, AlertCircle, PenTool } from 'lucide-react';
 
+const hasPendingSignature = (doc) => {
+  if (!doc || typeof doc !== 'object') return false;
+
+  const normalizedString = (value) => {
+    if (typeof value !== 'string') return '';
+    return value.trim().toLowerCase();
+  };
+
+  const matchesPendingText = (value) => {
+    const lower = normalizedString(value);
+    return (
+      lower === 'true' ||
+      lower === '1' ||
+      lower === 'pending' ||
+      lower === 'pendiente' ||
+      lower.includes('pendiente') ||
+      lower.includes('pending') ||
+      lower.includes('por firmar') ||
+      lower.includes('sin firmar') ||
+      lower.includes('to sign') ||
+      lower.includes('needs signature') ||
+      (lower.includes('signature') && lower.includes('pending'))
+    );
+  };
+
+  const keysToCheck = [
+    'pending_signature',
+    'signature_pending',
+    'pending_signatures',
+    'pending_signatures_count',
+    'signature_status',
+    'signature_state',
+    'aasm_state',
+    'state',
+    'status',
+    'workflow_state'
+  ];
+
+  for (const key of keysToCheck) {
+    const value = doc[key];
+    if (value === true) return true;
+    if (typeof value === 'number' && value > 0) return true;
+    if (matchesPendingText(value)) return true;
+  }
+
+  return Object.entries(doc).some(([key, value]) => {
+    if (!/pending.*sign|sign.*pending|signature.*pending|pending.*signature|firma|firmas/i.test(key)) {
+      return false;
+    }
+    if (value === true) return true;
+    if (typeof value === 'number' && value > 0) return true;
+    return matchesPendingText(value);
+  });
+};
+
 export const ApiDocumentCard = ({ doc, entities, documentTypes }) => {
   const entity = entities.find(e => e.id?.toString() === doc.entity_id?.toString());
   const docType = documentTypes.find(t => t.id?.toString() === doc.document_type_id?.toString());
@@ -7,9 +62,10 @@ export const ApiDocumentCard = ({ doc, entities, documentTypes }) => {
   const entityName = entity?.full_name || entity?.name || entity?.label || entity?.email || doc.entity_id;
   const typeName = docType?.name || docType?.label || docType?.id || doc.document_type_id;
 
-  let status = { text: 'Sin Fecha', days: '--', bgClass: 'bg-gray-100 text-gray-600', borderClass: 'border-gray-500', textClass: 'text-gray-600', glowClass: 'bg-gray-500' };
+  let status = { text: 'Vigente', days: '--', bgClass: 'bg-green-50 text-green-700 border-green-200', borderClass: 'border-green-500', textClass: 'text-green-600', glowClass: 'bg-green-500' };
   let isBlocked = doc.aasm_state === 'blocked';
   isBlocked = false; 
+  const pendingSignature = hasPendingSignature(doc);
 
   if (doc.expires_at) {
     const expirationDate = new Date(doc.expires_at);
@@ -80,7 +136,7 @@ export const ApiDocumentCard = ({ doc, entities, documentTypes }) => {
             )}
 
             {/* BOTÓN HACIA CONTROL DOCS */}
-            {doc.pending_signature && (
+            {pendingSignature && (
               <a 
                 href={`https://compliance.controldoc.legal/documentos/${doc.id}`} 
                 target="_blank" 
