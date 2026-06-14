@@ -44,14 +44,14 @@
 
 .header-logo-title {
   font-weight: 800;
-  color: #394049;
+  color: #921E30;
   font-size: 1.8rem;
   letter-spacing: -0.02em;
 }
 
 .header-logo-subtitle {
   font-size: 1.2rem;
-  color: #921E30;
+  color: #394049;
   font-weight: 600;
   letter-spacing: 0.2em;
   text-transform: uppercase;
@@ -129,7 +129,11 @@
 }
 
 .dark .header-logo-title {
-  color: #f8fafc;
+  color: #921E30;
+}
+
+.dark .header-logo-subtitle {
+  color: #ffffff;
 }
 
 .dark .header-theme-button {
@@ -172,6 +176,10 @@
 .dark .passport-days-glow {
   background: rgba(59, 130, 246, 0.25); /* un azul tenue translúcido */
   box-shadow: 0 0 20px rgba(59, 130, 246, 0.35); /* glow más oscuro */
+}
+/*cambios del dia sabado*/
+.dark .text-\[\#394049\] {
+  color: #f8fafc !important;
 }
 
 /* ── PassportCard ── */
