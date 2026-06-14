@@ -1,6 +1,5 @@
-import { FileText, User, Tag, Download, AlertCircle } from 'lucide-react';
+import { FileText, User, Tag, Download, AlertCircle, PenTool } from 'lucide-react';
 
-// Le agregamos la palabra "export" al principio para poder llamarlo desde otros archivos
 export const ApiDocumentCard = ({ doc, entities, documentTypes }) => {
   const entity = entities.find(e => e.id?.toString() === doc.entity_id?.toString());
   const docType = documentTypes.find(t => t.id?.toString() === doc.document_type_id?.toString());
@@ -68,13 +67,27 @@ export const ApiDocumentCard = ({ doc, entities, documentTypes }) => {
             </p>
           </div>
 
+          {/* BARRA DE ACCIONES CON EL NUEVO BOTÓN */}
           <div className="flex gap-2 items-center flex-wrap">
             <p className={`text-[10px] font-bold inline-block px-2 py-1 rounded border ${status.bgClass} uppercase`}>
               {status.text}
             </p>
+            
             {doc.download_base64_url && (
               <a href={doc.download_base64_url} target="_blank" rel="noreferrer" className="text-[10px] font-bold bg-[#394049] text-white px-2 py-1 rounded flex items-center hover:bg-gray-700 transition">
                 <Download className="w-3 h-3 mr-1" /> Ver/Bajar
+              </a>
+            )}
+
+            {/* BOTÓN HACIA CONTROL DOCS */}
+            {doc.pending_signature && (
+              <a 
+                href={`https://compliance.controldoc.legal/documentos/${doc.id}`} 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                className="text-[10px] font-bold bg-[#921E30] text-white px-2 py-1 rounded flex items-center hover:bg-red-800 transition shadow-sm"
+              >
+                <PenTool className="w-3 h-3 mr-1" /> Firmar en CDOC
               </a>
             )}
           </div>

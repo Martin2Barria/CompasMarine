@@ -1,15 +1,16 @@
 import { useState, useEffect, useMemo } from 'react';
-import { GraduationCap, Play, ShieldCheck, Flame, Anchor, LifeBuoy, Hammer, MapPin, Truck, Activity, FireExtinguisher, Loader2, AlertCircle, CheckCircle, Clock } from 'lucide-react';
+import { GraduationCap, Play, ShieldCheck, Flame, Anchor, LifeBuoy, Hammer, MapPin, Truck, Activity, FireExtinguisher, Loader2, AlertCircle, CheckCircle, Clock, PenTool } from 'lucide-react';
 import { getApiUrl } from '../config/api';
 import { readControlDocSnapshot, saveControlDocSnapshot } from '../storage/controlDocOffline';
 
 const urls = {
-  documents: getApiUrl('/controldoc/documents'),
+  // ACTUALIZADO: Usando el nuevo endpoint súper rápido para los documentos
+  documentsSync: getApiUrl('/controldoc/documents/sync'), 
   entities: getApiUrl('/controldoc/entities'),
   documentTypes: getApiUrl('/controldoc/document-types')
 };
 
-// 1. EL CATÁLOGO OFICIAL (Esto sí va afuera porque nunca cambia)
+// EL CATÁLOGO OFICIAL
 const baseCapacitaciones = [
   { id: 'autocuidado', title: 'Autocuidado', keyword: 'autocuidado', description: 'Seguridad y bienestar personal en faenas.', icon: ShieldCheck },
   { id: 'higiene-manipulacion', title: 'Higiene y manipulación', keyword: 'higiene y manipulacion', description: 'Buenas prácticas para manipulación segura.', icon: Hammer },
@@ -30,7 +31,6 @@ const baseCapacitaciones = [
 ];
 
 export const ViewCapacitaciones = () => {
-  // 2. LOS ESTADOS (Variables internas del componente)
   const [apiData, setApiData] = useState({ documents: [], entities: [], documentTypes: [] });
   const [isLoading, setIsLoading] = useState(false);
   const [progressInfo, setProgressInfo] = useState('');
@@ -40,11 +40,8 @@ export const ViewCapacitaciones = () => {
 
   const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-  // 3. LA LÓGICA DE CARGA (Fetch)
   useEffect(() => {
     const fetchAllData = async () => {
-      setIsLoading(true);
-      
       const showCached = () => {
         const snap = readControlDocSnapshot();
         if (snap) {
@@ -54,13 +51,13 @@ export const ViewCapacitaciones = () => {
         return false;
       };
 
-      // Cargar cache de inmediato y quitar spinner si ya hay datos
       const hasCache = showCached();
-      if (hasCache) setIsLoading(false);
+      setIsLoading(!hasCache);
 
       const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
       let hadFetchError = false;
 
+      // Paginación protegida solo para diccionarios
       const fetchAllPages = async (baseUrl, name) => {
         let allItems = [];
         let page = 1;
@@ -68,11 +65,11 @@ export const ViewCapacitaciones = () => {
         
         while (hasMore && page <= 40) {
           try {
-            setProgressInfo(`Cargando ${name}...`);
+            if(!hasCache) setProgressInfo(`Cargando diccionarios ${name}...`);
             const sep = baseUrl.includes('?') ? '&' : '?';
             const response = await fetch(`${baseUrl}${sep}page=${page}&per_page=100`, requestOptions);
             
-            if (response.status === 429) { await delay(1000); continue; }
+            if (response.status === 429) { await delay(1500); continue; }
             if (!response.ok) throw new Error();
             
             const json = await response.json();
@@ -80,9 +77,8 @@ export const ViewCapacitaciones = () => {
             
             if (items.length === 0) hasMore = false;
             else {
-              allItems = [...allItems, ...items];
+              allItems.push(...items);
               page++;
-              if (items.length < 20) hasMore = false;
               await delay(200);
             }
           } catch (e) {
@@ -93,17 +89,45 @@ export const ViewCapacitaciones = () => {
       };
 
       try {
-        // Ejecutar las peticiones en paralelo para reducir el tiempo total
-        const [types, entities, docs] = await Promise.all([
+        const [types, entities] = await Promise.all([
           fetchAllPages(urls.documentTypes, "Tipos"),
-          fetchAllPages(urls.entities, "Usuarios"),
-          fetchAllPages(urls.documents, "Documentos")
+          fetchAllPages(urls.entities, "Usuarios")
         ]);
+
+        // OPTIMIZADO: Sincronización masiva de documentos
+        let allDocs = [];
+        let attempts = 0;
+        let syncSuccess = false;
         
-        const nextData = { documents: docs, entities: entities, documentTypes: types };
+        while (!syncSuccess && attempts < 5) {
+          try {
+            if(!hasCache) setProgressInfo("Sincronizando capacitaciones...");
+            const syncResponse = await fetch(urls.documentsSync, requestOptions);
+            
+            if (syncResponse.status === 503) {
+              await delay(4000);
+              attempts++;
+              continue;
+            }
+            if (syncResponse.ok) {
+              allDocs = await syncResponse.json();
+              syncSuccess = true;
+            } else {
+              throw new Error();
+            }
+          } catch (err) {
+            await delay(2000);
+            attempts++;
+          }
+        }
         
-        setApiData(nextData);
-        if (!hadFetchError) saveControlDocSnapshot(nextData);
+        const nextData = { documents: allDocs, entities: entities, documentTypes: types };
+        
+        // Solo actualizamos si logramos conseguir los documentos
+        if (allDocs.length > 0) {
+          setApiData(nextData);
+          if (!hadFetchError) saveControlDocSnapshot(nextData);
+        }
       } catch (err) {
         showCached();
       } finally {
@@ -114,7 +138,6 @@ export const ViewCapacitaciones = () => {
     fetchAllData();
   }, []);
 
-  // 4. EL CRUCE DE DATOS (Adentro del componente, después de declarar apiData)
   const { relevantEntities, processedCapacitaciones, progressMetrics } = useMemo(() => {
     const entities = apiData.entities || [];
     let completedCount = 0;
@@ -129,14 +152,8 @@ export const ViewCapacitaciones = () => {
           const type = apiData.documentTypes.find(t => t.id?.toString() === doc.document_type_id?.toString());
           const typeName = type ? (type.name || type.label || '') : '';
           const docLabel = doc.label || '';
-          
           const combinedText = `${typeName} ${docLabel}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
           
-          // Debugging
-          if (combinedText.includes(cap.keyword)) {
-             console.log(`¡ENCONTRADO! Curso: ${cap.title} -> Match con: "${combinedText}"`);
-          }
-
           return combinedText.includes(cap.keyword);
         });
 
@@ -159,7 +176,6 @@ export const ViewCapacitaciones = () => {
     };
   }, [apiData, selectedEntityId, selectedCapacitacion]);
 
-  // 5. FUNCIONES AUXILIARES
   const getDocStatus = (doc) => {
     if (!doc) return { label: 'Sin subir', color: 'bg-gray-100 text-gray-500', icon: Clock };
     if (doc.aasm_state === 'blocked') return { label: 'Rechazado', color: 'bg-red-100 text-red-700', icon: AlertCircle };
@@ -173,10 +189,9 @@ export const ViewCapacitaciones = () => {
       if (days <= 30) return { label: `Vence en ${days}d`, color: 'bg-yellow-100 text-yellow-700', icon: Clock };
       return { label: 'Vigente', color: 'bg-green-100 text-green-700', icon: CheckCircle };
     }
-    return { label: 'Completado', color: 'bg-blue-100 text-blue-700', icon: CheckCircle };
+    return { label: 'Registrado', color: 'bg-blue-100 text-blue-700', icon: CheckCircle };
   };
 
-  // 6. LA VISTA (El retorno de tu interfaz gráfica)
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
       <div className="bg-[#394049] p-5 flex items-center justify-between flex-shrink-0">
@@ -192,7 +207,7 @@ export const ViewCapacitaciones = () => {
             <div className="flex justify-between items-end mb-2">
               <div>
                 <h3 className="text-sm font-bold text-[#394049] uppercase">Avance del Trabajador</h3>
-                <p className="text-xs text-gray-500">Cursos completados del catálogo base</p>
+                <p className="text-xs text-gray-500">Cursos registrados del catálogo base</p>
               </div>
               <div className="text-right">
                 <span className="text-2xl font-black text-[#921E30]">{progressMetrics.percentage}%</span>
@@ -278,23 +293,40 @@ export const ViewCapacitaciones = () => {
                       
                       <p className="text-xs text-gray-500 mb-3">{item.description}</p>
                       
+{/* --- LÓGICA EXACTA DE BOTONES --- */}
                       <div className="flex items-center gap-3">
-                        {item.doc && item.doc.download_base64_url ? (
-                          <a href={item.doc.download_base64_url} target="_blank" rel="noreferrer" className="bg-[#394049] text-white text-[10px] font-bold px-3 py-1.5 rounded-md flex items-center hover:bg-[#2f343d] transition">
+                        
+                        {item.doc && (item.doc.pending_signature === true || item.doc.aasm_state === 'pending') ? (
+                          <a 
+                            href={`https://compliance.controldoc.legal/documentos/${item.doc.id}`} 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            className="bg-[#921E30] text-white text-[10px] font-bold px-3 py-1.5 rounded-md flex items-center hover:bg-red-800 transition shadow-sm"
+                          >
+                            <PenTool className="w-3 h-3 mr-1.5" /> Firmar
+                          </a>
+                        ) : item.doc && item.doc.download_base64_url ? (
+                          <a 
+                            href={item.doc.download_base64_url} 
+                            target="_blank" 
+                            rel="noreferrer" 
+                            className="bg-[#394049] text-white text-[10px] font-bold px-3 py-1.5 rounded-md flex items-center hover:bg-[#2f343d] transition"
+                          >
                             <Play className="w-3 h-3 mr-1.5" /> Ver Certificado
                           </a>
-                        ) : (
-                          <button disabled className="bg-gray-100 text-gray-400 text-[10px] font-bold px-3 py-1.5 rounded-md flex items-center cursor-not-allowed">
-                            Pendiente
+                        ) : !item.doc ? (
+                          <button disabled className="bg-gray-100 text-gray-400 text-[10px] font-bold px-3 py-1.5 rounded-md flex items-center cursor-not-allowed border border-gray-200">
+                            Pendiente de Carga
                           </button>
-                        )}
+                        ) : null}
 
                         {item.doc?.expires_at && (
-                          <span className="text-[10px] text-gray-500 font-medium">
+                          <span className="text-[10px] text-gray-500 font-medium ml-auto">
                             Vence: {new Date(item.doc.expires_at).toLocaleDateString('es-ES')}
                           </span>
                         )}
                       </div>
+                      {/* ------------------------------------------- */}
                     </div>
                   </div>
                 </div>

@@ -140,7 +140,7 @@ export const ViewDocumentos = () => {
         }
 
         const excludedKeywords = [
-
+            
         ];
 
         const validTypes = allTypes.filter(type => {
