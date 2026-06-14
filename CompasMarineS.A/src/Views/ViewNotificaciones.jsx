@@ -36,8 +36,8 @@ export const ViewNotificaciones = ({ setView }) => {
         <div className="bg-white rounded-2xl p-5 shadow-sm relative overflow-hidden">
           <div className="absolute left-0 top-0 bottom-0 w-2 bg-[#394049]"></div>
           <div className="flex gap-4 items-start">
-            <div className="bg-gray-100 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
-              <BellRing className="w-5 h-5 text-[#394049]" />
+            <div className="notification-badge-icon flex items-center justify-center flex-shrink-0 mt-1">
+              <BellRing className="icon-element" />
             </div>
             <div className="flex-1">
               <h4 className="font-bold text-gray-800 bg-white inline-block mb-2">Avisos de documentos</h4>
