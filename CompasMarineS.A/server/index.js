@@ -1,11 +1,13 @@
-import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
+import bcrypt from 'bcrypt';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const appRoot = resolve(__dirname, '..');
 const distDir = resolve(appRoot, 'dist');
+const usersStorePath = resolve(appRoot, 'server', 'users.json');
 
 loadEnvFiles([
   '.env.server.local',
@@ -58,6 +60,16 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/auth/register') {
+      await handleRegister(req, res);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/auth/login') {
+      await handleLogin(req, res);
+      return;
+    }
+
     if (requestUrl.pathname === '/api/notifications/vapid-public-key') {
       sendJson(res, 200, { publicKey: process.env.VAPID_PUBLIC_KEY || null });
       return;
@@ -70,7 +82,7 @@ const server = createServer(async (req, res) => {
 
     // --- NUEVA RUTA INTERCEPTADA: Sincronización Masiva ---
     if (requestUrl.pathname === '/api/controldoc/documents/sync') {
-      await handleDocumentsSync(req, res, requestUrl);
+      await handleDocumentsSync(req, res);
       return;
     }
     // ------------------------------------------------------
@@ -97,7 +109,7 @@ server.listen(port, host, () => {
 });
 
 // --- FUNCIÓN DE VOLCADO MASIVO Y CACHÉ (NUEVO) ---
-async function handleDocumentsSync(req, res, requestUrl) {
+async function handleDocumentsSync(req, res) {
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'Method not allowed' });
     return;
@@ -317,6 +329,146 @@ async function handlePushSubscription(req, res) {
     count: pushSubscriptions.size,
     message: 'Subscription stored. Configure a push sender with VAPID keys before production delivery.'
   });
+}
+
+async function handleRegister(req, res) {
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'Method not allowed' });
+    return;
+  }
+
+  const rawBody = await readRequestBody(req);
+  let payload;
+
+  try {
+    payload = JSON.parse(rawBody || '{}');
+  } catch {
+    sendJson(res, 400, { error: 'Invalid JSON body' });
+    return;
+  }
+
+  const nombre = (payload.nombre || payload.name || '').trim();
+  const email = (payload.email || '').trim().toLowerCase();
+  const password = payload.password || '';
+
+  if (!nombre || !email || !password) {
+    sendJson(res, 400, { error: 'Nombre, email y contraseña son obligatorios.' });
+    return;
+  }
+
+  if (password.length < 8) {
+    sendJson(res, 400, { error: 'La contraseña debe tener al menos 8 caracteres.' });
+    return;
+  }
+
+  const users = loadUsersStore();
+  const exists = users.some((user) => user.email === email);
+
+  if (exists) {
+    sendJson(res, 409, { error: 'El email ya está registrado.' });
+    return;
+  }
+
+  try {
+    const passwordHash = await bcrypt.hash(password, 12);
+    const newUser = {
+      id: Date.now(),
+      nombre,
+      email,
+      passwordHash,
+      activo: true,
+      creado_en: new Date().toISOString()
+    };
+
+    users.push(newUser);
+    saveUsersStore(users);
+
+    sendJson(res, 201, {
+      ok: true,
+      message: 'Usuario registrado correctamente.',
+      user: {
+        id: newUser.id,
+        nombre: newUser.nombre,
+        email: newUser.email
+      }
+    });
+  } catch (error) {
+    console.error('Error registrando usuario:', error);
+    sendJson(res, 500, { error: 'No se pudo crear el usuario.' });
+  }
+}
+
+async function handleLogin(req, res) {
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'Method not allowed' });
+    return;
+  }
+
+  const rawBody = await readRequestBody(req);
+  let payload;
+
+  try {
+    payload = JSON.parse(rawBody || '{}');
+  } catch {
+    sendJson(res, 400, { error: 'Invalid JSON body' });
+    return;
+  }
+
+  const email = (payload.email || '').trim().toLowerCase();
+  const password = payload.password || '';
+
+  if (!email || !password) {
+    sendJson(res, 400, { error: 'Email y contraseña son obligatorios.' });
+    return;
+  }
+
+  const users = loadUsersStore();
+  const user = users.find((item) => item.email === email);
+
+  if (!user) {
+    sendJson(res, 401, { error: 'Credenciales incorrectas.' });
+    return;
+  }
+
+  try {
+    const isValid = await bcrypt.compare(password, user.passwordHash);
+
+    if (!isValid) {
+      sendJson(res, 401, { error: 'Credenciales incorrectas.' });
+      return;
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      message: 'Inicio de sesión correcto.',
+      user: {
+        id: user.id,
+        nombre: user.nombre,
+        email: user.email
+      }
+    });
+  } catch (error) {
+    console.error('Error validando usuario:', error);
+    sendJson(res, 500, { error: 'No se pudo iniciar sesión.' });
+  }
+}
+
+function loadUsersStore() {
+  if (!existsSync(usersStorePath)) {
+    return [];
+  }
+
+  try {
+    const fileContent = readFileSync(usersStorePath, 'utf8');
+    const parsed = JSON.parse(fileContent);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveUsersStore(users) {
+  writeFileSync(usersStorePath, JSON.stringify(users, null, 2), 'utf8');
 }
 
 function serveStaticFile(res, requestUrl) {

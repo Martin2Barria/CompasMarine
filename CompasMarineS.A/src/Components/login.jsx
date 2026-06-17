@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
+import { getApiUrl } from '../config/api';
 
 export const Login = ({ onLoginSuccess, onNavigate }) => {
   const [email, setEmail] = useState('');
@@ -8,7 +9,7 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
     setError('');
 
@@ -19,14 +20,27 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
 
     setIsLoading(true);
 
-    setTimeout(() => {
-      setIsLoading(false);
-      if (email && password) {
-        onLoginSuccess(); 
-      } else {
-        setError('Credenciales incorrectas. Intenta nuevamente.');
+    try {
+      const response = await fetch(getApiUrl('/auth/login'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ email: email.trim().toLowerCase(), password })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Credenciales incorrectas. Intenta nuevamente.');
       }
-    }, 1200);
+
+      onLoginSuccess();
+    } catch (err) {
+      setError(err.message || 'No se pudo iniciar sesión.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

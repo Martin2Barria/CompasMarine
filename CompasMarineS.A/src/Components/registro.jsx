@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Eye, EyeOff, ArrowLeft } from 'lucide-react';
+import { getApiUrl } from '../config/api';
 
 export const Registro = ({ onNavigate }) => {
   const [name, setName] = useState('');
@@ -10,30 +11,51 @@ export const Registro = ({ onNavigate }) => {
   const [successMsg, setSuccessMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleRegister = (e) => {
+  const handleRegister = async (e) => {
     e.preventDefault();
     setError('');
     setSuccessMsg('');
 
-    // Validación básica de campos vacíos
     if (!name.trim() || !email.trim() || !password) {
       setError('Por favor completa todos los campos.');
       return;
     }
 
+    if (password.length < 8) {
+      setError('La contraseña debe tener al menos 8 caracteres.');
+      return;
+    }
+
     setIsLoading(true);
 
-    // Simulación de registro en la API
-    setTimeout(() => {
-      setIsLoading(false);
-      // Simulación exitosa
+    try {
+      const response = await fetch(getApiUrl('/auth/register'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          nombre: name.trim(),
+          email: email.trim().toLowerCase(),
+          password
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'No se pudo completar el registro.');
+      }
+
       setSuccessMsg('Cuenta creada con éxito. Redirigiendo al inicio de sesión...');
-      
-      // Espera 2 segundos para que el usuario lea el mensaje y lo manda al login
       setTimeout(() => {
         onNavigate('login');
       }, 2000);
-    }, 1500);
+    } catch (err) {
+      setError(err.message || 'No se pudo completar el registro.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
