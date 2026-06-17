@@ -2,7 +2,7 @@ import { createReadStream, existsSync, readFileSync, statSync, writeFileSync } f
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const appRoot = resolve(__dirname, '..');
