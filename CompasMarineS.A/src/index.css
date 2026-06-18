@@ -146,6 +146,15 @@
   color: #94a3b8 !important; /* Asegura que el subtítulo sea gris claro legible */
 }
 
+.text-doc-percentage {
+  color: #000000; /* negro */
+}
+
+/* Modo oscuro */
+.dark .text-doc-percentage {
+  color: #ffffff !important; /* blanco */
+}
+
 /*notificacion de logo*/
 
 @keyframes overlayOut {

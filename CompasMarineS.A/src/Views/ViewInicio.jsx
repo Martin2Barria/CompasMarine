@@ -155,35 +155,28 @@ export const ViewInicio = ({ setView }) => {
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
-      {/* Caja de Bienvenida Centrada Verticalmente */}
-      <div className="bg-[#394049] p-6 flex flex-col items-center justify-center gap-3 relative overflow-hidden flex-shrink-0 text-center">
+      {/* Caja de Bienvenida alineada a la izquierda */}
+      <div className="bg-[#394049] p-6 flex flex-row items-center gap-4 relative overflow-hidden flex-shrink-0 text-left  shadow-lg">
         {/* Efecto de fondo de burbuja */}
-        <div className="absolute -right-10 -top-10 w-40 h-40 bg-white opacity-5 rounded-full blur-2xl pointer-events-none"></div>
-        
-        {/* Contenedor del Avatar (Arriba) */}
+        <div className="absolute -right-10 -top-10 w-40 h-40 bg-white opacity-5 blur-2xl pointer-events-none"></div>
+
+        {/* Avatar */}
         <div className="w-16 h-16 rounded-full bg-white border-2 border-[#921E30] flex-shrink-0 flex items-center justify-center shadow-lg relative z-10 overflow-hidden">
-          <User className="w-8 h-8 text-gray-300 mt-2" />
+          <User className="w-8 h-8 text-gray-300" />
         </div>
-        
-        {/* Bloque de Texto (Abajo del Avatar) */}
+
+        {/* Texto de bienvenida al lado del avatar */}
         <div className="relative z-10">
-          <p className="text-white text-xs font-bold tracking-wider mb-0.5 uppercase opacity-90">Bienvenido</p>
-          <h2 className="text-white text-2xl font-semibold tracking-wide">{displayName}</h2>
+          <p className="text-white text-xs font-bold tracking-wider uppercase opacity-90 mb-1">
+            Bienvenido
+          </p>
+          <h2 className="text-white text-2xl font-semibold tracking-wide">
+            {displayName}
+          </h2>
         </div>
       </div>
+
       
-      {/* Nuevo contenedor para el círculo de porcentaje (Ubicado ABAJO de la bienvenida) */}
-      <div className="flex flex-col items-center justify-center py-6 bg-[#2A3037] border-b border-gray-700">
-        <div 
-          className="w-20 h-20 rounded-full border-[6px] flex items-center justify-center shadow-lg bg-[#2A3037]" 
-          style={{ borderColor: docPercentage >= 80 ? '#22c55e' : docPercentage >= 50 ? '#B8860B' : '#FF0000' }}
-        >
-          <span className="text-white text-base font-extrabold">{docPercentage}%</span>
-        </div>
-        <span className="text-white text-xs mt-2.5 uppercase font-bold tracking-wider">
-          Al día
-        </span>
-      </div>
 
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
         
@@ -192,6 +185,36 @@ export const ViewInicio = ({ setView }) => {
             <Search className="w-5 h-5 absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400" />
             <input type="text" placeholder="Buscar alertas..." className="w-full bg-transparent py-4 pl-12 pr-4 focus:outline-none text-sm" />
           </div>
+        </div>
+
+                {/* Nuevo contenedor para el porcentaje */}
+        <div className="px-6 pt-4 pb-2 flex justify-between items-end">
+          <h3 className="font-bold text-[#394049] text-lg border-b-2 border-[#921E30] pb-1">
+            Porcentaje de tus documentos
+          </h3>
+        </div>
+
+        {/* Contenedor con padding extra y sin borde inferior */}
+        <div className="flex flex-col items-center justify-center py-6 px-8 bg-white">
+          {/* Barra de progreso */}
+          <div className="w-full max-w-md bg-gray-800 rounded-full h-6 shadow-lg overflow-hidden">
+            <div
+              className="h-6 rounded-full transition-all duration-500"
+              style={{
+                width: `${docPercentage}%`,
+                backgroundColor:
+                  docPercentage >= 80
+                    ? "#22c55e" // verde
+                    : docPercentage >= 50
+                    ? "#B8860B" // amarillo
+                    : "#FF0000", // rojo
+              }}
+            ></div>
+          </div>
+            <span className="text-doc-percentage text-lg mt-2.5 uppercase font-bold tracking-wider">
+              {docPercentage}%
+            </span>
+
         </div>
 
         <div className="px-6 pt-4 pb-2 flex justify-between items-end">
