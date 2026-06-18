@@ -7,7 +7,7 @@ import { evaluateDocumentNotificationRules } from '../pwa/notificationRules';
 const formatDate = (dateString) => {
   if (!dateString) return 'N/A';
   return new Date(dateString).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
-};z
+};
 
 const getDaysRemaining = (dateString) => {
   if (!dateString) return null;
@@ -154,29 +154,30 @@ export const ViewInicio = ({ setView }) => {
   }, []);
 
   return (
-      <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
-        {/* Caja de Bienvenida alineada a la izquierda */}
-        <div className="bg-[#394049] p-6 flex flex-row items-center gap-4 relative overflow-hidden flex-shrink-0 text-left  shadow-lg">
-          {/* Efecto de fondo de burbuja */}
-          <div className="absolute -right-10 -top-10 w-40 h-40 bg-white opacity-5  blur-2xl pointer-events-none"></div>
+    <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
+      {/* Caja de Bienvenida alineada a la izquierda */}
+      <div className="bg-[#394049] p-6 flex flex-row items-center gap-4 relative overflow-hidden flex-shrink-0 text-left  shadow-lg">
+        {/* Efecto de fondo de burbuja */}
+        <div className="absolute -right-10 -top-10 w-40 h-40 bg-white opacity-5 blur-2xl pointer-events-none"></div>
 
-          {/* Avatar */}
-          <div className="w-16 h-16 rounded-full bg-white border-2 border-[#921E30] flex-shrink-0 flex items-center justify-center shadow-lg relative z-10 overflow-hidden">
-            <User className="w-8 h-8 text-gray-300" />
-          </div>
-
-          {/* Texto de bienvenida al lado del avatar */}
-          <div className="relative z-10">
-            <p className="text-white text-xs font-bold tracking-wider uppercase opacity-90 mb-1">
-              Bienvenido
-            </p>
-            <h2 className="text-white text-2xl font-semibold tracking-wide">
-              {displayName}
-            </h2>
-          </div>
-          
+        {/* Avatar */}
+        <div className="w-16 h-16 rounded-full bg-white border-2 border-[#921E30] flex-shrink-0 flex items-center justify-center shadow-lg relative z-10 overflow-hidden">
+          <User className="w-8 h-8 text-gray-300" />
         </div>
+
+        {/* Texto de bienvenida al lado del avatar */}
+        <div className="relative z-10">
+          <p className="text-white text-xs font-bold tracking-wider uppercase opacity-90 mb-1">
+            Bienvenido
+          </p>
+          <h2 className="text-white text-2xl font-semibold tracking-wide">
+            {displayName}
+          </h2>
+        </div>
+      </div>
+
       
+
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
         
         <div className="p-6 pb-2">
@@ -185,7 +186,8 @@ export const ViewInicio = ({ setView }) => {
             <input type="text" placeholder="Buscar alertas..." className="w-full bg-transparent py-4 pl-12 pr-4 focus:outline-none text-sm" />
           </div>
         </div>
-        {/* Nuevo contenedor para el porcentaje */}
+
+                {/* Nuevo contenedor para el porcentaje */}
         <div className="px-6 pt-4 pb-2 flex justify-between items-end">
           <h3 className="font-bold text-[#394049] text-lg border-b-2 border-[#921E30] pb-1">
             Porcentaje de tus documentos
