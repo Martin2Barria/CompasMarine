@@ -9,13 +9,15 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "vapid:keys": "web-push generate-vapid-keys"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "lucide-react": "^1.17.0",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react-dom": "^19.2.6",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

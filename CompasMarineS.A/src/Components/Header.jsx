@@ -66,6 +66,9 @@ export const Header = () => {
           src={logoCompasMarine1} 
           alt="COMPAS marine Logo" 
           className="header-logo-img"
+          width="669"
+          height="373"
+          decoding="async"
         />
       </div>
 
@@ -92,6 +95,9 @@ export const Header = () => {
             src={logo50Anios}
             alt="Compas Marine 50 años"
             className="popup-image"
+            width="1476"
+            height="354"
+            decoding="async"
           />
         </div>
       )}

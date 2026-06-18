@@ -193,15 +193,7 @@ export const ViewDocumentos = () => {
             throw new Error("Tiempo de espera agotado sincronizando documentos. Intenta recargar la página.");
         }
 
-        const excludedKeywords = [
-            
-        ];
-
-        const validTypes = allTypes.filter(type => {
-          const rawName = type.name || type.label || '';
-          const normalizedName = rawName.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-          return !excludedKeywords.some(keyword => normalizedName.includes(keyword));
-        });
+        const validTypes = allTypes;
         
         const validTypeIds = validTypes.map(t => t.id?.toString());
         const validDocs = allDocs.filter(doc => validTypeIds.includes(doc.document_type_id?.toString()));
@@ -231,8 +223,20 @@ export const ViewDocumentos = () => {
     fetchAllData();
   }, []); // Cierre correcto del useEffect de carga
 
-  const activeEntityIds = [...new Set(apiData.documents.map(d => d.entity_id?.toString()))];
-  const relevantEntities = apiData.entities.filter(e => activeEntityIds.includes(e.id?.toString()));
+  const relevantEntities = useMemo(() => {
+    const activeEntityIds = new Set(apiData.documents.map(d => d.entity_id?.toString()));
+    return apiData.entities.filter(e => activeEntityIds.has(e.id?.toString()));
+  }, [apiData.documents, apiData.entities]);
+
+  const entityById = useMemo(
+    () => new Map(apiData.entities.map(entity => [entity.id?.toString(), entity])),
+    [apiData.entities]
+  );
+
+  const documentTypeById = useMemo(
+    () => new Map(apiData.documentTypes.map(type => [type.id?.toString(), type])),
+    [apiData.documentTypes]
+  );
 
   const progressMetrics = useMemo(() => {
     if (selectedEntityId === 'all') {
@@ -253,33 +257,7 @@ export const ViewDocumentos = () => {
     };
   }, [apiData.documents, selectedEntityId]);
 
-  let processedDocuments = apiData.documents.filter(doc => {
-    const docTypeId = doc.document_type_id?.toString();
-    const docEntityId = doc.entity_id?.toString();
-    const daysRemaining = getDaysRemaining(doc.expires_at);
-    
-    const typeMatch = selectedType === 'all' || docTypeId === selectedType;
-    const entityMatch = selectedEntityId === 'all' || docEntityId === selectedEntityId;
-    const signaturePending = hasPendingSignature(doc);
-    const signatureMatch = signatureFilter === 'all' || (signatureFilter === 'pending' && signaturePending);
-
-    let statusMatch = true;
-    if (statusFilter !== 'all') {
-      if (daysRemaining === null) {
-        statusMatch = statusFilter === 'valid';
-      } else if (statusFilter === 'expired') statusMatch = daysRemaining < 0;
-      else if (statusFilter === 'critical') statusMatch = daysRemaining >= 0 && daysRemaining <= 30;
-      else if (statusFilter === 'warning') statusMatch = daysRemaining > 30 && daysRemaining <= 60;
-      else if (statusFilter === 'valid') statusMatch = daysRemaining > 60;
-    }
-    
-    return typeMatch && entityMatch && signatureMatch && statusMatch;
-  });
-
-  processedDocuments.sort((a, b) => {
-    const daysA = getDaysRemaining(a.expires_at);
-    const daysB = getDaysRemaining(b.expires_at);
-
+  const processedDocuments = useMemo(() => {
     const urgencyValue = (days) => {
       if (days === null) return 10000;
       if (days < 0) return days;
@@ -287,10 +265,39 @@ export const ViewDocumentos = () => {
       return 1000 + days;
     };
 
-    return urgencyValue(daysA) - urgencyValue(daysB);
-  });
+    return apiData.documents
+      .map(doc => ({
+        doc,
+        daysRemaining: getDaysRemaining(doc.expires_at)
+      }))
+      .filter(({ doc, daysRemaining }) => {
+        const docTypeId = doc.document_type_id?.toString();
+        const docEntityId = doc.entity_id?.toString();
 
-  const documentsToRender = processedDocuments.slice(0, visibleCount);
+        const typeMatch = selectedType === 'all' || docTypeId === selectedType;
+        const entityMatch = selectedEntityId === 'all' || docEntityId === selectedEntityId;
+        const signatureMatch = signatureFilter === 'all' || hasPendingSignature(doc);
+
+        let statusMatch = true;
+        if (statusFilter !== 'all') {
+          if (daysRemaining === null) {
+            statusMatch = statusFilter === 'valid';
+          } else if (statusFilter === 'expired') statusMatch = daysRemaining < 0;
+          else if (statusFilter === 'critical') statusMatch = daysRemaining >= 0 && daysRemaining <= 30;
+          else if (statusFilter === 'warning') statusMatch = daysRemaining > 30 && daysRemaining <= 60;
+          else if (statusFilter === 'valid') statusMatch = daysRemaining > 60;
+        }
+
+        return typeMatch && entityMatch && signatureMatch && statusMatch;
+      })
+      .sort((a, b) => urgencyValue(a.daysRemaining) - urgencyValue(b.daysRemaining))
+      .map(({ doc }) => doc);
+  }, [apiData.documents, selectedType, selectedEntityId, statusFilter, signatureFilter]);
+
+  const documentsToRender = useMemo(
+    () => processedDocuments.slice(0, visibleCount),
+    [processedDocuments, visibleCount]
+  );
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
@@ -407,7 +414,14 @@ export const ViewDocumentos = () => {
           {documentsToRender.length > 0 && (
             <div className="space-y-4">
               {documentsToRender.map((doc) => (
-                <ApiDocumentCard key={doc.id} doc={doc} entities={apiData.entities} documentTypes={apiData.documentTypes} />
+                <ApiDocumentCard
+                  key={doc.id}
+                  doc={doc}
+                  entities={apiData.entities}
+                  documentTypes={apiData.documentTypes}
+                  entityById={entityById}
+                  documentTypeById={documentTypeById}
+                />
               ))}
               
               {visibleCount < processedDocuments.length && (

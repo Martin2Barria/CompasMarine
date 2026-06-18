@@ -1,21 +1,44 @@
 import { useState } from 'react';
-import { X, Hand, AlertTriangle, Clock, BellRing, Loader2 } from 'lucide-react';
-import { enablePushNotifications } from '../pwa/pushNotifications';
+import { X, Hand, AlertTriangle, Clock, BellRing, Loader2, Send } from 'lucide-react';
+import { enablePushNotifications, sendTestPushNotification } from '../pwa/pushNotifications';
+import { runCachedNotificationRules } from '../pwa/notificationRules';
 
 export const ViewNotificaciones = ({ setView }) => {
   const [notificationStatus, setNotificationStatus] = useState('idle');
   const [notificationMessage, setNotificationMessage] = useState('');
+  const [testStatus, setTestStatus] = useState('idle');
 
   const handleEnableNotifications = async () => {
     setNotificationStatus('loading');
+    setTestStatus('idle');
     setNotificationMessage('');
 
     try {
       const mode = await enablePushNotifications();
+      const summary = await runCachedNotificationRules();
       setNotificationStatus('enabled');
-      setNotificationMessage(mode === 'push' ? 'Avisos push activos.' : 'Avisos locales activos.');
+      setNotificationMessage(
+        `${mode === 'push' ? 'Avisos push activos.' : 'Avisos locales activos.'} ${
+          summary.shown > 0 ? 'Se enviaron avisos pendientes.' : 'Reglas revisadas.'
+        }`
+      );
     } catch (error) {
       setNotificationStatus('error');
+      setNotificationMessage(error.message);
+    }
+  };
+
+  const handleSendTestNotification = async () => {
+    setTestStatus('loading');
+    setNotificationStatus((currentStatus) => currentStatus === 'error' ? 'idle' : currentStatus);
+    setNotificationMessage('');
+
+    try {
+      await sendTestPushNotification();
+      setTestStatus('sent');
+      setNotificationMessage('Notificacion push de prueba enviada.');
+    } catch (error) {
+      setTestStatus('error');
       setNotificationMessage(error.message);
     }
   };
@@ -42,16 +65,30 @@ export const ViewNotificaciones = ({ setView }) => {
             </div>
             <div className="flex-1">
               <h4 className="font-bold text-gray-800 bg-white inline-block mb-2">Avisos de documentos</h4>
-              <button
-                onClick={handleEnableNotifications}
-                disabled={notificationStatus === 'loading'}
-                className="bg-[#394049] text-white text-xs px-4 py-2 rounded-full font-medium shadow hover:bg-gray-700 transition disabled:opacity-70 flex items-center"
-              >
-                {notificationStatus === 'loading' && <Loader2 className="w-3 h-3 mr-2 animate-spin" />}
-                Activar avisos
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={handleEnableNotifications}
+                  disabled={notificationStatus === 'loading'}
+                  className="bg-[#394049] text-white text-xs px-4 py-2 rounded-full font-medium shadow hover:bg-gray-700 transition disabled:opacity-70 flex items-center"
+                >
+                  {notificationStatus === 'loading' && <Loader2 className="w-3 h-3 mr-2 animate-spin" />}
+                  Activar avisos
+                </button>
+                <button
+                  onClick={handleSendTestNotification}
+                  disabled={testStatus === 'loading'}
+                  className="bg-[#921E30] text-white text-xs px-4 py-2 rounded-full font-medium shadow hover:bg-red-800 transition disabled:opacity-70 flex items-center"
+                >
+                  {testStatus === 'loading' ? (
+                    <Loader2 className="w-3 h-3 mr-2 animate-spin" />
+                  ) : (
+                    <Send className="w-3 h-3 mr-2" />
+                  )}
+                  Probar push
+                </button>
+              </div>
               {notificationMessage && (
-                <p className={`text-xs mt-3 ${notificationStatus === 'error' ? 'text-[#921E30]' : 'text-green-700'}`}>
+                <p className={`text-xs mt-3 ${notificationStatus === 'error' || testStatus === 'error' ? 'text-[#921E30]' : 'text-green-700'}`}>
                   {notificationMessage}
                 </p>
               )}

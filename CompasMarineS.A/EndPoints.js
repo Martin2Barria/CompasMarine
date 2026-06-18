@@ -1,4 +1,5 @@
-const API_BASE_URL = process.env.APP_API_BASE_URL || 'https://compasmarine-production.up.railway.app/';
+const API_BASE_URL = (process.env.APP_API_BASE_URL || 'https://compasmarine-production.up.railway.app/api')
+  .replace(/\/+$/, '');
 
 const endpoints = [
   '/controldoc/document-types',

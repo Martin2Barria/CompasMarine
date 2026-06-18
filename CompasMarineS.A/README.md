@@ -1,16 +1,57 @@
-# React + Vite
+# Compas Marine
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+PWA en React + Vite para revisar documentos, capacitaciones, firmas pendientes y notificaciones de vencimiento.
 
-Currently, two official plugins are available:
+## Desarrollo
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+npm install
+npm run dev
+```
 
-## React Compiler
+La app usa `/api` como base por defecto. En desarrollo, Vite proxya esas llamadas según `VITE_DEV_API_PROXY_TARGET` en `vite.config.js`.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Servidor
 
-## Expanding the ESLint configuration
+```bash
+npm run dev:api
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Variables importantes:
+
+```env
+CONTROLDOC_BASE_URL=
+CONTROLDOC_USER_EMAIL=
+CONTROLDOC_USER_TOKEN=
+CONTROLDOC_CUSTOMER_ID=
+CONTROLDOC_DEFAULT_ENTITY_TYPE_ID=
+```
+
+## PWA y Notificaciones
+
+Genera llaves VAPID con:
+
+```bash
+npm run vapid:keys
+```
+
+Luego configura:
+
+```env
+VAPID_SUBJECT=
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=
+```
+
+El endpoint de prueba push está apagado por defecto:
+
+```env
+ENABLE_PUSH_TEST_ENDPOINT=false
+```
+
+## Verificación
+
+```bash
+npm run lint
+npm run build
+```

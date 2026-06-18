@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Search, User, Clock, PenTool } from 'lucide-react';
 import { readControlDocSnapshot } from '../storage/controlDocOffline';
 import { getApiUrl } from '../config/api';
+import { evaluateDocumentNotificationRules } from '../pwa/notificationRules';
 
 const formatDate = (dateString) => {
   if (!dateString) return 'N/A';
@@ -37,7 +38,6 @@ export const ViewInicio = ({ setView }) => {
     const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
     const processData = (allDocs, allEntities, allTypes) => {
-<<<<<<< HEAD
       
       const getDocName = (doc) => {
         let typeName = '';
@@ -80,139 +80,21 @@ export const ViewInicio = ({ setView }) => {
       setExpiringDocs(alerts);
 
       // SALUD DOCUMENTAL
+      let nextDocPercentage = 100;
       if (userDocs.length > 0) {
         const healthyDocs = userDocs.filter(d => {
            const days = getDaysRemaining(d.expires_at);
            return days === null || days > 30;
         }).length;
-        setDocPercentage(Math.round((healthyDocs / userDocs.length) * 100));
+        nextDocPercentage = Math.round((healthyDocs / userDocs.length) * 100);
       }
-    };
+      setDocPercentage(nextDocPercentage);
 
-    const snapshot = readControlDocSnapshot();
-    if (snapshot?.data) {
-      processData(snapshot.data.documents || [], snapshot.data.entities || [], snapshot.data.documentTypes || []);
-    }
-
-    const fetchFreshData = async () => {
-      setIsSyncing(true);
-      try {
-        // 1. Polling protegido para los documentos (espera si hay 503)
-        let allDocs = [];
-        let syncSuccess = false;
-        let attempts = 0;
-
-        while (!syncSuccess && attempts < 6) {
-            const syncResponse = await fetch(getApiUrl('/controldoc/documents/sync'));
-            if (syncResponse.status === 503) {
-                console.warn("Railway ocupado. Esperando 5 segundos...");
-                await delay(5000);
-                attempts++;
-                continue;
-            }
-            if (syncResponse.ok) {
-                allDocs = await syncResponse.json();
-                syncSuccess = true;
-            } else {
-                throw new Error("Fallo al descargar documentos");
-            }
-        }
-
-        if (!syncSuccess) return; // Si después de 30 segs no pudo, se rinde y deja la caché
-
-        // 2. Traer diccionarios de Nombres y Usuarios
-        const [entitiesRes, typesRes] = await Promise.all([
-          fetch(getApiUrl('/controldoc/entities?page=1&per_page=100')),
-          fetch(getApiUrl('/controldoc/document-types?page=1&per_page=100'))
-        ]);
-
-        if (entitiesRes.ok && typesRes.ok) {
-          const rawEntities = await entitiesRes.json();
-          const rawTypes = await typesRes.json();
-          
-          const freshEntities = Array.isArray(rawEntities) ? rawEntities : (Object.keys(rawEntities).find(k => Array.isArray(rawEntities[k])) ? rawEntities[Object.keys(rawEntities).find(k => Array.isArray(rawEntities[k]))] : []);
-          const freshTypes = Array.isArray(rawTypes) ? rawTypes : (Object.keys(rawTypes).find(k => Array.isArray(rawTypes[k])) ? rawTypes[Object.keys(rawTypes).find(k => Array.isArray(rawTypes[k]))] : []);
-
-          processData(allDocs, freshEntities, freshTypes);
-        }
-      } catch (error) {
-        console.error("Error sincronizando inicio:", error);
-      } finally {
-        setIsSyncing(false);
-      }
-    };
-
-    fetchFreshData();
-  }, []);
-
-  return (
-    <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
-      <div className="bg-[#394049] p-6 flex items-center gap-4 relative overflow-hidden flex-shrink-0">
-        <div className="absolute -right-10 -top-10 w-40 h-40 bg-white opacity-5 rounded-full blur-2xl"></div>
-        <div className="w-16 h-16 rounded-full bg-white border-2 border-[#921E30] flex-shrink-0 flex items-center justify-center shadow-lg relative z-10 overflow-hidden">
-          <User className="w-8 h-8 text-gray-300 mt-2" />
-        </div>
-        <div className="relative z-10 flex-1">
-          <p className="text-white text-xs font-bold tracking-wider mb-1 uppercase">Bienvenido</p>
-          <h2 className="text-white text-2xl font-semibold tracking-wide">{displayName}</h2>
-        </div>
-        
-        <div className="relative z-10 flex flex-col items-center justify-center ml-auto">
-          <div className="w-12 h-12 rounded-full border-4 flex items-center justify-center shadow-md bg-[#2A3037]" 
-               style={{ borderColor: docPercentage >= 80 ? '#22c55e' : docPercentage >= 50 ? '#B8860B' : '#FF0000' }}>
-            <span className="text-white text-sm font-bold">{docPercentage}%</span>
-          </div>
-          <span className="text-white text-[9px] mt-1 uppercase font-bold tracking-wider">Al día</span>
-=======
-      
-      const getDocName = (doc) => {
-        let typeName = '';
-        if (allTypes && allTypes.length > 0) {
-          const type = allTypes.find(t => t.id?.toString() === doc.document_type_id?.toString());
-          if (type) typeName = type.name || type.label || '';
-        }
-        const docLabel = doc.label || '';
-        const combinedName = `${typeName} ${docLabel}`.trim();
-        return combinedName !== '' ? combinedName : 'Documento sin nombre';
-      };
-
-      if (currentEntityId && allEntities) {
-        const entity = allEntities.find((e) => e.id?.toString() === currentEntityId.toString());
-        if (entity) setCurrentEntityName(entity.full_name || entity.name || entity.email);
-      }
-
-      const userDocs = currentEntityId 
-        ? allDocs.filter((doc) => doc.entity_id?.toString() === currentEntityId.toString())
-        : allDocs;
-
-      // FIRMAS PENDIENTES (Usa require_signers)
-      const signatures = allDocs
-        .filter(doc => doc.require_signers === true || doc.aasm_state === 'pending')
-        .map(doc => ({ ...doc, displayName: getDocName(doc) }));
-      
-      setPendingSignatures(signatures);
-
-      // ALERTAS CRÍTICAS DEL USUARIO
-      const alerts = userDocs
-        .map(doc => ({ 
-          ...doc, 
-          daysRemaining: getDaysRemaining(doc.expires_at),
-          displayName: getDocName(doc) 
-        }))
-        .filter(doc => doc.daysRemaining !== null && doc.daysRemaining <= 60) 
-        .sort((a, b) => a.daysRemaining - b.daysRemaining) 
-        .slice(0, 5); 
-
-      setExpiringDocs(alerts);
-
-      // SALUD DOCUMENTAL
-      if (userDocs.length > 0) {
-        const healthyDocs = userDocs.filter(d => {
-           const days = getDaysRemaining(d.expires_at);
-           return days === null || days > 30;
-        }).length;
-        setDocPercentage(Math.round((healthyDocs / userDocs.length) * 100));
-      }
+      void evaluateDocumentNotificationRules({
+        documents: userDocs,
+        documentTypes: allTypes || [],
+        percentage: nextDocPercentage
+      });
     };
 
     const snapshot = readControlDocSnapshot();
@@ -310,21 +192,8 @@ export const ViewInicio = ({ setView }) => {
             <Search className="w-5 h-5 absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400" />
             <input type="text" placeholder="Buscar alertas..." className="w-full bg-transparent py-4 pl-12 pr-4 focus:outline-none text-sm" />
           </div>
->>>>>>> Diseño
         </div>
 
-<<<<<<< HEAD
-      <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
-        
-        <div className="p-6 pb-2">
-          <div className="relative bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
-            <Search className="w-5 h-5 absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400" />
-            <input type="text" placeholder="Buscar alertas..." className="w-full bg-transparent py-4 pl-12 pr-4 focus:outline-none text-sm" />
-          </div>
-        </div>
-
-=======
->>>>>>> Diseño
         <div className="px-6 pt-4 pb-2 flex justify-between items-end">
           <h3 className="font-bold text-[#394049] text-lg border-b-2 border-[#921E30] pb-1">Mis Firmas Pendientes</h3>
           <button onClick={() => setView('firmas')} className="text-xs font-semibold text-[#921E30]">Ver todas</button>

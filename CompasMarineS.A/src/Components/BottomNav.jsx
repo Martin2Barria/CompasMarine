@@ -1,4 +1,3 @@
-import React from 'react';
 import { Home, GraduationCap, FolderOpen, Bell } from 'lucide-react';
 
 export const BottomNav = ({ currentView, setCurrentView }) => {

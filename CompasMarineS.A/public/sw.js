@@ -86,7 +86,7 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const targetUrl = event.notification.data?.url || '/';
+  const targetUrl = normalizeNotificationUrl(event.notification.data?.url);
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
@@ -100,3 +100,17 @@ self.addEventListener('notificationclick', (event) => {
     })
   );
 });
+
+function normalizeNotificationUrl(value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) {
+    return '/';
+  }
+
+  try {
+    const url = new URL(value, self.location.origin);
+    if (url.origin !== self.location.origin) return '/';
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return '/';
+  }
+}

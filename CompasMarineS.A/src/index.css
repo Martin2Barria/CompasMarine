@@ -115,14 +115,6 @@
   box-shadow: 0 2px 20px rgba(0, 0, 0, 0.45);
 }
 
-.dark .header-logo-title {
-  color: #921E30;
-}
-
-.dark .header-logo-subtitle {
-  color: #ffffff;
-}
-
 .dark .header-theme-button {
   background: rgba(148, 163, 184, 0.14);
   border-color: rgba(148, 163, 184, 0.3);
@@ -138,39 +130,10 @@
   color: #f8fafc;
 }
 
-.dark .passport-card {
-  background: #111827;
-  border-color: #1f2937;
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.2);
-}
-
-.dark .passport-card-bg {
-  background: rgba(0, 0, 0, 0.08);
-}
-
-.dark .passport-card-title h3,
-.dark .passport-card-dates p,
-.dark .passport-card-dates span.value {
-  color: #e2e8f0;
-}
-
-.dark .passport-days-circle {
-  background: #1f2937; /* un gris oscuro */
-  color: #f8fafc;      /* texto claro */
-  border-color: #630000;
-}
-
-.dark .passport-days-glow {
-  background: rgba(59, 130, 246, 0.25); /* un azul tenue translúcido */
-  box-shadow: 0 0 20px rgba(59, 130, 246, 0.35); /* glow más oscuro */
-}
-/*cambios del dia sabado*/
 .dark .text-\[\#394049\] {
   color: #f8fafc !important;
 }
 
-/* Solución para las tarjetas de firmas en modo oscuro */
-/* Solución para las tarjetas de firmas en modo oscuro */
 .dark .bg-red-50 {
   background-color: #1e1b1b !important; /* Un rojo/marrón muy oscuro de fondo */
 }
@@ -183,185 +146,8 @@
   color: #94a3b8 !important; /* Asegura que el subtítulo sea gris claro legible */
 }
 
-.dark .border-red-100 {
-  border-color: #4c1d1d !important; /* Borde rojizo oscuro */
-}
-
-.dark .text-gray-500 {
-  color: #94a3b8 !important; /* Asegura que el subtítulo sea gris claro legible */
-}
-
-/* ── PassportCard ── */
-/*le da un forma simple a a el passapordcard*/
-.passport-card {
-  background: white;
-  border-radius: 1rem;
-  padding: 1.25rem;
-  position: relative;
-  overflow: hidden;
-  box-shadow: 0 1px 3px rgba(122, 10, 10, 0.06);
-  border: 1px solid #f3f4f6;
-  transition: all 0.2s ease;
-}
-
-.passport-card-bg {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 8rem;
-  height: 8rem;
-  background: #f9fafb;
-  border-bottom-left-radius: 100%;
-  z-index: 0;
-}
-
-.passport-card-body {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  position: relative;
-  z-index: 1;
-}
-
-.passport-card-info {
-  flex: 1;
-  padding-right: 1rem;
-}
-
-.passport-card-title {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
-}
-
-.passport-card-title-icon {
-  width: 20px;
-  height: 20px;
-  color: #921E30;
-}
-
-.passport-card-title h3 {
-  font-weight: 700;
-  color: #394049;
-  font-size: 1.1rem;
-  line-height: 1;
-}
-
-.passport-card-dates {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.passport-card-dates p {
-  font-size: 0.75rem;
-  color: #6b7280;
-  display: flex;
-  justify-content: space-between;
-}
-
-.passport-card-dates span.value {
-  font-weight: 500;
-  color: #374151;
-}
-
-.passport-status {
-  font-size: 0.7rem;
-  font-weight: 700;
-  margin-top: 0.75rem;
-  display: inline-block;
-  padding: 0.25rem 0.5rem;
-  border-radius: 0.25rem;
-  border: 1px solid;
-}
-
-/* Status: vigente */
-.status-ok {
-  background: #f0fdf4;
-  color: #15803d;
-  border-color: #bbf7d0;
-}
-
-/* Status: próximo a vencer */
-.status-warning {
-  background: #fefce8;
-  color: #a16207;
-  border-color: #fef08a;
-}
-
-/* Status: expirado */
-.status-expired {
-  background: #fff1f2;
-  color: #921E30;
-  border-color: #fecdd3;
-}
-
-/* ── Círculo de días ── */
-.passport-days-wrapper {
-  position: relative;
-  flex-shrink: 0;
-}
-
-.passport-days-glow {
-  position: absolute;
-  inset: 0;
-  border-radius: 9999px;
-  filter: blur(8px);
-  opacity: 0.2;
-}
-
-.passport-days-circle {
-  width: 5rem;
-  height: 5rem;
-  border-radius: 9999px;
-  border: 4px solid;
-  background: white;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 0.25rem;
-  position: relative;
-  z-index: 1;
-  box-shadow: inset 0 2px 4px rgba(182, 9, 9, 0.06);
-}
-
-.passport-days-number {
-  font-weight: 900;
-  font-size: 1.5rem;
-  line-height: 1;
-  letter-spacing: -0.05em;
-}
-
-.passport-days-label {
-  font-size: 9px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #6b7280;
-  margin-top: 4px;
-  line-height: 1.2;
-  text-align: center;
-}
-
-/* Colores por estado — círculo */
-.days-ok   { border-color: #22c55e; color: #16a34a; }
-.days-ok   .passport-days-glow { background: #22c55e; }
-
-.days-warn { border-color: #facc15; color: #ca8a04; }
-.days-warn .passport-days-glow { background: #facc15; }
-
-.days-exp  { border-color: #921E30; color: #921E30; }
-.days-exp  .passport-days-glow { background: #921E30; }
-
 /*notificacion de logo*/
 
-@keyframes overlayIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
 @keyframes overlayOut {
   from { opacity: 1; }
   to   { opacity: 0; }
@@ -450,46 +236,6 @@
   display: flex;
   flex-direction: column;
 }
-
-/* ==========================================================================
-   Cabecera e Identidad (Rosa de los vientos)
-   ========================================================================== */
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  align-self: flex-start;
-  background: #f0fdf4;
-  color: #16a34a;
-  padding: 0.3rem 0.6rem;
-  border-radius: 1rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  margin-bottom: 1.25rem;
-  border: 1px solid #bbf7d0;
-}
-
-.status-badge .dot {
-  width: 6px;
-  height: 6px;
-  background-color: #16a34a;
-  border-radius: 50%;
-}
-
-.card-heading {
-  font-size: 1.6rem;
-  font-weight: 700;
-  color: #111827;
-  margin: 0 0 0.25rem 0;
-}
-
-.card-sub {
-  font-size: 0.85rem;
-  color: #6b7280;
-  margin: 0 0 1.75rem 0;
-}
-
-
 
 form {
   position: relative;

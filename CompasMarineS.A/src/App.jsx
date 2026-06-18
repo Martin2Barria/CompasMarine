@@ -6,6 +6,7 @@ import { BottomNav } from './Components/BottomNav';
 import { Login } from './Components/login';
 import { Registro } from './Components/registro'; // ← Nueva importación
 import { OlvidastePassword } from './Components/olvidastePassword'; // ← Nueva importación
+import { PwaInstallPrompt } from './Components/PwaInstallPrompt';
 
 // Importaciones de Vistas
 import { ViewInicio } from './Views/ViewInicio';
@@ -41,6 +42,7 @@ export default function App() {
             <OlvidastePassword onNavigate={setAuthScreen} />
           )}
 
+          <PwaInstallPrompt className="absolute left-4 right-4 bottom-4" />
         </div>
       </div>
     );
@@ -59,6 +61,7 @@ export default function App() {
         {currentView === 'notificaciones' && <ViewNotificaciones setView={setCurrentView} />}
 
         <BottomNav currentView={currentView} setCurrentView={setCurrentView} />
+        <PwaInstallPrompt className="absolute left-4 right-4 bottom-24" />
 
       </div>
     </div>

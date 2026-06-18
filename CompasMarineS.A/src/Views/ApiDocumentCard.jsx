@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { FileText, User, Tag, Download, AlertCircle, PenTool } from 'lucide-react';
 
 const hasPendingSignature = (doc) => {
@@ -55,16 +56,17 @@ const hasPendingSignature = (doc) => {
   });
 };
 
-export const ApiDocumentCard = ({ doc, entities, documentTypes }) => {
-  const entity = entities.find(e => e.id?.toString() === doc.entity_id?.toString());
-  const docType = documentTypes.find(t => t.id?.toString() === doc.document_type_id?.toString());
+export const ApiDocumentCard = memo(({ doc, entities, documentTypes, entityById, documentTypeById }) => {
+  const entity = entityById?.get(doc.entity_id?.toString())
+    || entities.find(e => e.id?.toString() === doc.entity_id?.toString());
+  const docType = documentTypeById?.get(doc.document_type_id?.toString())
+    || documentTypes.find(t => t.id?.toString() === doc.document_type_id?.toString());
   
   const entityName = entity?.full_name || entity?.name || entity?.label || entity?.email || doc.entity_id;
   const typeName = docType?.name || docType?.label || docType?.id || doc.document_type_id;
 
   let status = { text: 'Vigente', days: '--', bgClass: 'bg-green-50 text-green-700 border-green-200', borderClass: 'border-green-500', textClass: 'text-green-600', glowClass: 'bg-green-500' };
-  let isBlocked = doc.aasm_state === 'blocked';
-  isBlocked = false; 
+  const isBlocked = false;
   const pendingSignature = hasPendingSignature(doc);
 
   if (doc.expires_at) {
@@ -166,4 +168,6 @@ export const ApiDocumentCard = ({ doc, entities, documentTypes }) => {
       </div>
     </div>
   );
-};
+});
+
+ApiDocumentCard.displayName = 'ApiDocumentCard';

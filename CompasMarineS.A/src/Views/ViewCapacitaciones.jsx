@@ -36,7 +36,6 @@ export const ViewCapacitaciones = () => {
   const [progressInfo, setProgressInfo] = useState('');
   
   const [selectedEntityId, setSelectedEntityId] = useState('all');
-  const [selectedCapacitacion, setSelectedCapacitacion] = useState('all');
 
   const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -81,7 +80,7 @@ export const ViewCapacitaciones = () => {
               page++;
               await delay(200);
             }
-          } catch (e) {
+          } catch {
             hadFetchError = true; hasMore = false;
           }
         }
@@ -115,7 +114,7 @@ export const ViewCapacitaciones = () => {
             } else {
               throw new Error();
             }
-          } catch (err) {
+          } catch {
             await delay(2000);
             attempts++;
           }
@@ -128,7 +127,7 @@ export const ViewCapacitaciones = () => {
           setApiData(nextData);
           if (!hadFetchError) saveControlDocSnapshot(nextData);
         }
-      } catch (err) {
+      } catch {
         showCached();
       } finally {
         setIsLoading(false);
@@ -140,16 +139,20 @@ export const ViewCapacitaciones = () => {
 
   const { relevantEntities, processedCapacitaciones, progressMetrics } = useMemo(() => {
     const entities = apiData.entities || [];
+    const userDocs = selectedEntityId === 'all'
+      ? []
+      : apiData.documents.filter(d => d.entity_id?.toString() === selectedEntityId);
+    const documentTypesById = new Map(
+      apiData.documentTypes.map(type => [type.id?.toString(), type])
+    );
     let completedCount = 0;
     
-    let processed = baseCapacitaciones.map(cap => {
+    const processed = baseCapacitaciones.map(cap => {
       let matchedDoc = null;
 
       if (selectedEntityId !== 'all') {
-        const userDocs = apiData.documents.filter(d => d.entity_id?.toString() === selectedEntityId);
-        
         matchedDoc = userDocs.find(doc => {
-          const type = apiData.documentTypes.find(t => t.id?.toString() === doc.document_type_id?.toString());
+          const type = documentTypesById.get(doc.document_type_id?.toString());
           const typeName = type ? (type.name || type.label || '') : '';
           const docLabel = doc.label || '';
           const combinedText = `${typeName} ${docLabel}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -163,10 +166,6 @@ export const ViewCapacitaciones = () => {
       return { ...cap, doc: matchedDoc };
     });
 
-    if (selectedCapacitacion !== 'all') {
-      processed = processed.filter(c => c.id === selectedCapacitacion);
-    }
-
     const percentage = Math.round((completedCount / baseCapacitaciones.length) * 100) || 0;
 
     return { 
@@ -174,7 +173,7 @@ export const ViewCapacitaciones = () => {
       processedCapacitaciones: processed,
       progressMetrics: { count: completedCount, total: baseCapacitaciones.length, percentage }
     };
-  }, [apiData, selectedEntityId, selectedCapacitacion]);
+  }, [apiData, selectedEntityId]);
 
   const getDocStatus = (doc) => {
     if (!doc) return { label: 'Sin subir', color: 'bg-gray-100 text-gray-500', icon: Clock };
@@ -224,7 +223,7 @@ export const ViewCapacitaciones = () => {
         )}
 
         <div className="bg-white rounded-xl p-4 mb-6 border border-gray-200 shadow-sm">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4">
             <div>
               <label className="block text-xs font-bold text-gray-500 mb-1.5 uppercase">Trabajador</label>
               <select
@@ -237,19 +236,6 @@ export const ViewCapacitaciones = () => {
                   <option key={entity.id} value={entity.id?.toString()}>
                     {entity.full_name || entity.name || entity.email}
                   </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-500 mb-1.5 uppercase">Ver curso en específico</label>
-              <select
-                value={selectedCapacitacion}
-                onChange={(e) => setSelectedCapacitacion(e.target.value)}
-                className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white truncate font-medium"
-              >
-                <option value="all">Ver catálogo completo</option>
-                {baseCapacitaciones.map(item => (
-                  <option key={item.id} value={item.id}>{item.title}</option>
                 ))}
               </select>
             </div>

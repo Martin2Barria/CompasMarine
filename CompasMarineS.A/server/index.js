@@ -3,11 +3,13 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import bcrypt from 'bcryptjs';
+import webPush from 'web-push';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const appRoot = resolve(__dirname, '..');
 const distDir = resolve(appRoot, 'dist');
 const usersStorePath = resolve(appRoot, 'server', 'users.json');
+const notificationsStorePath = resolve(appRoot, 'server', 'notifications.json');
 
 loadEnvFiles([
   '.env.server.local',
@@ -28,7 +30,22 @@ const controlDocRoutes = new Map([
   ['/api/controldoc/documents', '/api/v1/abstract/documents']
 ]);
 
-const pushSubscriptions = new Map();
+configureWebPush();
+
+const notificationStore = loadNotificationsStore();
+const pushSubscriptions = new Map(
+  notificationStore.subscriptions.map((record) => [record.endpoint, record])
+);
+const configuredAllowedOrigins = parseOriginList(process.env.APP_ALLOWED_ORIGINS);
+const pushTestEndpointEnabled = process.env.ENABLE_PUSH_TEST_ENDPOINT === 'true';
+const rateLimitBuckets = new Map();
+
+const MAX_NOTIFICATION_TITLE_LENGTH = 80;
+const MAX_NOTIFICATION_BODY_LENGTH = 180;
+const securityHeaders = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'same-origin'
+};
 
 // --- VARIABLES GLOBALES DE CACHÉ PARA SINCRONIZACIÓN MASIVA ---
 let documentsSyncCache = null;
@@ -71,12 +88,20 @@ const server = createServer(async (req, res) => {
     }
 
     if (requestUrl.pathname === '/api/notifications/vapid-public-key') {
-      sendJson(res, 200, { publicKey: process.env.VAPID_PUBLIC_KEY || null });
+      sendJson(res, 200, {
+        publicKey: process.env.VAPID_PUBLIC_KEY || null,
+        ready: hasVapidConfig()
+      });
       return;
     }
 
     if (requestUrl.pathname === '/api/notifications/subscriptions') {
       await handlePushSubscription(req, res);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/notifications/test') {
+      await handlePushTest(req, res);
       return;
     }
 
@@ -218,9 +243,7 @@ async function proxyControlDocRequest(req, res, requestUrl) {
   }
 
   const upstreamUrl = new URL(upstreamPath, controlDocBaseUrl);
-  requestUrl.searchParams.forEach((value, key) => {
-    upstreamUrl.searchParams.append(key, value);
-  });
+  appendSafeControlDocQueryParams(requestUrl.searchParams, upstreamUrl.searchParams);
 
   const headers = {
     'Content-Type': 'application/json',
@@ -242,6 +265,7 @@ async function proxyControlDocRequest(req, res, requestUrl) {
 
   const body = Buffer.from(await upstreamResponse.arrayBuffer());
   res.writeHead(upstreamResponse.status, {
+    ...securityHeaders,
     'Content-Type': upstreamResponse.headers.get('content-type') || 'application/json; charset=utf-8',
     'Cache-Control': 'no-store'
   });
@@ -296,9 +320,43 @@ function normalizeCredentialProfile(profile) {
   };
 }
 
+function appendSafeControlDocQueryParams(sourceParams, targetParams) {
+  const allowedQueryKeys = new Set(['page', 'per_page', 'q', 'query', 'search']);
+
+  sourceParams.forEach((value, key) => {
+    if (!allowedQueryKeys.has(key)) return;
+
+    if (key === 'page') {
+      const page = clampInteger(value, 1, 500);
+      targetParams.set(key, String(page));
+      return;
+    }
+
+    if (key === 'per_page') {
+      const perPage = clampInteger(value, 1, 100);
+      targetParams.set(key, String(perPage));
+      return;
+    }
+
+    const safeValue = stripControlCharacters(value).trim().slice(0, 120);
+    if (safeValue) targetParams.set(key, safeValue);
+  });
+}
+
+function clampInteger(value, min, max) {
+  const number = Number.parseInt(value, 10);
+  if (!Number.isFinite(number)) return min;
+  return Math.min(max, Math.max(min, number));
+}
+
 async function handlePushSubscription(req, res) {
+  if (!requireSameOriginRequest(req, res)) return;
+
   if (req.method === 'GET') {
-    sendJson(res, 200, { count: pushSubscriptions.size });
+    sendJson(res, 200, {
+      count: pushSubscriptions.size,
+      pushReady: hasVapidConfig()
+    });
     return;
   }
 
@@ -307,28 +365,361 @@ async function handlePushSubscription(req, res) {
     return;
   }
 
+  if (!requireJsonRequest(req, res)) return;
+  if (!consumeRateLimit(req, res, 'push-subscription', 20, 15 * 60 * 1000)) return;
+
   const rawBody = await readRequestBody(req);
-  let subscription;
+  let payload;
 
   try {
-    subscription = JSON.parse(rawBody || '{}');
+    payload = JSON.parse(rawBody || '{}');
   } catch {
     sendJson(res, 400, { error: 'Invalid JSON body' });
     return;
   }
 
-  if (!subscription.endpoint) {
+  const subscription = payload.subscription || payload;
+  const safeSubscription = normalizePushSubscription(subscription);
+
+  if (!safeSubscription) {
     sendJson(res, 400, { error: 'Invalid push subscription' });
     return;
   }
 
-  pushSubscriptions.set(subscription.endpoint, subscription);
+  const userId = resolveNotificationUserId(req);
+  const record = {
+    userId,
+    endpoint: safeSubscription.endpoint,
+    subscription: safeSubscription,
+    createdAt: pushSubscriptions.get(safeSubscription.endpoint)?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  pushSubscriptions.set(safeSubscription.endpoint, record);
+  saveNotificationsStore();
 
   sendJson(res, 202, {
     ok: true,
+    userId,
     count: pushSubscriptions.size,
-    message: 'Subscription stored. Configure a push sender with VAPID keys before production delivery.'
+    pushReady: hasVapidConfig(),
+    message: hasVapidConfig()
+      ? 'Subscription stored.'
+      : 'Subscription stored. Configure VAPID keys before production push delivery.'
   });
+}
+
+async function handlePushTest(req, res) {
+  if (!pushTestEndpointEnabled) {
+    sendJson(res, 404, { error: 'API route not found' });
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'Method not allowed' });
+    return;
+  }
+
+  if (!requireSameOriginRequest(req, res)) return;
+  if (!requireJsonRequest(req, res)) return;
+  if (!consumeRateLimit(req, res, 'push-test', 5, 10 * 60 * 1000)) return;
+
+  let payload;
+  const rawBody = await readRequestBody(req);
+
+  try {
+    payload = JSON.parse(rawBody || '{}');
+  } catch {
+    sendJson(res, 400, { error: 'Invalid JSON body' });
+    return;
+  }
+
+  const userId = resolveNotificationUserId(req);
+  const result = await sendPushToUser(userId, normalizeNotificationPayload(payload));
+
+  sendJson(res, result.sent > 0 ? 202 : 200, {
+    ok: result.sent > 0,
+    userId,
+    ...result
+  });
+}
+
+async function sendPushToUser(userId, payload) {
+  if (!hasVapidConfig()) {
+    return {
+      sent: 0,
+      failed: 0,
+      reason: 'VAPID keys are not configured.'
+    };
+  }
+
+  const records = [...pushSubscriptions.values()].filter((record) => record.userId === userId);
+
+  if (records.length === 0) {
+    return {
+      sent: 0,
+      failed: 0,
+      reason: 'No push subscriptions for this user.'
+    };
+  }
+
+  let sent = 0;
+  let failed = 0;
+  let removed = 0;
+
+  await Promise.all(records.map(async (record) => {
+    try {
+      await webPush.sendNotification(record.subscription, JSON.stringify(payload));
+      sent += 1;
+    } catch (error) {
+      failed += 1;
+
+      if (error.statusCode === 404 || error.statusCode === 410) {
+        pushSubscriptions.delete(record.endpoint);
+        removed += 1;
+      } else {
+        console.warn('Push delivery failed:', error.message);
+      }
+    }
+  }));
+
+  if (removed > 0) saveNotificationsStore();
+
+  return {
+    sent,
+    failed,
+    removed
+  };
+}
+
+function configureWebPush() {
+  if (!hasVapidConfig()) return;
+
+  webPush.setVapidDetails(
+    process.env.VAPID_SUBJECT || 'mailto:soporte@compasmarine.cl',
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY
+  );
+}
+
+function hasVapidConfig() {
+  return Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+}
+
+function resolveNotificationUserId(req) {
+  return getCookie(req, 'compas_user_id') || process.env.CONTROLDOC_DEFAULT_USER_ID || 'demo';
+}
+
+function normalizePushSubscription(subscription) {
+  if (!subscription || typeof subscription !== 'object') return null;
+  if (typeof subscription.endpoint !== 'string' || subscription.endpoint.length > 2048) return null;
+
+  let endpointUrl;
+  try {
+    endpointUrl = new URL(subscription.endpoint);
+  } catch {
+    return null;
+  }
+
+  if (endpointUrl.protocol !== 'https:') return null;
+
+  const keys = subscription.keys || {};
+  if (!isReasonablePushKey(keys.p256dh, 40, 512)) return null;
+  if (!isReasonablePushKey(keys.auth, 8, 256)) return null;
+
+  return {
+    endpoint: endpointUrl.toString(),
+    expirationTime: typeof subscription.expirationTime === 'number' ? subscription.expirationTime : null,
+    keys: {
+      p256dh: keys.p256dh,
+      auth: keys.auth
+    }
+  };
+}
+
+function isReasonablePushKey(value, minLength, maxLength) {
+  return typeof value === 'string' && value.length >= minLength && value.length <= maxLength;
+}
+
+function normalizeNotificationPayload(payload = {}) {
+  return {
+    title: cleanNotificationText(payload.title, 'Compas Marine', MAX_NOTIFICATION_TITLE_LENGTH),
+    body: cleanNotificationText(
+      payload.body,
+      'Notificacion push de prueba enviada desde el servidor.',
+      MAX_NOTIFICATION_BODY_LENGTH
+    ),
+    url: normalizeNotificationUrl(payload.url)
+  };
+}
+
+function cleanNotificationText(value, fallback, maxLength) {
+  if (typeof value !== 'string') return fallback;
+
+  const cleanValue = value
+    .split('')
+    .map((character) => isControlCharacter(character) ? ' ' : character)
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return cleanValue ? cleanValue.slice(0, maxLength) : fallback;
+}
+
+function normalizeNotificationUrl(value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) {
+    return '/notificaciones';
+  }
+
+  try {
+    const url = new URL(value, 'https://app.local');
+    if (url.origin !== 'https://app.local') return '/notificaciones';
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return '/notificaciones';
+  }
+}
+
+function requireSameOriginRequest(req, res) {
+  if (isAllowedRequestOrigin(req)) return true;
+
+  sendJson(res, 403, { error: 'Forbidden origin' });
+  return false;
+}
+
+function isAllowedRequestOrigin(req) {
+  const requestOrigin = getRequestOrigin(req);
+  if (!requestOrigin) {
+    return process.env.NODE_ENV !== 'production';
+  }
+
+  return getAllowedOriginsForRequest(req).has(requestOrigin);
+}
+
+function getRequestOrigin(req) {
+  if (typeof req.headers.origin === 'string') {
+    return req.headers.origin;
+  }
+
+  if (typeof req.headers.referer === 'string') {
+    try {
+      return new URL(req.headers.referer).origin;
+    } catch {
+      return '';
+    }
+  }
+
+  return '';
+}
+
+function getAllowedOriginsForRequest(req) {
+  const allowedOrigins = new Set(configuredAllowedOrigins);
+  const requestHost = req.headers['x-forwarded-host'] || req.headers.host;
+
+  if (requestHost) {
+    const forwardedProto = req.headers['x-forwarded-proto'];
+    const protocol = typeof forwardedProto === 'string' ? forwardedProto.split(',')[0].trim() : 'https';
+    allowedOrigins.add(`${protocol}://${requestHost}`);
+    allowedOrigins.add(`https://${requestHost}`);
+    allowedOrigins.add(`http://${requestHost}`);
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    allowedOrigins.add('http://localhost:5173');
+    allowedOrigins.add('http://127.0.0.1:5173');
+  }
+
+  return allowedOrigins;
+}
+
+function parseOriginList(value = '') {
+  return value
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
+function requireJsonRequest(req, res) {
+  const contentType = req.headers['content-type'] || '';
+  if (contentType.toLowerCase().includes('application/json')) return true;
+
+  sendJson(res, 415, { error: 'Content-Type must be application/json' });
+  return false;
+}
+
+function consumeRateLimit(req, res, bucketName, limit, windowMs) {
+  const now = Date.now();
+  const key = `${bucketName}:${getClientIp(req)}`;
+  const bucket = rateLimitBuckets.get(key);
+
+  if (!bucket || bucket.resetAt <= now) {
+    rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+
+  if (bucket.count >= limit) {
+    res.writeHead(429, {
+      ...securityHeaders,
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Retry-After': String(Math.ceil((bucket.resetAt - now) / 1000))
+    });
+    res.end(JSON.stringify({ error: 'Too many requests' }));
+    return false;
+  }
+
+  bucket.count += 1;
+  return true;
+}
+
+function getClientIp(req) {
+  const forwardedFor = req.headers['x-forwarded-for'];
+  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
+    return forwardedFor.split(',')[0].trim();
+  }
+
+  return req.socket.remoteAddress || 'unknown';
+}
+
+function stripControlCharacters(value) {
+  return value
+    .split('')
+    .filter((character) => !isControlCharacter(character))
+    .join('');
+}
+
+function isControlCharacter(character) {
+  const code = character.charCodeAt(0);
+  return code <= 31 || code === 127;
+}
+
+function loadNotificationsStore() {
+  if (!existsSync(notificationsStorePath)) {
+    return {
+      subscriptions: []
+    };
+  }
+
+  try {
+    const fileContent = readFileSync(notificationsStorePath, 'utf8');
+    const parsed = JSON.parse(fileContent);
+
+    return {
+      subscriptions: Array.isArray(parsed.subscriptions) ? parsed.subscriptions : []
+    };
+  } catch {
+    return {
+      subscriptions: []
+    };
+  }
+}
+
+function saveNotificationsStore() {
+  const nextStore = {
+    subscriptions: [...pushSubscriptions.values()]
+  };
+
+  writeFileSync(notificationsStorePath, JSON.stringify(nextStore, null, 2), 'utf8');
 }
 
 async function handleRegister(req, res) {
@@ -493,6 +884,7 @@ function serveStaticFile(res, requestUrl) {
 
   const ext = extname(filePath);
   res.writeHead(200, {
+    ...securityHeaders,
     'Content-Type': mimeTypes[ext] || 'application/octet-stream',
     'Cache-Control': ext === '.html' ? 'no-store' : 'public, max-age=31536000, immutable'
   });
@@ -501,6 +893,7 @@ function serveStaticFile(res, requestUrl) {
 
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
+    ...securityHeaders,
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store'
   });

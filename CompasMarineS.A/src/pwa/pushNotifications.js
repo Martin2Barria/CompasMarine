@@ -16,7 +16,8 @@ export async function enablePushNotifications() {
   const { publicKey } = await publicKeyResponse.json();
 
   if (!publicKey) {
-    new Notification('Compas Marine', {
+    await showAppNotification({
+      title: 'Compas Marine',
       body: 'Notificaciones locales activadas.'
     });
     return 'local';
@@ -39,10 +40,62 @@ export async function enablePushNotifications() {
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(subscription)
+    body: JSON.stringify({ subscription })
   });
 
   return 'push';
+}
+
+export async function showAppNotification({ title, body, url = '/', tag }) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') {
+    return false;
+  }
+
+  const options = {
+    body,
+    icon: '/pwa-icon.svg',
+    badge: '/pwa-icon.svg',
+    tag,
+    data: { url }
+  };
+
+  if ('serviceWorker' in navigator) {
+    const registration = await navigator.serviceWorker.getRegistration();
+    if (registration) {
+      await registration.showNotification(title, options);
+      return true;
+    }
+  }
+
+  try {
+    new Notification(title, options);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function sendTestPushNotification() {
+  const response = await fetch(getApiUrl('/notifications/test'), {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({})
+  });
+
+  const payload = await response.json();
+
+  if (response.status === 404) {
+    throw new Error('El endpoint de prueba push esta desactivado en el backend.');
+  }
+
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.reason || payload.error || 'No se pudo enviar la notificación de prueba.');
+  }
+
+  return payload;
 }
 
 function urlBase64ToUint8Array(base64String) {
