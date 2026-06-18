@@ -27,35 +27,22 @@
   border-bottom: 1px solid #f3f4f6;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
+/* 1. Aseguramos el tamaño y proporción del logo */
+.header-logo-img {
+  height: 85px;         /* Controla el alto exacto del logo para que no se vea gigante */
+  width: auto;          /* Mantiene la proporción original para que no se deforme */
+  object-fit: contain;  /* Evita recortes extraños en la imagen */
+  display: block;
+}
 
+/* 2. Limpieza del contenedor del logo */
 .header-logo {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  /* Eliminamos márgenes innecesarios si existían */
 }
 
 
-.header-logo-text {
-  display: flex;
-  flex-direction: column;
-  line-height: 1;
-  gap: 2px;
-}
-
-.header-logo-title {
-  font-weight: 800;
-  color: #921E30;
-  font-size: 1.8rem;
-  letter-spacing: -0.02em;
-}
-
-.header-logo-subtitle {
-  font-size: 1.2rem;
-  color: #394049;
-  font-weight: 600;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-}
 
 .header-theme-button {
   display: inline-flex;
@@ -180,6 +167,28 @@
 /*cambios del dia sabado*/
 .dark .text-\[\#394049\] {
   color: #f8fafc !important;
+}
+
+/* Solución para las tarjetas de firmas en modo oscuro */
+/* Solución para las tarjetas de firmas en modo oscuro */
+.dark .bg-red-50 {
+  background-color: #1e1b1b !important; /* Un rojo/marrón muy oscuro de fondo */
+}
+
+.dark .border-red-100 {
+  border-color: #4c1d1d !important; /* Borde rojizo oscuro */
+}
+
+.dark .text-gray-500 {
+  color: #94a3b8 !important; /* Asegura que el subtítulo sea gris claro legible */
+}
+
+.dark .border-red-100 {
+  border-color: #4c1d1d !important; /* Borde rojizo oscuro */
+}
+
+.dark .text-gray-500 {
+  color: #94a3b8 !important; /* Asegura que el subtítulo sea gris claro legible */
 }
 
 /* ── PassportCard ── */
