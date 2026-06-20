@@ -24,7 +24,6 @@ const controlDocBaseUrl = trimTrailingSlash(
   process.env.CONTROLDOC_BASE_URL || 'https://compliance.controldoc.legal'
 );
 
-// --- CONEXIÓN MYSQL RAILWAY ---
 const dbPool = mysql.createPool(
   process.env.DATABASE_URL || 'mysql://root:sGffPxtAzleDJNlqVXzsHNirJmqztYuC@thomas.proxy.rlwy.net:59617/railway'
 );
@@ -108,12 +107,10 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    // --- NUEVO ENDPOINT: Sincronizar Usuarios a MySQL ---
     if (requestUrl.pathname === '/api/admin/sync-users') {
       await handleSyncUsersToDB(req, res);
       return;
     }
-    // --------------------------------------------------
 
     if (requestUrl.pathname === '/api/controldoc/documents/sync') {
       await handleDocumentsSync(req, res);
@@ -141,7 +138,6 @@ server.listen(port, host, () => {
   console.log(`Compas Marine server listening on http://${host}:${port}`);
 });
 
-// --- SINCRONIZADOR DE USUARIOS (API -> MYSQL) ---
 async function handleSyncUsersToDB(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
   
@@ -166,7 +162,6 @@ async function handleSyncUsersToDB(req, res) {
     let page = 1;
     let hasMore = true;
 
-    // 1. Descargar todas las páginas
     while (hasMore && page <= 50) {
       const url = new URL(upstreamPath, controlDocBaseUrl);
       url.searchParams.append('page', page);
@@ -193,19 +188,16 @@ async function handleSyncUsersToDB(req, res) {
 
     console.log(`Descarga completa: ${allEntities.length} usuarios obtenidos. Guardando en MySQL...`);
 
-    // 2. Guardar/Actualizar en MySQL
     let insertados = 0;
     for (const entity of allEntities) {
       const external_id = entity.id?.toString();
       if (!external_id) continue;
 
       const nombre = entity.full_name || entity.name || 'Sin Nombre';
-      // ControlDoc a veces guarda el RUT en "identifier" o "rut"
       const rut = entity.rut || entity.identifier || null;
       const email = entity.email ? entity.email.toLowerCase() : null;
       const jsonString = JSON.stringify(entity);
 
-      // Usamos INSERT ... ON DUPLICATE KEY UPDATE para no crear duplicados si corres esto 2 veces
       await dbPool.execute(`
         INSERT INTO entidades_api (external_id, nombre, rut, email, customer_id, entity_type_id, data_json)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -222,8 +214,6 @@ async function handleSyncUsersToDB(req, res) {
     sendJson(res, 500, { error: 'Fallo al sincronizar usuarios.' });
   }
 }
-
-// --- PROXY DE CONTROLDOC ULTRA OPTIMIZADO ---
 
 async function proxyControlDocRequest(req, res, requestUrl) {
   if (req.method !== 'GET') {
@@ -260,7 +250,6 @@ async function proxyControlDocRequest(req, res, requestUrl) {
 
   let myExternalId = null;
 
-  // Filtro mágico: Si no es admin, filtramos por URL
   if (!isAdmin) {
     try {
       const [entityRows] = await dbPool.execute('SELECT external_id FROM entidades_api WHERE email = ?', [userEmail]);
@@ -292,7 +281,6 @@ async function proxyControlDocRequest(req, res, requestUrl) {
 
   const upstreamResponse = await fetch(upstreamUrl, { method: 'GET', headers, redirect: 'follow' });
 
-  // Si no es admin y pidió la lista de usuarios, la recortamos a la fuerza
   if (!isAdmin && upstreamResponse.ok && upstreamPath === '/api/v1/abstract/entities') {
       try {
           const bodyText = await upstreamResponse.text();
@@ -317,6 +305,11 @@ async function proxyControlDocRequest(req, res, requestUrl) {
     'Cache-Control': 'no-store'
   });
   res.end(body);
+}
+
+async function handleDocumentsSync(req, res) {
+  if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
+  sendJson(res, 200, { message: "Sync mantenido" });
 }
 
 function resolveControlDocCredentials(req) {
@@ -386,13 +379,10 @@ function clampInteger(value, min, max) {
   return Math.min(max, Math.max(min, number));
 }
 
-// --- DESACTIVAR REGISTRO MANUAL ---
 async function handleRegister(req, res) {
-  // Ya no se permite registro manual.
   sendJson(res, 403, { error: 'El registro manual está deshabilitado. Inicie sesión utilizando su Email y RUT.' });
 }
 
-// --- LOGIN AUTOMÁTICO VÍA API / RUT ---
 async function handleLogin(req, res) {
   if (req.method !== 'POST') {
     sendJson(res, 405, { error: 'Method not allowed' });
@@ -410,7 +400,7 @@ async function handleLogin(req, res) {
   }
 
   const email = (payload.email || '').trim().toLowerCase();
-  const password = payload.password || ''; // En este caso, asumimos que el usuario escribió su RUT aquí
+  const password = payload.password || ''; 
 
   if (!email || !password) {
     sendJson(res, 400, { error: 'Email y contraseña/RUT son obligatorios.' });
@@ -418,7 +408,6 @@ async function handleLogin(req, res) {
   }
 
   try {
-    // 1. Verificamos si ya existe en la tabla de usuarios (ej: Administradores)
     const [rows] = await dbPool.execute('SELECT * FROM usuarios WHERE email = ? AND activo = TRUE', [email]);
     
     if (rows.length > 0) {
@@ -426,7 +415,6 @@ async function handleLogin(req, res) {
         const isValid = await bcrypt.compare(password, user.password_hash);
         
         if (isValid) {
-            // Login normal de alguien que ya estaba registrado
             const [roles] = await dbPool.execute('SELECT r.nombre as rol FROM usuarios_roles ur JOIN roles r ON ur.rol_id = r.id WHERE ur.usuario_id = ?', [user.id]);
             const rol = roles.length > 0 ? roles[0].rol : 'Usuario';
             
@@ -435,30 +423,25 @@ async function handleLogin(req, res) {
         }
     }
 
-    // 2. Si no es Admin o falló, validamos contra la Data de ControlDoc (Login por RUT)
     const [entityRows] = await dbPool.execute('SELECT * FROM entidades_api WHERE email = ?', [email]);
     
     if (entityRows.length > 0) {
         const entidad = entityRows[0];
         
-        // Limpiamos formatos para comparar solo letras/numeros (12.345.678-9 pasa a 123456789)
         const rutDB = entidad.rut ? entidad.rut.replace(/[^0-9kK]/g, '').toLowerCase() : null;
         const inputRut = password.replace(/[^0-9kK]/g, '').toLowerCase();
 
         if (rutDB && rutDB === inputRut) {
-            // El RUT ES CORRECTO. Vamos a crearle su sesión automáticamente
             let userIdToLogin;
             
             if (rows.length === 0) {
-                // Creamos el registro en la tabla usuarios de forma transparente para que quede guardado
-                const hash = await bcrypt.hash(password, 12); // Guardamos el RUT hasheado
+                const hash = await bcrypt.hash(password, 12); 
                 const [insertResult] = await dbPool.execute(
                     'INSERT INTO usuarios (nombre, email, password_hash) VALUES (?, ?, ?)', 
                     [entidad.nombre || email, email, hash]
                 );
                 userIdToLogin = insertResult.insertId;
                 
-                // Le asignamos el rol básico
                 try {
                     const [roles] = await dbPool.execute('SELECT id FROM roles WHERE nombre = "Usuario" LIMIT 1');
                     if (roles.length > 0) {
@@ -466,7 +449,7 @@ async function handleLogin(req, res) {
                     }
                 } catch(e) { console.error("Error asignando rol", e); }
             } else {
-                userIdToLogin = rows[0].id; // El usuario existía pero usamos su RUT
+                userIdToLogin = rows[0].id; 
             }
 
             res.setHeader('Set-Cookie', `compas_user_id=${userIdToLogin}; Path=/; HttpOnly; SameSite=Lax`);
@@ -474,15 +457,12 @@ async function handleLogin(req, res) {
         }
     }
 
-    // Si todo falla
     sendJson(res, 401, { error: 'Credenciales incorrectas o correo no registrado en ControlDoc.' });
   } catch (error) {
     console.error('Error validando usuario:', error);
     sendJson(res, 500, { error: 'No se pudo iniciar sesión.' });
   }
 }
-
-// --- FUNCIONES UTILITARIAS Y DE NOTIFICACIONES ---
 
 async function handlePushSubscription(req, res) {
   if (!requireSameOriginRequest(req, res)) return;
