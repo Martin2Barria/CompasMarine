@@ -89,6 +89,18 @@ const formatInfoValue = (value) => {
   return normalized === '' ? 'No informado' : normalized;
 };
 
+const toArray = (value, fallbackKeys = []) => {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+
+  for (const key of fallbackKeys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+
+  const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
+  return dynamicArrayKey ? value[dynamicArrayKey] : [];
+};
+
 const getEntityDisplayName = (entity) =>
   entity?.full_name || entity?.name || entity?.email || `Usuario ${entity?.id || ''}`;
 
@@ -112,10 +124,14 @@ export const ViewInicio = ({ setView }) => {
   }, [currentEntityId, selectedUserId]);
 
   const processData = (docs, entities, types) => {
+    const normalizedDocs = toArray(docs, ['documents', 'data', 'items']);
+    const normalizedEntities = toArray(entities, ['entities', 'data', 'items']);
+    const normalizedTypes = toArray(types, ['documentTypes', 'document_types', 'data', 'items']);
+
     const getDocName = (doc) => {
       let typeName = '';
-      if (types && types.length > 0) {
-        const type = types.find((t) => t.id?.toString() === doc.document_type_id?.toString());
+      if (normalizedTypes.length > 0) {
+        const type = normalizedTypes.find((t) => t.id?.toString() === doc.document_type_id?.toString());
         if (type) typeName = type.name || type.label || '';
       }
       const docLabel = doc.label || '';
@@ -123,20 +139,20 @@ export const ViewInicio = ({ setView }) => {
       return combinedName !== '' ? combinedName : 'Documento sin nombre';
     };
 
-    if (currentEntityId && entities) {
-      const entity = entities.find((item) => item.id?.toString() === currentEntityId.toString());
+    if (currentEntityId && normalizedEntities.length > 0) {
+      const entity = normalizedEntities.find((item) => item.id?.toString() === currentEntityId.toString());
       if (entity) {
         setCurrentEntityName(getEntityDisplayName(entity));
       }
     }
 
-    setAllDocs(docs || []);
-    setAllEntities(entities || []);
-    setAllTypes(types || []);
+    setAllDocs(normalizedDocs);
+    setAllEntities(normalizedEntities);
+    setAllTypes(normalizedTypes);
 
     void evaluateDocumentNotificationRules({
-      documents: docs || [],
-      documentTypes: types || [],
+      documents: normalizedDocs,
+      documentTypes: normalizedTypes,
       percentage: 100
     });
 
@@ -238,8 +254,9 @@ export const ViewInicio = ({ setView }) => {
   );
 
   const selectedUserDocs = useMemo(() => {
-    if (!activeUserId) return allDocs;
-    return allDocs.filter((doc) => doc.entity_id?.toString() === activeUserId.toString());
+    const docs = Array.isArray(allDocs) ? allDocs : [];
+    if (!activeUserId) return docs;
+    return docs.filter((doc) => doc.entity_id?.toString() === activeUserId.toString());
   }, [activeUserId, allDocs]);
 
   const selectedPendingSignatures = useMemo(() =>
