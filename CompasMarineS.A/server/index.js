@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
@@ -9,6 +9,7 @@ import mysql from 'mysql2/promise';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const appRoot = resolve(__dirname, '..');
 const distDir = resolve(appRoot, 'dist');
+const usersStorePath = resolve(appRoot, 'server', 'users.json');
 const notificationsStorePath = resolve(appRoot, 'server', 'notifications.json');
 
 loadEnvFiles([
@@ -24,6 +25,7 @@ const controlDocBaseUrl = trimTrailingSlash(
   process.env.CONTROLDOC_BASE_URL || 'https://compliance.controldoc.legal'
 );
 
+// --- CONEXIÓN A LA BASE DE DATOS MYSQL ---
 const dbPool = mysql.createPool(
   process.env.DATABASE_URL || 'mysql://root:sGffPxtAzleDJNlqVXzsHNirJmqztYuC@thomas.proxy.rlwy.net:59617/railway'
 );
@@ -53,7 +55,7 @@ const securityHeaders = {
 
 let documentsSyncCache = null;
 let lastDocumentsSyncTime = null;
-const CACHE_DURATION_MS = 5 * 60 * 1000; 
+const CACHE_DURATION_MS = 5 * 60 * 1000;
 let isSyncing = false;
 
 const mimeTypes = {
@@ -62,18 +64,25 @@ const mimeTypes = {
   '.ico': 'image/x-icon',
   '.js': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
   '.png': 'image/png',
-  '.svg': 'image/svg+xml'
+  '.svg': 'image/svg+xml',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2'
 };
 
 const server = createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
-    if (requestUrl.pathname === '/api/health') return sendJson(res, 200, { ok: true, database: 'Connected' });
+    if (requestUrl.pathname === '/api/health') return sendJson(res, 200, { ok: true, db: 'Connected' });
     if (requestUrl.pathname === '/api/auth/register') return await handleRegister(req, res);
     if (requestUrl.pathname === '/api/auth/login') return await handleLogin(req, res);
-    if (requestUrl.pathname === '/api/notifications/vapid-public-key') return sendJson(res, 200, { publicKey: process.env.VAPID_PUBLIC_KEY || null, ready: hasVapidConfig() });
+    
+    if (requestUrl.pathname === '/api/notifications/vapid-public-key') {
+      return sendJson(res, 200, { publicKey: process.env.VAPID_PUBLIC_KEY || null, ready: hasVapidConfig() });
+    }
     if (requestUrl.pathname === '/api/notifications/subscriptions') return await handlePushSubscription(req, res);
     if (requestUrl.pathname === '/api/notifications/test') return await handlePushTest(req, res);
     if (requestUrl.pathname === '/api/controldoc/documents/sync') return await handleDocumentsSync(req, res);
@@ -84,6 +93,8 @@ const server = createServer(async (req, res) => {
     }
 
     if (requestUrl.pathname.startsWith('/api/')) return sendJson(res, 404, { error: 'API route not found' });
+    
+    // Aquí es donde fallaba, esta función ahora está completa abajo
     serveStaticFile(res, requestUrl);
   } catch (error) {
     console.error(error);
@@ -95,13 +106,13 @@ server.listen(port, host, () => {
   console.log(`Compas Marine server listening on http://${host}:${port}`);
 });
 
-// --- AUTENTICACIÓN Y ROLES CON MYSQL ---
-
 async function handleLogin(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' });
+  
   const rawBody = await readRequestBody(req);
   let payload;
   try { payload = JSON.parse(rawBody || '{}'); } catch { return sendJson(res, 400, { error: 'Invalid JSON' }); }
+
   const email = (payload.email || '').trim().toLowerCase();
   const password = payload.password || '';
   if (!email || !password) return sendJson(res, 400, { error: 'Email y contraseña son obligatorios.' });
@@ -129,32 +140,36 @@ async function handleLogin(req, res) {
 
 async function handleRegister(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' });
+
   const rawBody = await readRequestBody(req);
   let payload;
   try { payload = JSON.parse(rawBody || '{}'); } catch { return sendJson(res, 400, { error: 'Invalid JSON' }); }
+
   const nombre = (payload.nombre || '').trim();
   const email = (payload.email || '').trim().toLowerCase();
   const password = payload.password || '';
+
   if (!nombre || !email || !password) return sendJson(res, 400, { error: 'Faltan datos.' });
 
   try {
     const [existing] = await dbPool.execute('SELECT id FROM usuarios WHERE email = ?', [email]);
     if (existing.length > 0) return sendJson(res, 409, { error: 'El email ya está registrado.' });
+
     const hash = await bcrypt.hash(password, 12);
     const [result] = await dbPool.execute('INSERT INTO usuarios (nombre, email, password_hash) VALUES (?, ?, ?)', [nombre, email, hash]);
+
     try {
       const [roles] = await dbPool.execute('SELECT id FROM roles WHERE nombre = "Usuario" LIMIT 1');
       if (roles.length > 0) await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [result.insertId, roles[0].id]);
     } catch(e) { console.error("No se pudo asignar rol:", e); }
+
     res.setHeader('Set-Cookie', `compas_user_id=${result.insertId}; Path=/; HttpOnly; SameSite=Lax`);
-    sendJson(res, 201, { ok: true, message: 'Usuario registrado correctamente.', user: { id: result.insertId, nombre, email } });
+    sendJson(res, 201, { ok: true, message: 'Usuario registrado.', user: { id: result.insertId, nombre, email } });
   } catch (error) {
     console.error('Error DB Register:', error);
     sendJson(res, 500, { error: 'No se pudo crear el usuario.' });
   }
 }
-
-// --- PROXY DE CONTROLDOC ULTRA OPTIMIZADO ---
 
 async function proxyControlDocRequest(req, res, requestUrl) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
@@ -173,7 +188,6 @@ async function proxyControlDocRequest(req, res, requestUrl) {
     userEmail = userRows[0].email;
     isAdmin = userRows[0].rol?.toLowerCase() === 'admin';
   } catch (error) {
-    console.error('Error validando sesión:', error);
     return sendJson(res, 500, { error: 'Error validando sesión' });
   }
 
@@ -183,13 +197,11 @@ async function proxyControlDocRequest(req, res, requestUrl) {
 
   let myExternalId = null;
   
-  // MAGIA APLICADA AQUÍ: Si no es admin, pedimos directamente a ControlDoc que nos filtre la información en la URL
   if (!isAdmin) {
     try {
       const [entityRows] = await dbPool.execute('SELECT external_id FROM entidades_api WHERE email = ?', [userEmail]);
       myExternalId = entityRows.length > 0 ? entityRows[0].external_id?.toString() : 'NO_ENTITY';
       
-      // Si estamos pidiendo documentos, ControlDoc permite filtrar por entidad en la URL
       if (upstreamPath === '/api/v1/abstract/documents') {
         upstreamUrl.searchParams.set('entity_id', myExternalId);
       }
@@ -205,9 +217,10 @@ async function proxyControlDocRequest(req, res, requestUrl) {
     'Entity-Type-Id': credentials.entityTypeId
   };
 
+  if (credentials.authorization) headers.AUTHORIZATION = credentials.authorization;
+
   const upstreamResponse = await fetch(upstreamUrl, { method: 'GET', headers, redirect: 'follow' });
 
-  // Filtrado manual estricto en caso de que sea el endpoint de Entidades (Usuarios) y el usuario no sea admin
   if (!isAdmin && upstreamResponse.ok && upstreamPath === '/api/v1/abstract/entities') {
       try {
           const bodyText = await upstreamResponse.text();
@@ -219,16 +232,14 @@ async function proxyControlDocRequest(req, res, requestUrl) {
           const filteredBody = Buffer.from(JSON.stringify(json));
           res.writeHead(upstreamResponse.status, { ...securityHeaders, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
           res.end(filteredBody);
-          return; // Finaliza la respuesta
+          return;
       } catch (e) {
-          console.error("Error filtrando JSON de entidades", e);
           res.writeHead(500, { ...securityHeaders, 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify([]));
           return;
       }
   }
 
-  // Comportamiento normal (Para Admin, o para Documentos que ya vinieron filtrados desde ControlDoc)
   const body = Buffer.from(await upstreamResponse.arrayBuffer());
   res.writeHead(upstreamResponse.status, {
     ...securityHeaders,
@@ -238,17 +249,289 @@ async function proxyControlDocRequest(req, res, requestUrl) {
   res.end(body);
 }
 
-// ... Resto del código se mantiene igual ...
-async function handleDocumentsSync(req, res) { if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }); sendJson(res, 200, { message: "Sync mantenido" }); }
-function resolveControlDocCredentials(req) { return { email: process.env.CONTROLDOC_USER_EMAIL || process.env.API_USER_EMAIL, token: process.env.CONTROLDOC_USER_TOKEN || process.env.API_USER_TOKEN, customerId: process.env.CONTROLDOC_CUSTOMER_ID || process.env.API_CUSTOMER_ID, entityTypeId: process.env.CONTROLDOC_ENTITY_TYPE_ID || '467', authorization: process.env.CONTROLDOC_AUTHORIZATION }; }
-function appendSafeControlDocQueryParams(sourceParams, targetParams) { const allowedQueryKeys = new Set(['page', 'per_page', 'q', 'query', 'search']); sourceParams.forEach((value, key) => { if (allowedQueryKeys.has(key)) targetParams.set(key, value); }); }
-function getCookie(req, cookieName) { const header = req.headers.cookie || ''; const cookies = header.split(';').map((cookie) => cookie.trim()); const match = cookies.find((cookie) => cookie.startsWith(`${cookieName}=`)); return match ? decodeURIComponent(match.slice(cookieName.length + 1)) : ''; }
-function sendJson(res, statusCode, payload) { res.writeHead(statusCode, { ...securityHeaders, 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(payload)); }
-function readRequestBody(req) { return new Promise((resolve, reject) => { let body = ''; req.on('data', chunk => { body += chunk; }); req.on('end', () => resolve(body)); req.on('error', reject); }); }
+async function handleDocumentsSync(req, res) {
+  if (req.method !== 'GET') {
+    sendJson(res, 405, { error: 'Method not allowed' });
+    return;
+  }
+  sendJson(res, 200, { message: "Sync temporalmente deshabilitado por optimización de frontend" });
+}
+
+function resolveControlDocCredentials(req) {
+  const byUser = parseJsonEnv('CONTROLDOC_USER_CREDENTIALS_JSON');
+  const cookieUserId = getCookie(req, 'compas_user_id');
+  const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
+
+  if (byUser && typeof byUser === 'object') {
+    const profile = byUser[requestedUserId] || byUser[process.env.CONTROLDOC_DEFAULT_USER_ID] || Object.values(byUser)[0];
+    if (profile) return normalizeCredentialProfile(profile);
+  }
+
+  return normalizeCredentialProfile({
+    email: process.env.CONTROLDOC_USER_EMAIL || process.env.API_USER_EMAIL,
+    token: process.env.CONTROLDOC_USER_TOKEN || process.env.API_USER_TOKEN,
+    customerId: process.env.CONTROLDOC_CUSTOMER_ID || process.env.API_CUSTOMER_ID,
+    entityTypeId: process.env.CONTROLDOC_ENTITY_TYPE_ID || process.env.CONTROLDOC_DEFAULT_ENTITY_TYPE_ID || '467',
+    authorization: process.env.CONTROLDOC_AUTHORIZATION
+  });
+}
+
+function normalizeCredentialProfile(profile) {
+  return {
+    email: profile.email || profile.userEmail || '',
+    token: profile.token || profile.userToken || '',
+    customerId: profile.customerId || profile.customer_id || process.env.CONTROLDOC_CUSTOMER_ID || process.env.API_CUSTOMER_ID || '',
+    entityTypeId: profile.entityTypeId || profile.entity_type_id || process.env.CONTROLDOC_ENTITY_TYPE_ID || process.env.CONTROLDOC_DEFAULT_ENTITY_TYPE_ID || '467',
+    authorization: profile.authorization || process.env.CONTROLDOC_AUTHORIZATION || ''
+  };
+}
+
+function appendSafeControlDocQueryParams(sourceParams, targetParams) {
+  const allowedQueryKeys = new Set(['page', 'per_page', 'q', 'query', 'search']);
+  sourceParams.forEach((value, key) => {
+    if (!allowedQueryKeys.has(key)) return;
+    if (key === 'page') { targetParams.set(key, String(clampInteger(value, 1, 500))); return; }
+    if (key === 'per_page') { targetParams.set(key, String(clampInteger(value, 1, 100))); return; }
+    const safeValue = stripControlCharacters(value).trim().slice(0, 120);
+    if (safeValue) targetParams.set(key, safeValue);
+  });
+}
+
+function clampInteger(value, min, max) {
+  const number = Number.parseInt(value, 10);
+  if (!Number.isFinite(number)) return min;
+  return Math.min(max, Math.max(min, number));
+}
+
+async function handlePushSubscription(req, res) {
+  if (!requireSameOriginRequest(req, res)) return;
+  if (req.method === 'GET') { return sendJson(res, 200, { count: pushSubscriptions.size, pushReady: hasVapidConfig() }); }
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' });
+  if (!requireJsonRequest(req, res)) return;
+  if (!consumeRateLimit(req, res, 'push-subscription', 20, 15 * 60 * 1000)) return;
+
+  const rawBody = await readRequestBody(req);
+  let payload;
+  try { payload = JSON.parse(rawBody || '{}'); } catch { return sendJson(res, 400, { error: 'Invalid JSON body' }); }
+
+  const subscription = payload.subscription || payload;
+  const safeSubscription = normalizePushSubscription(subscription);
+  if (!safeSubscription) return sendJson(res, 400, { error: 'Invalid push subscription' });
+
+  const userId = resolveNotificationUserId(req);
+  const record = {
+    userId, endpoint: safeSubscription.endpoint, subscription: safeSubscription,
+    createdAt: pushSubscriptions.get(safeSubscription.endpoint)?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  pushSubscriptions.set(safeSubscription.endpoint, record);
+  saveNotificationsStore();
+  sendJson(res, 202, { ok: true, userId, count: pushSubscriptions.size, pushReady: hasVapidConfig(), message: 'Subscription stored.' });
+}
+
+async function handlePushTest(req, res) {
+  if (!pushTestEndpointEnabled) return sendJson(res, 404, { error: 'API route not found' });
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' });
+  if (!requireSameOriginRequest(req, res)) return;
+  if (!requireJsonRequest(req, res)) return;
+  if (!consumeRateLimit(req, res, 'push-test', 5, 10 * 60 * 1000)) return;
+
+  let payload;
+  const rawBody = await readRequestBody(req);
+  try { payload = JSON.parse(rawBody || '{}'); } catch { return sendJson(res, 400, { error: 'Invalid JSON body' }); }
+
+  const userId = resolveNotificationUserId(req);
+  const result = await sendPushToUser(userId, normalizeNotificationPayload(payload));
+  sendJson(res, result.sent > 0 ? 202 : 200, { ok: result.sent > 0, userId, ...result });
+}
+
+async function sendPushToUser(userId, payload) {
+  if (!hasVapidConfig()) return { sent: 0, failed: 0, reason: 'VAPID keys are not configured.' };
+  const records = [...pushSubscriptions.values()].filter((record) => record.userId === userId);
+  if (records.length === 0) return { sent: 0, failed: 0, reason: 'No push subscriptions for this user.' };
+
+  let sent = 0, failed = 0, removed = 0;
+  await Promise.all(records.map(async (record) => {
+    try {
+      await webPush.sendNotification(record.subscription, JSON.stringify(payload));
+      sent += 1;
+    } catch (error) {
+      failed += 1;
+      if (error.statusCode === 404 || error.statusCode === 410) {
+        pushSubscriptions.delete(record.endpoint);
+        removed += 1;
+      }
+    }
+  }));
+  if (removed > 0) saveNotificationsStore();
+  return { sent, failed, removed };
+}
+
+function configureWebPush() {
+  if (!hasVapidConfig()) return;
+  webPush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:soporte@compasmarine.cl', process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);
+}
+function hasVapidConfig() { return Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY); }
+function resolveNotificationUserId(req) { return getCookie(req, 'compas_user_id') || process.env.CONTROLDOC_DEFAULT_USER_ID || 'demo'; }
+
+function normalizePushSubscription(subscription) {
+  if (!subscription || typeof subscription !== 'object' || typeof subscription.endpoint !== 'string') return null;
+  let endpointUrl;
+  try { endpointUrl = new URL(subscription.endpoint); } catch { return null; }
+  if (endpointUrl.protocol !== 'https:') return null;
+  const keys = subscription.keys || {};
+  if (!isReasonablePushKey(keys.p256dh, 40, 512) || !isReasonablePushKey(keys.auth, 8, 256)) return null;
+  return { endpoint: endpointUrl.toString(), expirationTime: typeof subscription.expirationTime === 'number' ? subscription.expirationTime : null, keys: { p256dh: keys.p256dh, auth: keys.auth } };
+}
+
+function isReasonablePushKey(value, min, max) { return typeof value === 'string' && value.length >= min && value.length <= max; }
+
+function normalizeNotificationPayload(payload = {}) {
+  return {
+    title: cleanNotificationText(payload.title, 'Compas Marine', MAX_NOTIFICATION_TITLE_LENGTH),
+    body: cleanNotificationText(payload.body, 'Notificacion push', MAX_NOTIFICATION_BODY_LENGTH),
+    url: normalizeNotificationUrl(payload.url)
+  };
+}
+
+function cleanNotificationText(value, fallback, maxLength) {
+  if (typeof value !== 'string') return fallback;
+  const cleanValue = value.split('').map((c) => isControlCharacter(c) ? ' ' : c).join('').replace(/\s+/g, ' ').trim();
+  return cleanValue ? cleanValue.slice(0, maxLength) : fallback;
+}
+
+function normalizeNotificationUrl(value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) return '/notificaciones';
+  return value;
+}
+
+function requireSameOriginRequest(req, res) {
+  if (isAllowedRequestOrigin(req)) return true;
+  sendJson(res, 403, { error: 'Forbidden origin' });
+  return false;
+}
+
+function isAllowedRequestOrigin(req) {
+  const requestOrigin = getRequestOrigin(req);
+  if (!requestOrigin) return process.env.NODE_ENV !== 'production';
+  return getAllowedOriginsForRequest(req).has(requestOrigin);
+}
+
+function getRequestOrigin(req) {
+  if (typeof req.headers.origin === 'string') return req.headers.origin;
+  if (typeof req.headers.referer === 'string') { try { return new URL(req.headers.referer).origin; } catch { return ''; } }
+  return '';
+}
+
+function getAllowedOriginsForRequest(req) {
+  const allowedOrigins = new Set(configuredAllowedOrigins);
+  const requestHost = req.headers['x-forwarded-host'] || req.headers.host;
+  if (requestHost) {
+    const forwardedProto = req.headers['x-forwarded-proto'];
+    const protocol = typeof forwardedProto === 'string' ? forwardedProto.split(',')[0].trim() : 'https';
+    allowedOrigins.add(`${protocol}://${requestHost}`);
+    allowedOrigins.add(`https://${requestHost}`);
+    allowedOrigins.add(`http://${requestHost}`);
+  }
+  if (process.env.NODE_ENV !== 'production') { allowedOrigins.add('http://localhost:5173'); allowedOrigins.add('http://127.0.0.1:5173'); }
+  return allowedOrigins;
+}
+
+function parseOriginList(value = '') { return value.split(',').map((o) => o.trim()).filter(Boolean); }
+function requireJsonRequest(req, res) {
+  if ((req.headers['content-type'] || '').toLowerCase().includes('application/json')) return true;
+  sendJson(res, 415, { error: 'Content-Type must be application/json' }); return false;
+}
+
+function consumeRateLimit(req, res, bucketName, limit, windowMs) {
+  const now = Date.now();
+  const key = `${bucketName}:${getClientIp(req)}`;
+  const bucket = rateLimitBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) { rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs }); return true; }
+  if (bucket.count >= limit) {
+    res.writeHead(429, { ...securityHeaders, 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': String(Math.ceil((bucket.resetAt - now) / 1000)) });
+    res.end(JSON.stringify({ error: 'Too many requests' }));
+    return false;
+  }
+  bucket.count += 1;
+  return true;
+}
+
+function getClientIp(req) {
+  const forwardedFor = req.headers['x-forwarded-for'];
+  if (typeof forwardedFor === 'string' && forwardedFor.trim()) return forwardedFor.split(',')[0].trim();
+  return req.socket.remoteAddress || 'unknown';
+}
+
+function stripControlCharacters(value) { return value.split('').filter((c) => !isControlCharacter(c)).join(''); }
+function isControlCharacter(character) { const code = character.charCodeAt(0); return code <= 31 || code === 127; }
+
+function loadNotificationsStore() {
+  if (!existsSync(notificationsStorePath)) return { subscriptions: [] };
+  try { return { subscriptions: Array.isArray(JSON.parse(readFileSync(notificationsStorePath, 'utf8')).subscriptions) ? JSON.parse(readFileSync(notificationsStorePath, 'utf8')).subscriptions : [] }; } catch { return { subscriptions: [] }; }
+}
+function saveNotificationsStore() { writeFileSync(notificationsStorePath, JSON.stringify({ subscriptions: [...pushSubscriptions.values()] }, null, 2), 'utf8'); }
+
+function serveStaticFile(res, requestUrl) {
+  if (!existsSync(distDir)) {
+    sendJson(res, 404, {
+      error: 'Build output not found. Run npm run build before using the production server.'
+    });
+    return;
+  }
+
+  const rawPath = requestUrl.pathname === '/' ? '/index.html' : decodeURIComponent(requestUrl.pathname);
+  let filePath = normalize(join(distDir, rawPath));
+
+  if (!filePath.startsWith(distDir)) {
+    sendJson(res, 403, { error: 'Forbidden' });
+    return;
+  }
+
+  if (!existsSync(filePath) || statSync(filePath).isDirectory()) {
+    filePath = join(distDir, 'index.html');
+  }
+
+  const ext = extname(filePath);
+  res.writeHead(200, {
+    ...securityHeaders,
+    'Content-Type': mimeTypes[ext] || 'application/octet-stream',
+    'Cache-Control': ext === '.html' ? 'no-store' : 'public, max-age=31536000, immutable'
+  });
+  createReadStream(filePath).pipe(res);
+}
+
+function sendJson(res, statusCode, payload) {
+  res.writeHead(statusCode, { ...securityHeaders, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(payload));
+}
+
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; if(body.length > 1024*1024) reject(new Error('Request body too large')); });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+function loadEnvFiles(fileNames) {
+  for (const fileName of fileNames) {
+    const filePath = join(appRoot, fileName);
+    if (!existsSync(filePath)) continue;
+    const lines = readFileSync(filePath, 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const separatorIndex = trimmed.indexOf('=');
+      if (separatorIndex === -1) continue;
+      const key = trimmed.slice(0, separatorIndex).trim();
+      if (!process.env[key]) process.env[key] = unquoteEnvValue(trimmed.slice(separatorIndex + 1).trim());
+    }
+  }
+}
+function unquoteEnvValue(value) { return (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")) ? value.slice(1, -1) : value; }
+function parseJsonEnv(key) { if (!process.env[key]) return null; try { return JSON.parse(process.env[key]); } catch { return null; } }
+function getCookie(req, cookieName) { const header = req.headers.cookie || ''; const match = header.split(';').map(c => c.trim()).find(c => c.startsWith(`${cookieName}=`)); return match ? decodeURIComponent(match.slice(cookieName.length + 1)) : ''; }
 function trimTrailingSlash(value) { return value.replace(/\/+$/, ''); }
-function loadEnvFiles() {}
-function configureWebPush() {}
-function loadNotificationsStore() { return { subscriptions: [] }; }
-function parseOriginList() { return []; }
-function hasVapidConfig() { return false; }
-function serveStaticFile(res, requestUrl) {}
