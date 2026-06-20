@@ -25,6 +25,7 @@ const getCookie = (name) => {
 };
 
 const normalizeText = (value) => (value || '').toString().trim().toLowerCase();
+const normalizeIdentifier = (value) => normalizeText(value).replace(/[^a-z0-9]/g, '');
 
 const normalizeFieldKey = (value) =>
   (value || '')
@@ -223,6 +224,9 @@ export const ViewInicio = ({ setView }) => {
   const activeUserId = selectedUserId || currentEntityId || '';
   const selectedEntity = allEntities.find((item) => item.id?.toString() === activeUserId.toString());
   const selectedEntityLabel = selectedEntity ? getEntityDisplayName(selectedEntity) : displayName;
+  const selectedEntityIdentifier = formatInfoValue(
+    getEntityFieldValue(selectedEntity, ['identifier'])
+  );
   const selectedEntitySex = formatInfoValue(
     getEntityFieldValue(selectedEntity, ['sexo'])
   );
@@ -284,16 +288,19 @@ export const ViewInicio = ({ setView }) => {
 
   const searchSuggestions = useMemo(() => {
     const query = normalizeText(searchTerm);
+    const identifierQuery = normalizeIdentifier(searchTerm);
     if (!query) return [];
 
     return allEntities
       .filter((entity) => {
+        const entityIdentifier = getEntityFieldValue(entity, ['identifier']);
+        const normalizedEntityIdentifier = normalizeIdentifier(entityIdentifier);
+
         const searchable = [
           entity?.full_name,
           entity?.name,
           entity?.email,
-          entity?.rut,
-          entity?.run,
+          entityIdentifier,
           entity?.document_number,
           entity?.identification,
           entity?.legal_id
@@ -301,7 +308,10 @@ export const ViewInicio = ({ setView }) => {
           .filter(Boolean)
           .join(' ')
           .toLowerCase();
-        return searchable.includes(query);
+
+        const textMatch = searchable.includes(query);
+        const identifierMatch = identifierQuery !== '' && normalizedEntityIdentifier.includes(identifierQuery);
+        return textMatch || identifierMatch;
       })
       .slice(0, 6);
   }, [allEntities, searchTerm]);
@@ -364,7 +374,7 @@ export const ViewInicio = ({ setView }) => {
                   >
                     <p className="text-sm font-semibold text-[#394049]">{getEntityDisplayName(entity)}</p>
                     <p className="text-xs text-gray-500">
-                      {entity.rut || entity.run || entity.document_number || entity.email || 'Sin identificación'}
+                      {getEntityFieldValue(entity, ['identifier']) || entity.document_number || entity.email || 'Sin identificación'}
                     </p>
                   </button>
                 ))}
@@ -380,7 +390,7 @@ export const ViewInicio = ({ setView }) => {
                 <p className="text-xs uppercase font-semibold text-[#921E30]">Usuario seleccionado</p>
                 <h3 className="text-base font-bold text-[#394049]">{selectedEntityLabel}</h3>
                 <p className="text-xs text-gray-500">
-                  {selectedEntity?.rut || selectedEntity?.run || selectedEntity?.document_number || selectedEntity?.email || 'Sin identificación adicional'}
+                  {selectedEntityIdentifier}
                 </p>
                 <div className="mt-2 space-y-1.5">
                   <p className="text-xs text-gray-600">
