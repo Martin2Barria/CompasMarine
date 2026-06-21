@@ -198,9 +198,15 @@ async function handleSyncUsersToDB(req, res) {
       const external_id = entity.id?.toString();
       if (!external_id) continue;
 
-      const nombre = entity.full_name || entity.name || 'Sin Nombre';
-      const rut = entity.rut || entity.identifier || null;
-      const email = entity.email ? entity.email.toLowerCase() : null;
+      // EXTRACCIÓN INTELIGENTE: Buscamos en los campos personalizados de ControlDoc
+      const nombre = entity.name || entity.custom_fields?.nombre || entity.full_name || 'Sin Nombre';
+      const rut = entity.identifier || entity.custom_fields?.numero_de_documento || entity.rut || null;
+      
+      let emailRaw = entity.custom_fields?.correo_electronico_corporativo || 
+                     entity.custom_fields?.correo_electronico_personal || 
+                     entity.email || '';
+                     
+      const email = emailRaw ? emailRaw.trim().toLowerCase() : null;
       const jsonString = JSON.stringify(entity);
 
       await dbPool.execute(`
@@ -535,19 +541,29 @@ async function handleLogin(req, res) {
     const [entityRows] = await dbPool.execute('SELECT * FROM entidades_api WHERE email = ?', [email]);
     
     if (entityRows.length > 0) {
-        const entidad = entityRows[0];
-        
-        const rutDB = entidad.rut ? entidad.rut.replace(/[^0-9kK]/g, '').toLowerCase() : null;
-        const inputRut = password.replace(/[^0-9kK]/g, '').toLowerCase();
+        let isMatched = false;
+        let matchedEntidad = null;
 
-        if (rutDB && rutDB === inputRut) {
+        // Bucle inteligente: Busca en todos los perfiles duplicados y elimina ceros a la izquierda
+        for (const entidad of entityRows) {
+            const rutDB = entidad.rut ? entidad.rut.replace(/[^0-9kK]/g, '').toLowerCase().replace(/^0+/, '') : null;
+            const inputRut = password.replace(/[^0-9kK]/g, '').toLowerCase().replace(/^0+/, '');
+
+            if (rutDB && rutDB === inputRut) {
+                isMatched = true;
+                matchedEntidad = entidad;
+                break;
+            }
+        }
+
+        if (isMatched) {
             let userIdToLogin;
             
             if (rows.length === 0) {
                 const hash = await bcrypt.hash(password, 12); 
                 const [insertResult] = await dbPool.execute(
                     'INSERT INTO usuarios (nombre, email, password_hash) VALUES (?, ?, ?)', 
-                    [entidad.nombre || email, email, hash]
+                    [matchedEntidad.nombre || email, email, hash]
                 );
                 userIdToLogin = insertResult.insertId;
                 
@@ -562,7 +578,7 @@ async function handleLogin(req, res) {
             }
 
             res.setHeader('Set-Cookie', `compas_user_id=${userIdToLogin}; Path=/; HttpOnly; SameSite=Lax`);
-            return sendJson(res, 200, { ok: true, message: 'Sesión iniciada.', user: { id: userIdToLogin, nombre: entidad.nombre, email: email, rol: 'Usuario' } });
+            return sendJson(res, 200, { ok: true, message: 'Sesión iniciada.', user: { id: userIdToLogin, nombre: matchedEntidad.nombre, email: email, rol: 'Usuario' } });
         }
     }
 
