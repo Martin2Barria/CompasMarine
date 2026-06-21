@@ -128,17 +128,6 @@ export const ViewInicio = ({ setView }) => {
     const normalizedEntities = toArray(entities, ['entities', 'data', 'items']);
     const normalizedTypes = toArray(types, ['documentTypes', 'document_types', 'data', 'items']);
 
-    const getDocName = (doc) => {
-      let typeName = '';
-      if (normalizedTypes.length > 0) {
-        const type = normalizedTypes.find((t) => t.id?.toString() === doc.document_type_id?.toString());
-        if (type) typeName = type.name || type.label || '';
-      }
-      const docLabel = doc.label || '';
-      const combinedName = `${typeName} ${docLabel}`.trim();
-      return combinedName !== '' ? combinedName : 'Documento sin nombre';
-    };
-
     if (currentEntityId && normalizedEntities.length > 0) {
       const entity = normalizedEntities.find((item) => item.id?.toString() === currentEntityId.toString());
       if (entity) {
@@ -162,8 +151,6 @@ export const ViewInicio = ({ setView }) => {
   };
 
   useEffect(() => {
-    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
     const snapshot = readControlDocSnapshot();
     if (snapshot?.data) {
       processData(snapshot.data.documents || [], snapshot.data.entities || [], snapshot.data.documentTypes || []);
@@ -171,51 +158,59 @@ export const ViewInicio = ({ setView }) => {
 
     const fetchFreshData = async () => {
       setIsSyncing(true);
-      try {
-        let allDocsData = [];
-        let syncSuccess = false;
-        let attempts = 0;
+      const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
 
-        while (!syncSuccess && attempts < 6) {
-          const syncResponse = await fetch(getApiUrl('/controldoc/documents/sync'));
-          if (syncResponse.status === 503) {
-            console.warn('Railway ocupado. Esperando 5 segundos...');
-            await delay(5000);
-            attempts += 1;
-            continue;
-          }
-          if (syncResponse.ok) {
-            allDocsData = await syncResponse.json();
-            syncSuccess = true;
-          } else {
-            throw new Error('Fallo al descargar documentos');
+      // Motor de descarga paginado seguro
+      const fetchAllPages = async (baseUrl) => {
+        let allItems = [];
+        let page = 1;
+        let hasMore = true;
+        let retries = 0;
+
+        while (hasMore && page <= 50) {
+          try {
+            const separator = baseUrl.includes('?') ? '&' : '?';
+            const response = await fetch(`${baseUrl}${separator}page=${page}&per_page=100`, requestOptions);
+            
+            if (response.status === 401) throw new Error("Sesión expirada");
+            
+            if (response.status === 429) {
+                 retries++;
+                 if (retries > 3) break;
+                 await new Promise(r => setTimeout(r, 2000));
+                 continue; 
+            }
+            retries = 0;
+
+            if (!response.ok) throw new Error(`HTTP: ${response.status}`);
+            
+            const json = await response.json();
+            let items = Array.isArray(json) ? json : (Object.keys(json).find(k => Array.isArray(json[k])) ? json[Object.keys(json).find(k => Array.isArray(json[k]))] : []);
+            
+            if (!items || items.length === 0) {
+              hasMore = false;
+            } else {
+              allItems.push(...items);
+              page++;
+              if (items.length < 100) hasMore = false;
+              await new Promise(r => setTimeout(r, 100)); 
+            }
+          } catch (e) {
+             hasMore = false;
+             console.error("Error fetching:", e);
           }
         }
+        return allItems;
+      };
 
-        if (!syncSuccess) return;
-
-        const [entitiesRes, typesRes] = await Promise.all([
-          fetch(getApiUrl('/controldoc/entities?page=1&per_page=100')),
-          fetch(getApiUrl('/controldoc/document-types?page=1&per_page=100'))
+      try {
+        const [types, entities, docs] = await Promise.all([
+          fetchAllPages(getApiUrl('/controldoc/document-types')),
+          fetchAllPages(getApiUrl('/controldoc/entities')),
+          fetchAllPages(getApiUrl('/controldoc/documents')) // <- Cambio CLAVE al Proxy Seguro
         ]);
 
-        if (entitiesRes.ok && typesRes.ok) {
-          const rawEntities = await entitiesRes.json();
-          const rawTypes = await typesRes.json();
-
-          const freshEntities = Array.isArray(rawEntities)
-            ? rawEntities
-            : (Object.keys(rawEntities).find((key) => Array.isArray(rawEntities[key]))
-                ? rawEntities[Object.keys(rawEntities).find((key) => Array.isArray(rawEntities[key]))]
-                : []);
-          const freshTypes = Array.isArray(rawTypes)
-            ? rawTypes
-            : (Object.keys(rawTypes).find((key) => Array.isArray(rawTypes[key]))
-                ? rawTypes[Object.keys(rawTypes).find((key) => Array.isArray(rawTypes[key]))]
-                : []);
-
-          processData(allDocsData, freshEntities, freshTypes);
-        }
+        processData(docs, entities, types);
       } catch (error) {
         console.error('Error sincronizando inicio:', error);
       } finally {
@@ -224,7 +219,7 @@ export const ViewInicio = ({ setView }) => {
     };
 
     fetchFreshData();
-  }, []);
+  }, []); // Cierre correcto del useEffect
 
   const getDocName = (doc) => {
     let typeName = '';
@@ -469,7 +464,7 @@ export const ViewInicio = ({ setView }) => {
               }}
             ></div>
           </div>
-          <span className="text-doc-percentage text-lg mt-2.5 uppercase font-bold tracking-wider">
+          <span className="text-doc-percentage text-lg mt-2.5 uppercase font-bold tracking-wider text-gray-800">
             {selectedDocPercentage}%
           </span>
         </div>
