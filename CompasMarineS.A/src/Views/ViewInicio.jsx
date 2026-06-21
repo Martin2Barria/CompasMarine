@@ -255,8 +255,10 @@ export const ViewInicio = ({ setView }) => {
 
   const selectedUserDocs = useMemo(() => {
     const docs = Array.isArray(allDocs) ? allDocs : [];
-    if (!activeUserId) return docs;
-    return docs.filter((doc) => doc.entity_id?.toString() === activeUserId.toString());
+    if (!activeUserId) return docs.filter((doc) => doc.aasm_state !== 'blocked');
+    return docs.filter(
+      (doc) => doc.entity_id?.toString() === activeUserId.toString() && doc.aasm_state !== 'blocked'
+    );
   }, [activeUserId, allDocs]);
 
   const selectedPendingSignatures = useMemo(() =>
