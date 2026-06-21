@@ -1,73 +1,33 @@
-import { memo } from 'react';
-import { FileText, User, Tag, Download, AlertCircle, PenTool } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Download, User as UserIcon, Tag } from 'lucide-react';
 
-const hasPendingSignature = (doc) => {
-  if (!doc || typeof doc !== 'object') return false;
+// Mock de las funciones externas para que compile en un solo archivo
+const getApiUrl = (path) => `/api${path}`;
+const readControlDocSnapshot = () => null;
+const saveControlDocSnapshot = (data) => {};
 
-  const normalizedString = (value) => {
-    if (typeof value !== 'string') return '';
-    return value.trim().toLowerCase();
-  };
-
-  const matchesPendingText = (value) => {
-    const lower = normalizedString(value);
-    return (
-      lower === 'true' ||
-      lower === '1' ||
-      lower === 'pending' ||
-      lower === 'pendiente' ||
-      lower.includes('pendiente') ||
-      lower.includes('pending') ||
-      lower.includes('por firmar') ||
-      lower.includes('sin firmar') ||
-      lower.includes('to sign') ||
-      lower.includes('needs signature') ||
-      (lower.includes('signature') && lower.includes('pending'))
-    );
-  };
-
-  const keysToCheck = [
-    'pending_signature',
-    'signature_pending',
-    'pending_signatures',
-    'pending_signatures_count',
-    'signature_status',
-    'signature_state',
-    'aasm_state',
-    'state',
-    'status',
-    'workflow_state'
-  ];
-
-  for (const key of keysToCheck) {
-    const value = doc[key];
-    if (value === true) return true;
-    if (typeof value === 'number' && value > 0) return true;
-    if (matchesPendingText(value)) return true;
-  }
-
-  return Object.entries(doc).some(([key, value]) => {
-    if (!/pending.*sign|sign.*pending|signature.*pending|pending.*signature|firma|firmas/i.test(key)) {
-      return false;
-    }
-    if (value === true) return true;
-    if (typeof value === 'number' && value > 0) return true;
-    return matchesPendingText(value);
-  });
+const urls = {
+  documents: getApiUrl('/controldoc/documents'), // ¡Añadida la ruta del proxy seguro!
+  documentsSync: getApiUrl('/controldoc/documents/sync'), 
+  entities: getApiUrl('/controldoc/entities'),
+  documentTypes: getApiUrl('/controldoc/document-types')
 };
 
-export const ApiDocumentCard = memo(({ doc, entities, documentTypes, entityById, documentTypeById }) => {
-  const entity = entityById?.get(doc.entity_id?.toString())
-    || entities.find(e => e.id?.toString() === doc.entity_id?.toString());
-  const docType = documentTypeById?.get(doc.document_type_id?.toString())
-    || documentTypes.find(t => t.id?.toString() === doc.document_type_id?.toString());
+// Componente ApiDocumentCard integrado
+const ApiDocumentCard = ({ doc, entities, documentTypes, entityById, documentTypeById }) => {
+  const entity = entityById ? entityById.get(doc.entity_id?.toString()) : entities.find(e => e.id?.toString() === doc.entity_id?.toString());
+  const docType = documentTypeById ? documentTypeById.get(doc.document_type_id?.toString()) : documentTypes.find(t => t.id?.toString() === doc.document_type_id?.toString());
   
   const entityName = entity?.full_name || entity?.name || entity?.label || entity?.email || doc.entity_id;
   const typeName = docType?.name || docType?.label || docType?.id || doc.document_type_id;
 
-  let status = { text: 'Vigente', days: '--', bgClass: 'bg-green-50 text-green-700 border-green-200', borderClass: 'border-green-500', textClass: 'text-green-600', glowClass: 'bg-green-500' };
-  const isBlocked = false;
-  const pendingSignature = hasPendingSignature(doc);
+  let status = { text: 'Sin Fecha', days: '--', bgClass: 'bg-gray-100 text-gray-600', borderClass: 'border-gray-500', textClass: 'text-gray-600', glowClass: 'bg-gray-500' };
+  
+  let isBlocked = doc.aasm_state === 'blocked';
+
+  if (isBlocked && doc.blocked_description?.toLowerCase().includes('cargo')) {
+    isBlocked = false;
+  }
 
   if (doc.expires_at) {
     const expirationDate = new Date(doc.expires_at);
@@ -107,7 +67,7 @@ export const ApiDocumentCard = memo(({ doc, entities, documentTypes, entityById,
           
           <div className="space-y-1.5 mb-3 bg-gray-50 p-2 rounded-lg border border-gray-100">
             <p className="text-xs text-gray-600 flex items-center">
-              <User className="w-3 h-3 mr-1.5 text-gray-400" />
+              <UserIcon className="w-3 h-3 mr-1.5 text-gray-400" />
               <span className="font-semibold text-gray-800 truncate">{entityName}</span>
             </p>
             <p className="text-xs text-gray-600 flex items-center">
@@ -125,27 +85,13 @@ export const ApiDocumentCard = memo(({ doc, entities, documentTypes, entityById,
             </p>
           </div>
 
-          {/* BARRA DE ACCIONES CON EL NUEVO BOTÓN */}
           <div className="flex gap-2 items-center flex-wrap">
             <p className={`text-[10px] font-bold inline-block px-2 py-1 rounded border ${status.bgClass} uppercase`}>
               {status.text}
             </p>
-            
             {doc.download_base64_url && (
               <a href={doc.download_base64_url} target="_blank" rel="noreferrer" className="text-[10px] font-bold bg-[#394049] text-white px-2 py-1 rounded flex items-center hover:bg-gray-700 transition">
                 <Download className="w-3 h-3 mr-1" /> Ver/Bajar
-              </a>
-            )}
-
-            {/* BOTÓN HACIA CONTROL DOCS */}
-            {pendingSignature && (
-              <a 
-                href={`https://compliance.controldoc.legal/documentos/${doc.id}`} 
-                target="_blank" 
-                rel="noopener noreferrer" 
-                className="text-[10px] font-bold bg-[#921E30] text-white px-2 py-1 rounded flex items-center hover:bg-red-800 transition shadow-sm"
-              >
-                <PenTool className="w-3 h-3 mr-1" /> Firmar en CDOC
               </a>
             )}
           </div>
@@ -168,6 +114,91 @@ export const ApiDocumentCard = memo(({ doc, entities, documentTypes, entityById,
       </div>
     </div>
   );
-});
+};
 
-ApiDocumentCard.displayName = 'ApiDocumentCard';
+const getDaysRemaining = (dateString) => {
+  if (!dateString) return null;
+  const expirationDate = new Date(dateString);
+  const currentDate = new Date();
+  currentDate.setHours(0, 0, 0, 0);
+  const diff = expirationDate.getTime() - currentDate.getTime();
+  return Math.ceil(diff / (1000 * 3600 * 24));
+};
+
+const toArray = (value, fallbackKeys = []) => {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+
+  for (const key of fallbackKeys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+
+  const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
+  return dynamicArrayKey ? value[dynamicArrayKey] : [];
+};
+
+const normalizeApiData = (rawData) => {
+  const raw = rawData || {};
+  return {
+    documents: toArray(raw.documents, ['documents', 'items', 'data']),
+    entities: toArray(raw.entities, ['entities', 'items', 'data']),
+    documentTypes: toArray(raw.documentTypes || raw.document_types, ['documentTypes', 'document_types', 'items', 'data'])
+  };
+};
+
+const normalizeText = (value) => (value || '').toString().trim().toLowerCase();
+
+const hasPendingSignature = (doc) => {
+  if (!doc || typeof doc !== 'object') return false;
+
+  const normalizedString = (value) => {
+    if (typeof value !== 'string') return '';
+    return value.trim().toLowerCase();
+  };
+
+  const matchesPendingText = (value) => {
+    const lower = normalizedString(value);
+    return (
+      lower === 'true' ||
+      lower === '1' ||
+      lower === 'pending' ||
+      lower === 'pendiente' ||
+      lower.includes('pendiente') ||
+      lower.includes('pending') ||
+      lower.includes('por firmar') ||
+      lower.includes('sin firmar') ||
+      lower.includes('to sign') ||
+      lower.includes('needs signature') ||
+      lower.includes('signature') && lower.includes('pending')
+    );
+  };
+
+  const keysToCheck = [
+    'pending_signature',
+    'signature_pending',
+    'pending_signatures',
+    'pending_signatures_count',
+    'signature_status',
+    'signature_state',
+    'aasm_state',
+    'state',
+    'status',
+    'workflow_state'
+  ];
+
+  for (const key of keysToCheck) {
+    const value = doc[key];
+    if (value === true) return true;
+    if (typeof value === 'number' && value > 0) return true;
+    if (matchesPendingText(value)) return true;
+  }
+
+  return Object.entries(doc).some(([key, value]) => {
+    if (!/pending.*sign|sign.*pending|signature.*pending|pending.*signature|firma|firmas/i.test(key)) {
+      return false;
+    }
+    if (value === true) return true;
+    if (typeof value === 'number' && value > 0) return true;
+    return matchesPendingText(value);
+  });
+};
