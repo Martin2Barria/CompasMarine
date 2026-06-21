@@ -18,12 +18,6 @@ const getDaysRemaining = (dateString) => {
   return Math.ceil(diff / (1000 * 3600 * 24));
 };
 
-const getCookie = (name) => {
-  if (typeof document === 'undefined') return null;
-  const match = document.cookie.match(new RegExp(`(?:^|; )${name.replace(/([.*+?^${}()|[\]\\])/g, '\\$1')}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : null;
-};
-
 const normalizeText = (value) => (value || '').toString().trim().toLowerCase();
 const normalizeIdentifier = (value) => normalizeText(value).replace(/[^a-z0-9]/g, '');
 
@@ -108,46 +102,46 @@ export const ViewInicio = ({ setView }) => {
   const [allDocs, setAllDocs] = useState([]);
   const [allEntities, setAllEntities] = useState([]);
   const [allTypes, setAllTypes] = useState([]);
-  const [currentEntityName, setCurrentEntityName] = useState('');
+  
+  const [currentEntityName, setCurrentEntityName] = useState('Cargando...');
   const [selectedUserId, setSelectedUserId] = useState('');
+  
   const [searchTerm, setSearchTerm] = useState('');
   const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  const currentEntityId = getCookie('compas_user_id');
-  const displayName = currentEntityName || 'Usuario';
-
-  useEffect(() => {
-    if (currentEntityId && !selectedUserId) {
-      setSelectedUserId(currentEntityId);
-    }
-  }, [currentEntityId, selectedUserId]);
+  // Lógica Inteligente de Roles: Si el backend envía más de 1 usuario, es Admin.
+  const isAdmin = allEntities.length > 1;
 
   const processData = (docs, entities, types) => {
     const normalizedDocs = toArray(docs, ['documents', 'data', 'items']);
     const normalizedEntities = toArray(entities, ['entities', 'data', 'items']);
     const normalizedTypes = toArray(types, ['documentTypes', 'document_types', 'data', 'items']);
 
-    if (currentEntityId && normalizedEntities.length > 0) {
-      const entity = normalizedEntities.find((item) => item.id?.toString() === currentEntityId.toString());
-      if (entity) {
-        setCurrentEntityName(getEntityDisplayName(entity));
-      }
-    }
-
     setAllDocs(normalizedDocs);
     setAllEntities(normalizedEntities);
     setAllTypes(normalizedTypes);
+
+    // Auto-Selección Inteligente
+    if (normalizedEntities.length === 1) {
+      // Es un Usuario Normal (El backend filtró y mandó solo su perfil)
+      const me = normalizedEntities[0];
+      setSelectedUserId(me.id?.toString());
+      setCurrentEntityName(getEntityDisplayName(me));
+    } else if (normalizedEntities.length > 1) {
+      // Es un Admin. Por defecto seleccionamos el primero, o lo dejamos para que busque.
+      const firstUser = normalizedEntities[0];
+      if (!selectedUserId) {
+        setSelectedUserId(firstUser.id?.toString());
+      }
+      setCurrentEntityName('Administrador');
+    }
 
     void evaluateDocumentNotificationRules({
       documents: normalizedDocs,
       documentTypes: normalizedTypes,
       percentage: 100
     });
-
-    if (!selectedUserId && currentEntityId) {
-      setSelectedUserId(currentEntityId);
-    }
   };
 
   useEffect(() => {
@@ -158,59 +152,38 @@ export const ViewInicio = ({ setView }) => {
 
     const fetchFreshData = async () => {
       setIsSyncing(true);
-      const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
-
-      // Motor de descarga paginado seguro
-      const fetchAllPages = async (baseUrl) => {
-        let allItems = [];
-        let page = 1;
-        let hasMore = true;
-        let retries = 0;
-
-        while (hasMore && page <= 50) {
-          try {
-            const separator = baseUrl.includes('?') ? '&' : '?';
-            const response = await fetch(`${baseUrl}${separator}page=${page}&per_page=100`, requestOptions);
-            
-            if (response.status === 401) throw new Error("Sesión expirada");
-            
-            if (response.status === 429) {
-                 retries++;
-                 if (retries > 3) break;
-                 await new Promise(r => setTimeout(r, 2000));
-                 continue; 
-            }
-            retries = 0;
-
-            if (!response.ok) throw new Error(`HTTP: ${response.status}`);
-            
-            const json = await response.json();
-            let items = Array.isArray(json) ? json : (Object.keys(json).find(k => Array.isArray(json[k])) ? json[Object.keys(json).find(k => Array.isArray(json[k]))] : []);
-            
-            if (!items || items.length === 0) {
-              hasMore = false;
-            } else {
-              allItems.push(...items);
-              page++;
-              if (items.length < 100) hasMore = false;
-              await new Promise(r => setTimeout(r, 100)); 
-            }
-          } catch (e) {
-             hasMore = false;
-             console.error("Error fetching:", e);
-          }
-        }
-        return allItems;
-      };
-
       try {
-        const [types, entities, docs] = await Promise.all([
-          fetchAllPages(getApiUrl('/controldoc/document-types')),
-          fetchAllPages(getApiUrl('/controldoc/entities')),
-          fetchAllPages(getApiUrl('/controldoc/documents')) // <- Cambio CLAVE al Proxy Seguro
+        const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
+        
+        // Motor de descarga paginado para soportar la conexión segura
+        const fetchAllPages = async (path) => {
+          let all = [];
+          let page = 1;
+          let hasMore = true;
+          while (hasMore && page <= 40) {
+            const separator = path.includes('?') ? '&' : '?';
+            const res = await fetch(getApiUrl(`${path}${separator}page=${page}&per_page=100`), requestOptions);
+            
+            if (res.status === 401) throw new Error("Sesión expirada");
+            if (res.status === 429) { await new Promise(r => setTimeout(r, 2000)); continue; }
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            
+            const json = await res.json();
+            const items = Array.isArray(json) ? json : (Object.keys(json).find(k => Array.isArray(json[k])) ? json[Object.keys(json).find(k => Array.isArray(json[k]))] : []);
+            
+            if (items.length === 0) hasMore = false;
+            else { all.push(...items); page++; await new Promise(r => setTimeout(r, 100)); }
+          }
+          return all;
+        };
+
+        const [docsData, entitiesData, typesData] = await Promise.all([
+          fetchAllPages('/controldoc/documents'),
+          fetchAllPages('/controldoc/entities'),
+          fetchAllPages('/controldoc/document-types')
         ]);
 
-        processData(docs, entities, types);
+        processData(docsData, entitiesData, typesData);
       } catch (error) {
         console.error('Error sincronizando inicio:', error);
       } finally {
@@ -219,7 +192,7 @@ export const ViewInicio = ({ setView }) => {
     };
 
     fetchFreshData();
-  }, []); // Cierre correcto del useEffect
+  }, []);
 
   const getDocName = (doc) => {
     let typeName = '';
@@ -232,21 +205,15 @@ export const ViewInicio = ({ setView }) => {
     return combinedName !== '' ? combinedName : 'Documento sin nombre';
   };
 
-  const activeUserId = selectedUserId || currentEntityId || '';
+  const activeUserId = selectedUserId || '';
   const selectedEntity = allEntities.find((item) => item.id?.toString() === activeUserId.toString());
-  const selectedEntityLabel = selectedEntity ? getEntityDisplayName(selectedEntity) : displayName;
-  const selectedEntityIdentifier = formatInfoValue(
-    getEntityFieldValue(selectedEntity, ['identifier'])
-  );
-  const selectedEntitySex = formatInfoValue(
-    getEntityFieldValue(selectedEntity, ['sexo'])
-  );
-  const selectedEntityPersonalEmail = formatInfoValue(
-    getEntityFieldValue(selectedEntity, ['correo_electronico_personal'])
-  );
-  const selectedEntityCorporateEmail = formatInfoValue(
-    getEntityFieldValue(selectedEntity, ['correo_electronico_corporativo'])
-  );
+  
+  // Nombres y Datos procesados
+  const selectedEntityLabel = selectedEntity ? getEntityDisplayName(selectedEntity) : 'Cargando...';
+  const selectedEntityIdentifier = formatInfoValue(getEntityFieldValue(selectedEntity, ['identifier', 'numero_de_documento']));
+  const selectedEntitySex = formatInfoValue(getEntityFieldValue(selectedEntity, ['sexo']));
+  const selectedEntityPersonalEmail = formatInfoValue(getEntityFieldValue(selectedEntity, ['correo_electronico_personal', 'email']));
+  const selectedEntityCorporateEmail = formatInfoValue(getEntityFieldValue(selectedEntity, ['correo_electronico_corporativo']));
 
   const selectedUserDocs = useMemo(() => {
     const docs = Array.isArray(allDocs) ? allDocs : [];
@@ -318,33 +285,29 @@ export const ViewInicio = ({ setView }) => {
           entity?.document_number,
           entity?.identification,
           entity?.legal_id
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase();
+        ].filter(Boolean).join(' ').toLowerCase();
 
-        const textMatch = searchable.includes(query);
-        const identifierMatch = identifierQuery !== '' && normalizedEntityIdentifier.includes(identifierQuery);
-        return textMatch || identifierMatch;
+        return searchable.includes(query) || (identifierQuery !== '' && normalizedEntityIdentifier.includes(identifierQuery));
       })
       .slice(0, 6);
   }, [allEntities, searchTerm]);
 
   const handleSelectSuggestion = (entity) => {
-    const entityId = entity?.id?.toString() || '';
-    setSelectedUserId(entityId);
+    setSelectedUserId(entity?.id?.toString() || '');
     setSearchTerm(getEntityDisplayName(entity));
     setIsAutocompleteOpen(false);
   };
 
   const handleClearSelection = () => {
     setSearchTerm('');
-    setSelectedUserId(currentEntityId || '');
+    // Si limpia, volvemos a seleccionar al primer usuario (o a sí mismo)
+    setSelectedUserId(allEntities[0]?.id?.toString() || '');
     setIsAutocompleteOpen(false);
   };
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
+      {/* HEADER SUPERIOR */}
       <div className="bg-[#394049] p-6 flex flex-row items-center gap-4 relative overflow-hidden flex-shrink-0 text-left shadow-lg">
         <div className="absolute -right-10 -top-10 w-40 h-40 bg-white opacity-5 blur-2xl pointer-events-none"></div>
         <div className="w-16 h-16 rounded-full bg-white border-2 border-[#921E30] flex-shrink-0 flex items-center justify-center shadow-lg relative z-10 overflow-hidden">
@@ -355,53 +318,60 @@ export const ViewInicio = ({ setView }) => {
             Bienvenido
           </p>
           <h2 className="text-white text-2xl font-semibold tracking-wide">
-            {displayName}
+            {currentEntityName}
           </h2>
         </div>
       </div>
 
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
-        <div className="p-6 pb-2">
-          <div className="relative">
-            <div className="relative bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
-              <Search className="w-5 h-5 absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
-                value={searchTerm}
-                onChange={(e) => {
-                  setSearchTerm(e.target.value);
-                  setIsAutocompleteOpen(true);
-                }}
-                onFocus={() => setIsAutocompleteOpen(true)}
-                placeholder="Busca por nombre o RUT"
-                className="w-full bg-transparent py-4 pl-12 pr-4 focus:outline-none text-sm"
-              />
-            </div>
-            {isAutocompleteOpen && searchSuggestions.length > 0 && (
-              <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 max-h-60 overflow-y-auto">
-                {searchSuggestions.map((entity) => (
-                  <button
-                    key={entity.id}
-                    type="button"
-                    onClick={() => handleSelectSuggestion(entity)}
-                    className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
-                  >
-                    <p className="text-sm font-semibold text-[#394049]">{getEntityDisplayName(entity)}</p>
-                    <p className="text-xs text-gray-500">
-                      {getEntityFieldValue(entity, ['identifier']) || entity.document_number || entity.email || 'Sin identificación'}
-                    </p>
-                  </button>
-                ))}
+        
+        {/* BARRA DE BÚSQUEDA (Solo visible si es Admin) */}
+        {isAdmin && (
+          <div className="p-6 pb-2">
+            <div className="relative">
+              <div className="relative bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
+                <Search className="w-5 h-5 absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => {
+                    setSearchTerm(e.target.value);
+                    setIsAutocompleteOpen(true);
+                  }}
+                  onFocus={() => setIsAutocompleteOpen(true)}
+                  placeholder="Busca por nombre o RUT (Solo Admin)"
+                  className="w-full bg-transparent py-4 pl-12 pr-4 focus:outline-none text-sm"
+                />
               </div>
-            )}
+              {isAutocompleteOpen && searchSuggestions.length > 0 && (
+                <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 max-h-60 overflow-y-auto">
+                  {searchSuggestions.map((entity) => (
+                    <button
+                      key={entity.id}
+                      type="button"
+                      onClick={() => handleSelectSuggestion(entity)}
+                      className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
+                    >
+                      <p className="text-sm font-semibold text-[#394049]">{getEntityDisplayName(entity)}</p>
+                      <p className="text-xs text-gray-500">
+                        {getEntityFieldValue(entity, ['identifier', 'numero_de_documento']) || entity.email || 'Sin identificación'}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        )}
 
-        <div className="px-6 pb-4">
+        {/* TARJETA DE PERFIL Y ESTADÍSTICAS */}
+        <div className={`px-6 pb-4 ${!isAdmin ? 'pt-6' : ''}`}>
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
             <div className="flex items-start justify-between gap-2">
               <div>
-                <p className="text-xs uppercase font-semibold text-[#921E30]">Usuario seleccionado</p>
+                <p className="text-xs uppercase font-semibold text-[#921E30]">
+                  {isAdmin ? 'Usuario seleccionado' : 'Mi Perfil'}
+                </p>
                 <h3 className="text-base font-bold text-[#394049]">{selectedEntityLabel}</h3>
                 <p className="text-xs text-gray-500">
                   {selectedEntityIdentifier}
@@ -418,14 +388,19 @@ export const ViewInicio = ({ setView }) => {
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={handleClearSelection}
-                className="text-xs font-semibold text-[#921E30] shrink-0"
-              >
-                Mi perfil
-              </button>
+              
+              {/* Botón Mi Perfil solo para Admin para limpiar filtros rápidamente */}
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={handleClearSelection}
+                  className="text-xs font-semibold text-[#921E30] shrink-0 hover:underline"
+                >
+                  Limpiar Búsqueda
+                </button>
+              )}
             </div>
+
             <div className="grid grid-cols-3 gap-2 mt-4">
               <div className="rounded-xl bg-gray-50 p-2 text-center">
                 <p className="text-[10px] uppercase text-gray-500">Docs</p>
@@ -443,6 +418,7 @@ export const ViewInicio = ({ setView }) => {
           </div>
         </div>
 
+        {/* RESTO DE LA VISTA (Progreso, Firmas, Alertas) */}
         <div className="px-6 pt-2 pb-2 flex justify-between items-end">
           <h3 className="font-bold text-[#394049] text-lg border-b-2 border-[#921E30] pb-1">
             Porcentaje de documentos
@@ -464,7 +440,7 @@ export const ViewInicio = ({ setView }) => {
               }}
             ></div>
           </div>
-          <span className="text-doc-percentage text-lg mt-2.5 uppercase font-bold tracking-wider text-gray-800">
+          <span className="text-doc-percentage text-lg mt-2.5 uppercase font-bold tracking-wider">
             {selectedDocPercentage}%
           </span>
         </div>
