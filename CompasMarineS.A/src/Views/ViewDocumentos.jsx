@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo } from 'react';
-import { FolderOpen, Loader2, FileText, AlertCircle, Filter } from 'lucide-react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search } from 'lucide-react';
 import { getApiUrl } from '../config/api';
 import { readControlDocSnapshot, saveControlDocSnapshot } from '../storage/controlDocOffline';
 import { ApiDocumentCard } from './ApiDocumentCard'; 
@@ -18,6 +18,8 @@ const getDaysRemaining = (dateString) => {
   const diff = expirationDate.getTime() - currentDate.getTime();
   return Math.ceil(diff / (1000 * 3600 * 24));
 };
+
+const normalizeText = (value) => (value || '').toString().trim().toLowerCase();
 
 const hasPendingSignature = (doc) => {
   if (!doc || typeof doc !== 'object') return false;
@@ -85,6 +87,9 @@ export const ViewDocumentos = () => {
   const [selectedEntityId, setSelectedEntityId] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [signatureFilter, setSignatureFilter] = useState('all');
+  
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
 
   const [visibleCount, setVisibleCount] = useState(50);
 
@@ -238,6 +243,13 @@ export const ViewDocumentos = () => {
     [apiData.documentTypes]
   );
 
+  const getDocumentDisplayName = useCallback((doc) => {
+    const type = documentTypeById.get(doc.document_type_id?.toString());
+    const typeName = type?.name || type?.label || '';
+    const docLabel = doc.label || doc.name || '';
+    return `${typeName} ${docLabel}`.trim() || `Documento ${doc.id || ''}`;
+  }, [documentTypeById]);
+
   const progressMetrics = useMemo(() => {
     if (selectedEntityId === 'all') {
       return { percentage: 0, count: 0, total: 0 };
@@ -265,6 +277,8 @@ export const ViewDocumentos = () => {
       return 1000 + days;
     };
 
+    const query = normalizeText(searchTerm);
+
     return apiData.documents
       .map(doc => ({
         doc,
@@ -277,6 +291,18 @@ export const ViewDocumentos = () => {
         const typeMatch = selectedType === 'all' || docTypeId === selectedType;
         const entityMatch = selectedEntityId === 'all' || docEntityId === selectedEntityId;
         const signatureMatch = signatureFilter === 'all' || hasPendingSignature(doc);
+        const isNotBlocked = doc.aasm_state !== 'blocked';
+        const searchableText = [
+          getDocumentDisplayName(doc),
+          doc.label,
+          doc.name,
+          doc.id,
+          doc.document_type_id
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        const searchMatch = query === '' || searchableText.includes(query);
 
         let statusMatch = true;
         if (statusFilter !== 'all') {
@@ -288,16 +314,36 @@ export const ViewDocumentos = () => {
           else if (statusFilter === 'valid') statusMatch = daysRemaining > 60;
         }
 
-        return typeMatch && entityMatch && signatureMatch && statusMatch;
+          return typeMatch && entityMatch && signatureMatch && statusMatch && isNotBlocked && searchMatch;
       })
       .sort((a, b) => urgencyValue(a.daysRemaining) - urgencyValue(b.daysRemaining))
       .map(({ doc }) => doc);
-  }, [apiData.documents, selectedType, selectedEntityId, statusFilter, signatureFilter]);
+        }, [apiData.documents, selectedType, selectedEntityId, statusFilter, signatureFilter, searchTerm, getDocumentDisplayName]);
 
   const documentsToRender = useMemo(
     () => processedDocuments.slice(0, visibleCount),
     [processedDocuments, visibleCount]
   );
+
+  const totalDocumentsWithoutBlocked = useMemo(
+    () => apiData.documents.filter((doc) => doc.aasm_state !== 'blocked').length,
+    [apiData.documents]
+  );
+
+  const searchSuggestions = useMemo(() => {
+    if (!searchTerm.trim()) return [];
+    return processedDocuments.slice(0, 6);
+  }, [processedDocuments, searchTerm]);
+
+  const handleSelectSuggestion = (doc) => {
+    setSearchTerm(getDocumentDisplayName(doc));
+    setIsAutocompleteOpen(false);
+  };
+
+  const handleClearSelection = () => {
+    setSearchTerm('');
+    setIsAutocompleteOpen(false);
+  };
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
@@ -310,9 +356,9 @@ export const ViewDocumentos = () => {
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50 p-6">
         <div className="border-t border-gray-200 pt-6">
           <div className="flex flex-col gap-4 mb-4">
-            {apiData.documents.length > 0 && (
+            {totalDocumentsWithoutBlocked > 0 && (
               <span className="text-xs bg-gray-200 text-gray-600 px-3 py-1.5 rounded-full font-bold shadow-sm inline-flex items-center">
-                Mostrando {documentsToRender.length} de {processedDocuments.length} filtrados (Total: {apiData.documents.length})
+                 Mostrando {documentsToRender.length} de {processedDocuments.length} (total: {totalDocumentsWithoutBlocked} de documentos)
               </span>
             )}
 
@@ -349,6 +395,50 @@ export const ViewDocumentos = () => {
               <div className="flex items-center gap-2 mb-3 border-b pb-2">
                 <Filter className="w-4 h-4 text-[#921E30]" />
                 <h3 className="text-sm font-bold text-[#394049]">Filtros de Búsqueda</h3>
+              </div>
+              
+              <div className="mb-4">
+                <label className="block text-[10px] font-bold text-gray-500 mb-2 uppercase tracking-wider">Buscar Documento</label>
+                <div className="relative">
+                  <div className="relative bg-white rounded-lg border border-gray-300 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
+                    <Search className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      value={searchTerm}
+                      onChange={(e) => {
+                        setSearchTerm(e.target.value);
+                        setIsAutocompleteOpen(true);
+                      }}
+                      onFocus={() => setIsAutocompleteOpen(true)}
+                      placeholder="Busca por nombre o tipo de documento"
+                      className="w-full bg-transparent py-2 pl-10 pr-4 focus:outline-none text-sm"
+                    />
+                  </div>
+                  {isAutocompleteOpen && searchSuggestions.length > 0 && (
+                    <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-lg shadow-lg border border-gray-200 max-h-60 overflow-y-auto">
+                      {searchSuggestions.map((doc) => (
+                        <button
+                          key={doc.id}
+                          type="button"
+                          onClick={() => handleSelectSuggestion(doc)}
+                          className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
+                        >
+                          <p className="text-sm font-semibold text-[#394049]">{getDocumentDisplayName(doc)}</p>
+                          <p className="text-xs text-gray-500">ID: {doc.id}</p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {searchTerm && (
+                    <button
+                      type="button"
+                      onClick={handleClearSelection}
+                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
               </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
