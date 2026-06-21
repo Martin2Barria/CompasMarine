@@ -193,7 +193,7 @@ async function handleSyncUsersToDB(req, res) {
 
     console.log(`Descarga completa: ${allEntities.length} usuarios obtenidos. Guardando en MySQL...`);
 
-    let insertados = 0;
+let insertados = 0;
     for (const entity of allEntities) {
       const external_id = entity.id?.toString();
       if (!external_id) continue;
@@ -202,8 +202,9 @@ async function handleSyncUsersToDB(req, res) {
       const nombre = entity.name || entity.custom_fields?.nombre || entity.full_name || 'Sin Nombre';
       const rut = entity.identifier || entity.custom_fields?.numero_de_documento || entity.rut || null;
       
-      let emailRaw = entity.custom_fields?.correo_electronico_corporativo || 
-                     entity.custom_fields?.correo_electronico_personal || 
+      // CAMBIO 1: Priorizamos el personal poniéndolo primero
+      let emailRaw = entity.custom_fields?.correo_electronico_personal || 
+                     entity.custom_fields?.correo_electronico_corporativo || 
                      entity.email || '';
                      
       const email = emailRaw ? emailRaw.trim().toLowerCase() : null;
@@ -211,6 +212,7 @@ async function handleSyncUsersToDB(req, res) {
 
       await dbPool.execute(`
         INSERT INTO entidades_api (external_id, nombre, rut, email, customer_id, entity_type_id, data_json)
+
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
         nombre = VALUES(nombre), rut = VALUES(rut), email = VALUES(email), data_json = VALUES(data_json), sincronizado_en = CURRENT_TIMESTAMP
@@ -340,7 +342,7 @@ async function proxyControlDocRequest(req, res, requestUrl) {
   if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado. Inicia sesión.' });
 
   let userEmail = '';
-  let isAdmin = false;
+let isAdmin = false;
 
   try {
     const [userRows] = await dbPool.execute(`
@@ -367,7 +369,11 @@ async function proxyControlDocRequest(req, res, requestUrl) {
 
   if (!isAdmin) {
     try {
-      const [entityRows] = await dbPool.execute('SELECT external_id FROM entidades_api WHERE email = ?', [userEmail]);
+      // CAMBIO 3: BÚSQUEDA INTELIGENTE PARA LOS DOCUMENTOS (para que ControlDoc sepa quién es)
+      const [entityRows] = await dbPool.execute(
+          'SELECT external_id FROM entidades_api WHERE email = ? OR data_json LIKE ?', 
+          [userEmail, `%"${userEmail}"%`]
+      );
       myExternalId = entityRows.length > 0 ? entityRows[0].external_id?.toString() : 'NO_ENTITY';
       
       if (upstreamPath === '/api/v1/abstract/documents') {
@@ -538,7 +544,10 @@ async function handleLogin(req, res) {
         }
     }
 
-    const [entityRows] = await dbPool.execute('SELECT * FROM entidades_api WHERE email = ?', [email]);
+const [entityRows] = await dbPool.execute(
+        `SELECT * FROM entidades_api WHERE email = ? OR data_json LIKE ?`, 
+        [email, `%"${email}"%`]
+    );
     
     if (entityRows.length > 0) {
         let isMatched = false;
