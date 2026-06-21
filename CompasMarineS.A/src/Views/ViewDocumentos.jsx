@@ -19,6 +19,27 @@ const getDaysRemaining = (dateString) => {
   return Math.ceil(diff / (1000 * 3600 * 24));
 };
 
+const toArray = (value, fallbackKeys = []) => {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+
+  for (const key of fallbackKeys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+
+  const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
+  return dynamicArrayKey ? value[dynamicArrayKey] : [];
+};
+
+const normalizeApiData = (rawData) => {
+  const raw = rawData || {};
+  return {
+    documents: toArray(raw.documents, ['documents', 'items', 'data']),
+    entities: toArray(raw.entities, ['entities', 'items', 'data']),
+    documentTypes: toArray(raw.documentTypes || raw.document_types, ['documentTypes', 'document_types', 'items', 'data'])
+  };
+};
+
 const normalizeText = (value) => (value || '').toString().trim().toLowerCase();
 
 const hasPendingSignature = (doc) => {
@@ -106,7 +127,7 @@ export const ViewDocumentos = () => {
       const snapshot = readControlDocSnapshot();
       if (!snapshot) return false;
 
-      setApiData(snapshot.data);
+      setApiData(normalizeApiData(snapshot.data));
       const savedAt = new Date(snapshot.savedAt).toLocaleString('es-CL', {
         dateStyle: 'short', timeStyle: 'short'
       });
@@ -181,7 +202,7 @@ export const ViewDocumentos = () => {
                 }
 
                 if (syncResponse.ok) {
-                    allDocs = await syncResponse.json();
+                  allDocs = toArray(await syncResponse.json(), ['documents', 'items', 'data']);
                     syncSuccess = true;
                 } else {
                     throw new Error(`Error Sync: ${syncResponse.status}`);
@@ -214,7 +235,7 @@ export const ViewDocumentos = () => {
           return;
         }
         
-        setApiData(nextApiData);
+        setApiData(normalizeApiData(nextApiData));
         if (!hadFetchError) saveControlDocSnapshot(nextApiData);
         
         setProgressInfo('');
