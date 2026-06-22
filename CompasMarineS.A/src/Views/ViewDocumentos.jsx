@@ -1,119 +1,14 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Download, User as UserIcon, Tag } from 'lucide-react';
-
-// Mock de las funciones externas para que el archivo sea autónomo en este entorno
-const getApiUrl = (path) => `/api${path}`;
-const readControlDocSnapshot = () => null;
-const saveControlDocSnapshot = (data) => {};
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search } from 'lucide-react';
+import { getApiUrl } from '../config/api';
+import { readControlDocSnapshot, saveControlDocSnapshot } from '../storage/controlDocOffline';
+import { ApiDocumentCard } from './ApiDocumentCard'; 
 
 const urls = {
-  documents: getApiUrl('/controldoc/documents'), // Ruta del proxy seguro
+  documents: getApiUrl('/controldoc/documents'), 
   documentsSync: getApiUrl('/controldoc/documents/sync'), 
   entities: getApiUrl('/controldoc/entities'),
   documentTypes: getApiUrl('/controldoc/document-types')
-};
-
-// Componente ApiDocumentCard integrado
-const ApiDocumentCard = ({ doc, entities, documentTypes, entityById, documentTypeById }) => {
-  const entity = entityById ? entityById.get(doc.entity_id?.toString()) : entities.find(e => e.id?.toString() === doc.entity_id?.toString());
-  const docType = documentTypeById ? documentTypeById.get(doc.document_type_id?.toString()) : documentTypes.find(t => t.id?.toString() === doc.document_type_id?.toString());
-  
-  const entityName = entity?.full_name || entity?.name || entity?.label || entity?.email || doc.entity_id;
-  const typeName = docType?.name || docType?.label || docType?.id || doc.document_type_id;
-
-  let status = { text: 'Sin Fecha', days: '--', bgClass: 'bg-gray-100 text-gray-600', borderClass: 'border-gray-500', textClass: 'text-gray-600', glowClass: 'bg-gray-500' };
-  
-  let isBlocked = doc.aasm_state === 'blocked';
-
-  if (isBlocked && doc.blocked_description?.toLowerCase().includes('cargo')) {
-    isBlocked = false;
-  }
-
-  if (doc.expires_at) {
-    const expirationDate = new Date(doc.expires_at);
-    const currentDate = new Date(); 
-    currentDate.setHours(0, 0, 0, 0);
-
-    const timeDifference = expirationDate.getTime() - currentDate.getTime();
-    const daysRemaining = Math.ceil(timeDifference / (1000 * 3600 * 24));
-
-    if (isBlocked) {
-       status = { text: 'Bloqueado', days: daysRemaining > 0 ? daysRemaining : '0', bgClass: 'bg-red-50 text-[#921E30] border-red-200', borderClass: 'border-[#921E30]', textClass: 'text-[#921E30]', glowClass: 'bg-[#921E30]' };
-    } else if (daysRemaining > 30) {
-      status = { text: 'Vigente', days: daysRemaining, bgClass: 'bg-green-50 text-green-700 border-green-200', borderClass: 'border-green-500', textClass: 'text-green-600', glowClass: 'bg-green-500' };
-    } else if (daysRemaining > 0) {
-      status = { text: 'Próximo a vencer', days: daysRemaining, bgClass: 'bg-yellow-50 text-yellow-700 border-yellow-200', borderClass: 'border-yellow-400', textClass: 'text-yellow-600', glowClass: 'bg-yellow-400' };
-    } else {
-      const expired = Math.abs(daysRemaining);
-      status = { text: daysRemaining === 0 ? 'Expira hoy' : `Expirado`, days: daysRemaining === 0 ? '0' : `-${expired}`, bgClass: 'bg-red-50 text-[#921E30] border-red-200', borderClass: 'border-[#921E30]', textClass: 'text-[#921E30]', glowClass: 'bg-[#921E30]' };
-    }
-  }
-
-  const formatDate = (dateString) => {
-    if (!dateString) return 'N/A';
-    return new Date(dateString).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
-  };
-
-  return (
-    <div className="bg-white rounded-2xl p-5 relative overflow-hidden shadow-sm border border-gray-100 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 mb-4">
-      <div className="absolute top-0 right-0 w-32 h-32 bg-gray-50 rounded-bl-full z-0"></div>
-      
-      <div className="flex justify-between items-start relative z-10">
-        <div className="flex-1 pr-4">
-          <div className="flex items-center gap-2 mb-2">
-            <FileText className="w-5 h-5 text-[#394049] flex-shrink-0" />
-            <h3 className="font-bold text-[#394049] text-sm leading-tight uppercase">{doc.label || 'Documento'}</h3>
-          </div>
-          
-          <div className="space-y-1.5 mb-3 bg-gray-50 p-2 rounded-lg border border-gray-100">
-            <p className="text-xs text-gray-600 flex items-center">
-              <UserIcon className="w-3 h-3 mr-1.5 text-gray-400" />
-              <span className="font-semibold text-gray-800 truncate">{entityName}</span>
-            </p>
-            <p className="text-xs text-gray-600 flex items-center">
-              <Tag className="w-3 h-3 mr-1.5 text-gray-400" />
-              <span className="truncate">{typeName}</span>
-            </p>
-          </div>
-          
-          <div className="space-y-1 mb-3 text-xs">
-            <p className="text-gray-500 flex justify-between pr-4">
-              <span>Emisión:</span> <span className="font-medium text-gray-700">{formatDate(doc.created_at)}</span>
-            </p>
-            <p className="text-gray-500 flex justify-between pr-4">
-              <span>Expiración:</span> <span className="font-medium text-gray-700">{formatDate(doc.expires_at)}</span>
-            </p>
-          </div>
-
-          <div className="flex gap-2 items-center flex-wrap">
-            <p className={`text-[10px] font-bold inline-block px-2 py-1 rounded border ${status.bgClass} uppercase`}>
-              {status.text}
-            </p>
-            {doc.download_base64_url && (
-              <a href={doc.download_base64_url} target="_blank" rel="noreferrer" className="text-[10px] font-bold bg-[#394049] text-white px-2 py-1 rounded flex items-center hover:bg-gray-700 transition">
-                <Download className="w-3 h-3 mr-1" /> Ver/Bajar
-              </a>
-            )}
-          </div>
-
-          {isBlocked && doc.blocked_description && (
-            <div className="mt-3 bg-red-50 border border-red-200 p-2 rounded flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
-              <p className="text-[10px] text-red-700 font-medium leading-tight">{doc.blocked_description}</p>
-            </div>
-          )}
-        </div>
-
-        <div className="relative flex-shrink-0 mt-1">
-          <div className={`absolute inset-0 rounded-full blur-md opacity-20 ${status.glowClass}`}></div>
-          <div className={`w-16 h-16 rounded-full border-4 bg-white flex flex-col items-center justify-center text-center p-1 relative z-10 shadow-inner ${status.borderClass}`}>
-            <span className={`font-black text-xl leading-none tracking-tight ${status.textClass}`}>{status.days}</span>
-            <span className="text-[7px] font-semibold uppercase tracking-wider text-gray-500 mt-1 leading-tight text-center">Días<br/>Restantes</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 };
 
 const getDaysRemaining = (dateString) => {
@@ -220,12 +115,10 @@ export const ViewDocumentos = () => {
 
   const [visibleCount, setVisibleCount] = useState(50);
 
-  // 1. Resetear el contador al filtrar
   useEffect(() => {
     setVisibleCount(50);
   }, [selectedType, selectedEntityId, statusFilter, signatureFilter]);
 
-  // 2. Carga principal de datos
   useEffect(() => {
     const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -250,7 +143,7 @@ export const ViewDocumentos = () => {
       const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
       let hadFetchError = false;
 
-      // --- Paginación protegida ---
+      // Paginador Inteligente Optimizado
       const fetchAllPages = async (baseUrl, name) => {
         let allItems = [];
         let page = 1;
@@ -273,16 +166,19 @@ export const ViewDocumentos = () => {
             if (!response.ok) throw new Error(`HTTP: ${response.status}`);
             const json = await response.json();
             
-            // Extrae el array de forma inteligente sin importar cómo venga estructurado
-            let items = Array.isArray(json) ? json : (Object.keys(json).find(k => Array.isArray(json[k])) ? json[Object.keys(json).find(k => Array.isArray(json[k]))] : []);
+            const items = Array.isArray(json) ? json : (Object.keys(json).find(k => Array.isArray(json[k])) ? json[Object.keys(json).find(k => Array.isArray(json[k]))] : []);
             
-            if (!items || items.length === 0) {
-                hasMore = false;
-            } else { 
-                allItems.push(...items); 
-                page++; 
-                if (items.length < 100) hasMore = false; 
-                await delay(200); 
+            allItems.push(...items);
+
+            if (json.total_pages) {
+                hasMore = page < json.total_pages;
+            } else {
+                hasMore = items.length > 0;
+            }
+
+            if (hasMore) {
+                page++;
+                await delay(100); 
             }
           } catch (e) {
              hadFetchError = true; 
@@ -294,24 +190,19 @@ export const ViewDocumentos = () => {
       };
 
       try {
-        const allTypes = await fetchAllPages(urls.documentTypes, "Tipos");
-        const allEntities = await fetchAllPages(urls.entities, "Usuarios");
-        
-        // --- AQUÍ ESTÁ LA MAGIA ---
-        // Se cambió el urls.documentsSync antiguo por urls.documents, que es nuestro proxy filtrado en Node.js
-        const allDocs = await fetchAllPages(urls.documents, "Documentos");
+        const [allDocs, allEntities, allTypes] = await Promise.all([
+          fetchAllPages(urls.documents, "Documentos"),
+          fetchAllPages(urls.entities, "Usuarios"),
+          fetchAllPages(urls.documentTypes, "Tipos")
+        ]);
 
-        const validTypes = allTypes;
-        const validTypeIds = validTypes.map(t => t.id?.toString());
-        const validDocs = allDocs.filter(doc => validTypeIds.includes(doc.document_type_id?.toString()));
-        
         const nextApiData = {
-          documents: validDocs,
+          documents: allDocs,
           entities: allEntities,
-          documentTypes: validTypes
+          documentTypes: allTypes
         };
 
-        if (hadFetchError && validDocs.length === 0 && hasCachedData) {
+        if (hadFetchError && allDocs.length === 0 && hasCachedData) {
           setProgressInfo('');
           return;
         }
@@ -328,7 +219,7 @@ export const ViewDocumentos = () => {
     };
 
     fetchAllData();
-  }, []); // Cierre correcto del useEffect de carga
+  }, []);
 
   const relevantEntities = useMemo(() => {
     const activeEntityIds = new Set(apiData.documents.map(d => d.entity_id?.toString()));
