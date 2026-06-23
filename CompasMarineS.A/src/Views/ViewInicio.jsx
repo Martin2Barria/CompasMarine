@@ -1,8 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search, User, Clock, PenTool } from 'lucide-react';
-import { readControlDocSnapshot } from '../storage/controlDocOffline';
-import { getApiUrl } from '../config/api';
-import { evaluateDocumentNotificationRules } from '../pwa/notificationRules';
+import { Search, User, Clock, PenTool, Globe } from 'lucide-react';
+
+// Fallbacks de integración local
+const getApiUrl = (path) => `/api${path}`;
+const readControlDocSnapshot = () => {
+  try {
+    const raw = localStorage.getItem('controlDocSnapshot');
+    return raw ? { data: JSON.parse(raw) } : null;
+  } catch {
+    return null;
+  }
+};
+const evaluateDocumentNotificationRules = () => Promise.resolve();
 
 const formatDate = (dateString) => {
   if (!dateString) return 'N/A';
@@ -18,12 +27,6 @@ const getDaysRemaining = (dateString) => {
   return Math.ceil(diff / (1000 * 3600 * 24));
 };
 
-const getCookie = (name) => {
-  if (typeof document === 'undefined') return null;
-  const match = document.cookie.match(new RegExp(`(?:^|; )${name.replace(/([.*+?^${}()|[\]\\])/g, '\\$1')}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : null;
-};
-
 const normalizeText = (value) => (value || '').toString().trim().toLowerCase();
 const normalizeIdentifier = (value) => normalizeText(value).replace(/[^a-z0-9]/g, '');
 
@@ -37,24 +40,17 @@ const normalizeFieldKey = (value) =>
 
 const getEntityFieldValue = (entity, candidateKeys) => {
   if (!entity) return '';
-
   for (const key of candidateKeys) {
     const directValue = entity?.[key];
     if (directValue !== undefined && directValue !== null && `${directValue}`.trim() !== '') {
       return directValue;
     }
   }
-
   const normalizedCandidates = candidateKeys.map(normalizeFieldKey);
   const nestedSources = [
-    entity?.custom_fields,
-    entity?.customFields,
-    entity?.fields,
-    entity?.attributes,
-    entity?.metadata,
-    entity?.meta,
-    entity?.profile,
-    entity?.data
+    entity?.custom_fields, entity?.customFields, entity?.fields,
+    entity?.attributes, entity?.metadata, entity?.meta,
+    entity?.profile, entity?.data
   ].filter(Boolean);
 
   for (const source of nestedSources) {
@@ -69,7 +65,6 @@ const getEntityFieldValue = (entity, candidateKeys) => {
       }
       continue;
     }
-
     if (typeof source === 'object') {
       for (const [rawKey, rawValue] of Object.entries(source)) {
         const normalizedKey = normalizeFieldKey(rawKey);
@@ -79,7 +74,6 @@ const getEntityFieldValue = (entity, candidateKeys) => {
       }
     }
   }
-
   return '';
 };
 
@@ -92,11 +86,9 @@ const formatInfoValue = (value) => {
 const toArray = (value, fallbackKeys = []) => {
   if (Array.isArray(value)) return value;
   if (!value || typeof value !== 'object') return [];
-
   for (const key of fallbackKeys) {
     if (Array.isArray(value[key])) return value[key];
   }
-
   const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
   return dynamicArrayKey ? value[dynamicArrayKey] : [];
 };
@@ -108,32 +100,15 @@ export const ViewInicio = ({ setView }) => {
   const [allDocs, setAllDocs] = useState([]);
   const [allEntities, setAllEntities] = useState([]);
   const [allTypes, setAllTypes] = useState([]);
-  const [currentEntityName, setCurrentEntityName] = useState('');
   const [selectedUserId, setSelectedUserId] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  const currentEntityId = getCookie('compas_user_id');
-  const displayName = currentEntityName || 'Usuario';
-
-  useEffect(() => {
-    if (currentEntityId && !selectedUserId) {
-      setSelectedUserId(currentEntityId);
-    }
-  }, [currentEntityId, selectedUserId]);
-
   const processData = (docs, entities, types) => {
     const normalizedDocs = toArray(docs, ['documents', 'data', 'items']);
     const normalizedEntities = toArray(entities, ['entities', 'data', 'items']);
     const normalizedTypes = toArray(types, ['documentTypes', 'document_types', 'data', 'items']);
-
-    if (currentEntityId && normalizedEntities.length > 0) {
-      const entity = normalizedEntities.find((item) => item.id?.toString() === currentEntityId.toString());
-      if (entity) {
-        setCurrentEntityName(getEntityDisplayName(entity));
-      }
-    }
 
     setAllDocs(normalizedDocs);
     setAllEntities(normalizedEntities);
@@ -144,10 +119,6 @@ export const ViewInicio = ({ setView }) => {
       documentTypes: normalizedTypes,
       percentage: 100
     });
-
-    if (!selectedUserId && currentEntityId) {
-      setSelectedUserId(currentEntityId);
-    }
   };
 
   useEffect(() => {
@@ -161,7 +132,6 @@ export const ViewInicio = ({ setView }) => {
       try {
         const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
         
-        // Peticiones paralelas optimizadas usando los endpoints consolidados en una sola llamada del Servidor
         const [docsRes, entitiesRes, typesRes] = await Promise.all([
           fetch(getApiUrl('/controldoc/documents'), requestOptions),
           fetch(getApiUrl('/controldoc/entities'), requestOptions),
@@ -169,15 +139,7 @@ export const ViewInicio = ({ setView }) => {
         ]);
 
         if (docsRes.ok && entitiesRes.ok && typesRes.ok) {
-          const rawDocs = await docsRes.json();
-          const rawEntities = await entitiesRes.json();
-          const rawTypes = await typesRes.json();
-
-          const freshDocs = toArray(rawDocs, ['documents', 'data', 'items']);
-          const freshEntities = toArray(rawEntities, ['entities', 'data', 'items']);
-          const freshTypes = toArray(rawTypes, ['documentTypes', 'document_types', 'data', 'items']);
-
-          processData(freshDocs, freshEntities, freshTypes);
+          processData(await docsRes.json(), await entitiesRes.json(), await typesRes.json());
         }
       } catch (error) {
         console.error('Error sincronizando inicio:', error);
@@ -200,33 +162,30 @@ export const ViewInicio = ({ setView }) => {
     return combinedName !== '' ? combinedName : 'Documento sin nombre';
   };
 
-  const activeUserId = selectedUserId || currentEntityId || '';
-  const selectedEntity = allEntities.find((item) => item.id?.toString() === activeUserId.toString());
-  
-  // Si solo hay una entidad en total (Usuario normal), ocultamos la barra de búsqueda y mostramos su perfil
+  // --- LÓGICA INTELIGENTE DE ROLES E IDENTIFICACIÓN ---
   const isSingleUser = allEntities.length === 1;
+  
+  // Si es un Tripulante (1 solo registro), forzamos que su ID activo sea el de ControlDoc.
+  // Si es un Admin, usamos el ID que haya seleccionado en el buscador.
+  const activeUserId = isSingleUser && allEntities[0] ? allEntities[0].id.toString() : selectedUserId;
+  const selectedEntity = allEntities.find((item) => item.id?.toString() === activeUserId);
+  
+  // Es "Vista Global" si es un Admin y aún no ha buscado/seleccionado a ningún usuario
+  const isGlobalView = !isSingleUser && !selectedEntity;
 
-  const selectedEntityLabel = selectedEntity ? getEntityDisplayName(selectedEntity) : displayName;
-  const selectedEntityIdentifier = formatInfoValue(
-    getEntityFieldValue(selectedEntity, ['identifier'])
-  );
-  const selectedEntitySex = formatInfoValue(
-    getEntityFieldValue(selectedEntity, ['sexo'])
-  );
-  const selectedEntityPersonalEmail = formatInfoValue(
-    getEntityFieldValue(selectedEntity, ['correo_electronico_personal'])
-  );
-  const selectedEntityCorporateEmail = formatInfoValue(
-    getEntityFieldValue(selectedEntity, ['correo_electronico_corporativo'])
-  );
+  // El nombre de bienvenida cambia mágicamente según el rol
+  const welcomeName = isSingleUser && allEntities[0] 
+      ? getEntityDisplayName(allEntities[0])
+      : (isGlobalView ? 'Administrador' : getEntityDisplayName(selectedEntity));
 
   const selectedUserDocs = useMemo(() => {
     const docs = Array.isArray(allDocs) ? allDocs : [];
-    if (!activeUserId) return docs.filter((doc) => doc.aasm_state !== 'blocked');
+    if (isGlobalView) return docs.filter((doc) => doc.aasm_state !== 'blocked'); // Admin ve todos
+    if (!activeUserId) return []; // Seguridad
     return docs.filter(
       (doc) => doc.entity_id?.toString() === activeUserId.toString() && doc.aasm_state !== 'blocked'
     );
-  }, [activeUserId, allDocs]);
+  }, [isGlobalView, activeUserId, allDocs]);
 
   const selectedPendingSignatures = useMemo(() =>
     selectedUserDocs
@@ -283,17 +242,9 @@ export const ViewInicio = ({ setView }) => {
         const normalizedEntityIdentifier = normalizeIdentifier(entityIdentifier);
 
         const searchable = [
-          entity?.full_name,
-          entity?.name,
-          entity?.email,
-          entityIdentifier,
-          entity?.document_number,
-          entity?.identification,
-          entity?.legal_id
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase();
+          entity?.full_name, entity?.name, entity?.email, entityIdentifier,
+          entity?.document_number, entity?.identification, entity?.legal_id
+        ].filter(Boolean).join(' ').toLowerCase();
 
         const textMatch = searchable.includes(query);
         const identifierMatch = identifierQuery !== '' && normalizedEntityIdentifier.includes(identifierQuery);
@@ -305,13 +256,13 @@ export const ViewInicio = ({ setView }) => {
   const handleSelectSuggestion = (entity) => {
     const entityId = entity?.id?.toString() || '';
     setSelectedUserId(entityId);
-    setSearchTerm(getEntityDisplayName(entity));
+    setSearchTerm('');
     setIsAutocompleteOpen(false);
   };
 
   const handleClearSelection = () => {
     setSearchTerm('');
-    setSelectedUserId(currentEntityId || '');
+    setSelectedUserId(''); // Vuelve a la vista global de empresa
     setIsAutocompleteOpen(false);
   };
 
@@ -320,21 +271,21 @@ export const ViewInicio = ({ setView }) => {
       <div className="bg-[#394049] p-6 flex flex-row items-center gap-4 relative overflow-hidden flex-shrink-0 text-left shadow-lg">
         <div className="absolute -right-10 -top-10 w-40 h-40 bg-white opacity-5 blur-2xl pointer-events-none"></div>
         <div className="w-16 h-16 rounded-full bg-white border-2 border-[#921E30] flex-shrink-0 flex items-center justify-center shadow-lg relative z-10 overflow-hidden">
-          <User className="w-8 h-8 text-gray-300" />
+          {isGlobalView ? <Globe className="w-8 h-8 text-gray-300" /> : <User className="w-8 h-8 text-gray-300" />}
         </div>
         <div className="relative z-10">
           <p className="text-white text-xs font-bold tracking-wider uppercase opacity-90 mb-1">
             Bienvenido
           </p>
           <h2 className="text-white text-2xl font-semibold tracking-wide">
-            {selectedEntityLabel}
+            {welcomeName}
           </h2>
         </div>
       </div>
 
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
         
-        {/* Ocultamos el Buscador de Usuarios para Tripulantes (Solo visible para Admin) */}
+        {/* Buscador de Usuarios (Solo visible para Admin) */}
         {!isSingleUser && (
           <div className="p-6 pb-2">
             <div className="relative">
@@ -348,7 +299,7 @@ export const ViewInicio = ({ setView }) => {
                     setIsAutocompleteOpen(true);
                   }}
                   onFocus={() => setIsAutocompleteOpen(true)}
-                  placeholder="Busca por nombre o RUT"
+                  placeholder="Busca un tripulante por nombre o RUT..."
                   className="w-full bg-transparent py-4 pl-12 pr-4 focus:outline-none text-sm"
                 />
               </div>
@@ -363,7 +314,7 @@ export const ViewInicio = ({ setView }) => {
                     >
                       <p className="text-sm font-semibold text-[#394049]">{getEntityDisplayName(entity)}</p>
                       <p className="text-xs text-gray-500">
-                        {getEntityFieldValue(entity, ['identifier']) || entity.document_number || entity.email || 'Sin identificación'}
+                        {getEntityFieldValue(entity, ['identifier']) || entity.email || 'Sin identificación'}
                       </p>
                     </button>
                   ))}
@@ -375,38 +326,44 @@ export const ViewInicio = ({ setView }) => {
 
         <div className="px-6 pb-4 pt-4">
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <p className="text-xs uppercase font-semibold text-[#921E30]">{isSingleUser ? 'Mi Perfil' : 'Usuario seleccionado'}</p>
-                <h3 className="text-base font-bold text-[#394049]">{selectedEntityLabel}</h3>
-                <p className="text-xs text-gray-500">
-                  {selectedEntityIdentifier}
-                </p>
-                <div className="mt-2 space-y-1.5">
-                  <p className="text-xs text-gray-600">
-                    <span className="font-semibold text-gray-700">Sexo:</span> {selectedEntitySex}
-                  </p>
-                  <p className="text-xs text-gray-600 break-all">
-                    <span className="font-semibold text-gray-700">Correo personal:</span> {selectedEntityPersonalEmail}
-                  </p>
-                  <p className="text-xs text-gray-600 break-all">
-                    <span className="font-semibold text-gray-700">Correo corporativo:</span> {selectedEntityCorporateEmail}
-                  </p>
-                </div>
-              </div>
-              
-              {!isSingleUser && (
-                <button
-                  type="button"
-                  onClick={handleClearSelection}
-                  className="text-xs font-semibold text-[#921E30] shrink-0"
-                >
-                  Mi perfil
-                </button>
-              )}
-            </div>
             
-            <div className="grid grid-cols-3 gap-2 mt-4">
+            {/* Panel Inteligente: Global vs Usuario Específico */}
+            {isGlobalView ? (
+              <div className="mb-4">
+                <p className="text-xs uppercase font-semibold text-[#921E30]">Vista Global</p>
+                <h3 className="text-base font-bold text-[#394049]">Panel de Empresa</h3>
+                <p className="text-xs text-gray-500 mt-1">Estás viendo las métricas consolidadas de todos los trabajadores.</p>
+                <p className="text-xs text-[#921E30] font-medium mt-2">Utiliza el buscador superior para inspeccionar a un tripulante en específico.</p>
+              </div>
+            ) : (
+              <div className="flex items-start justify-between gap-2 mb-4">
+                <div>
+                  <p className="text-xs uppercase font-semibold text-[#921E30]">{isSingleUser ? 'Mi Perfil' : 'Usuario seleccionado'}</p>
+                  <h3 className="text-base font-bold text-[#394049]">{getEntityDisplayName(selectedEntity)}</h3>
+                  <p className="text-xs text-gray-500">
+                    {formatInfoValue(getEntityFieldValue(selectedEntity, ['identifier']))}
+                  </p>
+                  <div className="mt-2 space-y-1.5">
+                    <p className="text-xs text-gray-600">
+                      <span className="font-semibold text-gray-700">Sexo:</span> {formatInfoValue(getEntityFieldValue(selectedEntity, ['sexo']))}
+                    </p>
+                    <p className="text-xs text-gray-600 break-all">
+                      <span className="font-semibold text-gray-700">Email personal:</span> {formatInfoValue(getEntityFieldValue(selectedEntity, ['correo_electronico_personal']))}
+                    </p>
+                    <p className="text-xs text-gray-600 break-all">
+                      <span className="font-semibold text-gray-700">Email corporativo:</span> {formatInfoValue(getEntityFieldValue(selectedEntity, ['correo_electronico_corporativo']))}
+                    </p>
+                  </div>
+                </div>
+                {!isSingleUser && selectedEntity && (
+                  <button type="button" onClick={handleClearSelection} className="text-xs font-semibold text-[#921E30] shrink-0 bg-red-50 px-2 py-1 rounded-md">
+                    Ver General
+                  </button>
+                )}
+              </div>
+            )}
+            
+            <div className="grid grid-cols-3 gap-2 mt-4 pt-4 border-t border-gray-100">
               <div className="rounded-xl bg-gray-50 p-2 text-center">
                 <p className="text-[10px] uppercase text-gray-500">Docs</p>
                 <p className="text-base font-bold text-[#394049]">{selectedUserDocs.length}</p>
@@ -480,7 +437,7 @@ export const ViewInicio = ({ setView }) => {
               </div>
             ) : (
               <div className="rounded-2xl border border-dashed border-gray-200 p-4 text-center text-xs text-gray-500">
-                {isSyncing ? 'Verificando firmas pendientes...' : 'No hay firmas pendientes para este usuario.'}
+                {isSyncing ? 'Verificando firmas pendientes...' : 'No hay firmas pendientes.'}
               </div>
             )}
           </div>
@@ -540,7 +497,7 @@ export const ViewInicio = ({ setView }) => {
               </div>
             ) : (
               <div className="rounded-2xl border border-dashed border-gray-200 p-4 text-center text-xs text-gray-500">
-                {isSyncing ? 'Buscando alertas...' : '¡Excelente! No hay documentos próximos a expirar para este usuario.'}
+                {isSyncing ? 'Buscando alertas...' : '¡Excelente! No hay documentos próximos a expirar.'}
               </div>
             )}
           </div>
@@ -585,7 +542,7 @@ export const ViewInicio = ({ setView }) => {
               </div>
             ) : (
               <div className="rounded-2xl border border-dashed border-gray-200 p-4 text-center text-xs text-gray-500">
-                {isSyncing ? 'Buscando documentos vigentes...' : 'No hay documentos vigentes para este usuario.'}
+                {isSyncing ? 'Buscando documentos vigentes...' : 'No hay documentos vigentes.'}
               </div>
             )}
           </div>
