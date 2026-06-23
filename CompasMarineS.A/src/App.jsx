@@ -13,6 +13,7 @@ import { ViewInicio } from './Views/ViewInicio';
 import { ViewCapacitaciones } from './Views/ViewCapacitaciones';
 import { ViewDocumentos } from './Views/ViewDocumentos';
 import { ViewNotificaciones } from './Views/ViewNotificaciones';
+import { ViewAdmin } from './Views/ViewPanelAdmin';
 
 export default function App() {
   const [currentView, setCurrentView] = useState('inicio');
@@ -59,6 +60,7 @@ export default function App() {
         {currentView === 'capacitaciones' && <ViewCapacitaciones />}
         {currentView === 'documentos' && <ViewDocumentos />}
         {currentView === 'notificaciones' && <ViewNotificaciones setView={setCurrentView} />}
+        {currentView === 'admin' && <ViewAdmin />}
 
         <BottomNav currentView={currentView} setCurrentView={setCurrentView} />
         <PwaInstallPrompt className="absolute left-4 right-4 bottom-24" />
