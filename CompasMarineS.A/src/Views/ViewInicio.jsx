@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search, User, Clock, PenTool, Globe } from 'lucide-react';
+import { Search, User, Clock, PenTool, Globe, ShieldAlert } from 'lucide-react';
+
 
 // Fallbacks de integración local
 const getApiUrl = (path) => `/api${path}`;
@@ -93,8 +94,10 @@ const toArray = (value, fallbackKeys = []) => {
   return dynamicArrayKey ? value[dynamicArrayKey] : [];
 };
 
-const getEntityDisplayName = (entity) =>
-  entity?.full_name || entity?.name || entity?.email || `Usuario ${entity?.id || ''}`;
+const getEntityDisplayName = (entity) => {
+  if (!entity) return 'Usuario';
+  return entity.full_name || entity.name || entity.email || `Usuario ${entity.id || ''}`;
+};
 
 export const ViewInicio = ({ setView }) => {
   const [allDocs, setAllDocs] = useState([]);
@@ -163,29 +166,37 @@ export const ViewInicio = ({ setView }) => {
   };
 
   // --- LÓGICA INTELIGENTE DE ROLES E IDENTIFICACIÓN ---
-  const isSingleUser = allEntities.length === 1;
+  // Si el backend nos envía más de 1 usuario, sabemos con seguridad que somos Administradores.
+  const isAdminUser = allEntities.length > 1;
   
-  // Si es un Tripulante (1 solo registro), forzamos que su ID activo sea el de ControlDoc.
-  // Si es un Admin, usamos el ID que haya seleccionado en el buscador.
-  const activeUserId = isSingleUser && allEntities[0] ? allEntities[0].id.toString() : selectedUserId;
-  const selectedEntity = allEntities.find((item) => item.id?.toString() === activeUserId);
+  let selectedEntity = null;
   
-  // Es "Vista Global" si es un Admin y aún no ha buscado/seleccionado a ningún usuario
-  const isGlobalView = !isSingleUser && !selectedEntity;
+  if (isAdminUser) {
+    // Si es Administrador y seleccionó a alguien en el buscador, cargamos su perfil.
+    selectedEntity = selectedUserId ? allEntities.find((item) => item.id?.toString() === selectedUserId.toString()) : null;
+  } else {
+    // Si es Tripulante (1 o 0 entidades devueltas), forzamos su perfil como el activo siempre.
+    selectedEntity = allEntities.length > 0 ? allEntities[0] : null;
+  }
+  
+  const activeExternalId = selectedEntity?.id?.toString() || '';
 
-  // El nombre de bienvenida cambia mágicamente según el rol
-  const welcomeName = isSingleUser && allEntities[0] 
-      ? getEntityDisplayName(allEntities[0])
-      : (isGlobalView ? 'Administrador' : getEntityDisplayName(selectedEntity));
+  // Es "Vista Global" SOLAMENTE si es Admin y no ha seleccionado a ningún tripulante en particular.
+  const isGlobalView = isAdminUser && !selectedEntity;
+
+  // El nombre de bienvenida cambia mágicamente
+  const welcomeName = isGlobalView 
+      ? 'Administrador' 
+      : getEntityDisplayName(selectedEntity);
 
   const selectedUserDocs = useMemo(() => {
     const docs = Array.isArray(allDocs) ? allDocs : [];
     if (isGlobalView) return docs.filter((doc) => doc.aasm_state !== 'blocked'); // Admin ve todos
-    if (!activeUserId) return []; // Seguridad
+    if (!activeExternalId) return []; // Seguridad: no mostrar nada cruzado si no hay ID válido
     return docs.filter(
-      (doc) => doc.entity_id?.toString() === activeUserId.toString() && doc.aasm_state !== 'blocked'
+      (doc) => doc.entity_id?.toString() === activeExternalId && doc.aasm_state !== 'blocked'
     );
-  }, [isGlobalView, activeUserId, allDocs]);
+  }, [isGlobalView, activeExternalId, allDocs]);
 
   const selectedPendingSignatures = useMemo(() =>
     selectedUserDocs
@@ -268,25 +279,40 @@ export const ViewInicio = ({ setView }) => {
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
-      <div className="bg-[#394049] p-6 flex flex-row items-center gap-4 relative overflow-hidden flex-shrink-0 text-left shadow-lg">
+      <div className="bg-[#394049] p-6 flex flex-row items-center justify-between relative overflow-hidden flex-shrink-0 text-left shadow-lg">
         <div className="absolute -right-10 -top-10 w-40 h-40 bg-white opacity-5 blur-2xl pointer-events-none"></div>
-        <div className="w-16 h-16 rounded-full bg-white border-2 border-[#921E30] flex-shrink-0 flex items-center justify-center shadow-lg relative z-10 overflow-hidden">
-          {isGlobalView ? <Globe className="w-8 h-8 text-gray-300" /> : <User className="w-8 h-8 text-gray-300" />}
+        
+        <div className="flex items-center gap-4 relative z-10">
+          <div className="w-16 h-16 rounded-full bg-white border-2 border-[#921E30] flex-shrink-0 flex items-center justify-center shadow-lg overflow-hidden">
+            {isGlobalView ? <Globe className="w-8 h-8 text-gray-300" /> : <User className="w-8 h-8 text-gray-300" />}
+          </div>
+          <div>
+            <p className="text-white text-xs font-bold tracking-wider uppercase opacity-90 mb-1">
+              Bienvenido
+            </p>
+            <h2 className="text-white text-2xl font-semibold tracking-wide">
+              {welcomeName}
+            </h2>
+          </div>
         </div>
-        <div className="relative z-10">
-          <p className="text-white text-xs font-bold tracking-wider uppercase opacity-90 mb-1">
-            Bienvenido
-          </p>
-          <h2 className="text-white text-2xl font-semibold tracking-wide">
-            {welcomeName}
-          </h2>
-        </div>
+
+        {/* Botón hacia Panel Admin (Solo visible para Administradores) */}
+        {isAdminUser && (
+          <button 
+            onClick={() => setView('admin')}
+            className="relative z-10 bg-white/10 hover:bg-white/20 text-white p-2 rounded-xl border border-white/20 backdrop-blur-sm transition-all shadow-sm flex flex-col items-center justify-center shrink-0 cursor-pointer"
+            title="Panel de Administración"
+          >
+            <ShieldAlert className="w-5 h-5 mb-0.5" />
+            <span className="text-[9px] font-bold uppercase tracking-wider">Admin</span>
+          </button>
+        )}
       </div>
 
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
         
         {/* Buscador de Usuarios (Solo visible para Admin) */}
-        {!isSingleUser && (
+        {isAdminUser && (
           <div className="p-6 pb-2">
             <div className="relative">
               <div className="relative bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
@@ -338,7 +364,9 @@ export const ViewInicio = ({ setView }) => {
             ) : (
               <div className="flex items-start justify-between gap-2 mb-4">
                 <div>
-                  <p className="text-xs uppercase font-semibold text-[#921E30]">{isSingleUser ? 'Mi Perfil' : 'Usuario seleccionado'}</p>
+                  <p className="text-xs uppercase font-semibold text-[#921E30]">
+                    {!isAdminUser ? 'Mi Perfil' : 'Usuario seleccionado'}
+                  </p>
                   <h3 className="text-base font-bold text-[#394049]">{getEntityDisplayName(selectedEntity)}</h3>
                   <p className="text-xs text-gray-500">
                     {formatInfoValue(getEntityFieldValue(selectedEntity, ['identifier']))}
@@ -355,7 +383,7 @@ export const ViewInicio = ({ setView }) => {
                     </p>
                   </div>
                 </div>
-                {!isSingleUser && selectedEntity && (
+                {isAdminUser && selectedEntity && (
                   <button type="button" onClick={handleClearSelection} className="text-xs font-semibold text-[#921E30] shrink-0 bg-red-50 px-2 py-1 rounded-md">
                     Ver General
                   </button>
