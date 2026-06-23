@@ -1,11 +1,11 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search } from 'lucide-react';
 import { getApiUrl } from '../config/api';
 import { readControlDocSnapshot, saveControlDocSnapshot } from '../storage/controlDocOffline';
 import { ApiDocumentCard } from './ApiDocumentCard'; 
 
 const urls = {
-  documents: getApiUrl('/controldoc/documents'), 
+  documents: getApiUrl('/controldoc/documents'), // Proxy seguro filtrado
   documentsSync: getApiUrl('/controldoc/documents/sync'), 
   entities: getApiUrl('/controldoc/entities'),
   documentTypes: getApiUrl('/controldoc/document-types')
@@ -120,8 +120,6 @@ export const ViewDocumentos = () => {
   }, [selectedType, selectedEntityId, statusFilter, signatureFilter]);
 
   useEffect(() => {
-    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
     const showCachedSnapshot = () => {
       const snapshot = readControlDocSnapshot();
       if (!snapshot) return false;
@@ -143,66 +141,41 @@ export const ViewDocumentos = () => {
       const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
       let hadFetchError = false;
 
-      // Paginador Inteligente Optimizado
-      const fetchAllPages = async (baseUrl, name) => {
-        let allItems = [];
-        let page = 1;
-        let hasMore = true;
-        while (hasMore && page <= 50) {
-          try {
-            if(!hasCachedData) setProgressInfo(`Cargando ${name} (Pág. ${page})...`);
-            const separator = baseUrl.includes('?') ? '&' : '?';
-            const response = await fetch(`${baseUrl}${separator}page=${page}&per_page=100`, requestOptions);
-            
-            if (response.status === 401) {
-                throw new Error("Acceso denegado. La sesión ha expirado, por favor vuelve a iniciar sesión.");
-            }
-            if (response.status === 429) {
-                console.warn(`Límite 429 en ${name}. Pausando...`);
-                await delay(2000);
-                continue;
-            }
-
-            if (!response.ok) throw new Error(`HTTP: ${response.status}`);
-            const json = await response.json();
-            
-            const items = Array.isArray(json) ? json : (Object.keys(json).find(k => Array.isArray(json[k])) ? json[Object.keys(json).find(k => Array.isArray(json[k]))] : []);
-            
-            allItems.push(...items);
-
-            if (json.total_pages) {
-                hasMore = page < json.total_pages;
-            } else {
-                hasMore = items.length > 0;
-            }
-
-            if (hasMore) {
-                page++;
-                await delay(100); 
-            }
-          } catch (e) {
-             hadFetchError = true; 
-             hasMore = false; 
-             throw e;
+      const fetchData = async (url) => {
+        try {
+          const response = await fetch(url, requestOptions);
+          if (response.status === 401) {
+            throw new Error("Acceso denegado. Por favor, inicia sesión.");
           }
+          if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+          return await response.json();
+        } catch (e) {
+          hadFetchError = true;
+          throw e;
         }
-        return allItems;
       };
 
       try {
-        const [allDocs, allEntities, allTypes] = await Promise.all([
-          fetchAllPages(urls.documents, "Documentos"),
-          fetchAllPages(urls.entities, "Usuarios"),
-          fetchAllPages(urls.documentTypes, "Tipos")
+        if (!hasCachedData) setProgressInfo("Conectando con Compas Marine...");
+        
+        // El backend ahora emite diccionarios completos y unificados en una sola petición gracias a la optimización
+        const [allTypes, allEntities, allDocs] = await Promise.all([
+          fetchData(urls.documentTypes),
+          fetchData(urls.entities),
+          fetchData(urls.documents)
         ]);
 
+        const validTypes = allTypes;
+        const validTypeIds = validTypes.map(t => t.id?.toString());
+        const validDocs = allDocs.filter(doc => validTypeIds.includes(doc.document_type_id?.toString()));
+        
         const nextApiData = {
-          documents: allDocs,
+          documents: validDocs,
           entities: allEntities,
-          documentTypes: allTypes
+          documentTypes: validTypes
         };
 
-        if (hadFetchError && allDocs.length === 0 && hasCachedData) {
+        if (hadFetchError && validDocs.length === 0 && hasCachedData) {
           setProgressInfo('');
           return;
         }
@@ -311,7 +284,7 @@ export const ViewDocumentos = () => {
       })
       .sort((a, b) => urgencyValue(a.daysRemaining) - urgencyValue(b.daysRemaining))
       .map(({ doc }) => doc);
-        }, [apiData.documents, selectedType, selectedEntityId, statusFilter, signatureFilter, searchTerm, getDocumentDisplayName]);
+  }, [apiData.documents, selectedType, selectedEntityId, statusFilter, signatureFilter, searchTerm, getDocumentDisplayName]);
 
   const documentsToRender = useMemo(
     () => processedDocuments.slice(0, visibleCount),
@@ -506,20 +479,17 @@ export const ViewDocumentos = () => {
                   documentTypeById={documentTypeById}
                 />
               ))}
-              
-              {visibleCount < processedDocuments.length && (
-                <div className="text-center py-6">
-                  <p className="text-xs text-gray-500 mb-3">
-                    Mostrando {visibleCount} de {processedDocuments.length} documentos
-                  </p>
-                  <button 
-                    onClick={() => setVisibleCount(prev => prev + 50)}
-                    className="bg-white border-2 border-[#921E30] text-[#921E30] px-6 py-2 rounded-lg text-sm font-bold shadow-sm hover:bg-red-50 transition-colors"
-                  >
-                    Cargar más documentos...
-                  </button>
-                </div>
-              )}
+            </div>
+          )}
+          
+          {visibleCount < processedDocuments.length && (
+            <div className="text-center py-6">
+              <button 
+                onClick={() => setVisibleCount(prev => prev + 50)}
+                className="bg-white border border-gray-300 text-[#921E30] px-6 py-2 rounded-lg text-sm font-bold shadow-sm hover:bg-red-50 transition-colors"
+              >
+                Cargar más documentos...
+              </button>
             </div>
           )}
         </div>
@@ -527,4 +497,3 @@ export const ViewDocumentos = () => {
     </div>
   );
 };
-//pequeño cambio

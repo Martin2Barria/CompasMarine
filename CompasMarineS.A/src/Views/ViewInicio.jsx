@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Search, User, Clock, PenTool } from 'lucide-react';
+import { readControlDocSnapshot } from '../storage/controlDocOffline';
 import { getApiUrl } from '../config/api';
+import { evaluateDocumentNotificationRules } from '../pwa/notificationRules';
 
 const formatDate = (dateString) => {
   if (!dateString) return 'N/A';
@@ -16,8 +18,14 @@ const getDaysRemaining = (dateString) => {
   return Math.ceil(diff / (1000 * 3600 * 24));
 };
 
+const getCookie = (name) => {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name.replace(/([.*+?^${}()|[\]\\])/g, '\\$1')}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+};
+
 const normalizeText = (value) => (value || '').toString().trim().toLowerCase();
-const normalizeIdentifier = (value) => normalizeText(value).replace(/[^a-z0-9]/g);
+const normalizeIdentifier = (value) => normalizeText(value).replace(/[^a-z0-9]/g, '');
 
 const normalizeFieldKey = (value) =>
   (value || '')
@@ -29,6 +37,7 @@ const normalizeFieldKey = (value) =>
 
 const getEntityFieldValue = (entity, candidateKeys) => {
   if (!entity) return '';
+
   for (const key of candidateKeys) {
     const directValue = entity?.[key];
     if (directValue !== undefined && directValue !== null && `${directValue}`.trim() !== '') {
@@ -70,6 +79,7 @@ const getEntityFieldValue = (entity, candidateKeys) => {
       }
     }
   }
+
   return '';
 };
 
@@ -79,6 +89,18 @@ const formatInfoValue = (value) => {
   return normalized === '' ? 'No informado' : normalized;
 };
 
+const toArray = (value, fallbackKeys = []) => {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+
+  for (const key of fallbackKeys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+
+  const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
+  return dynamicArrayKey ? value[dynamicArrayKey] : [];
+};
+
 const getEntityDisplayName = (entity) =>
   entity?.full_name || entity?.name || entity?.email || `Usuario ${entity?.id || ''}`;
 
@@ -86,18 +108,60 @@ export const ViewInicio = ({ setView }) => {
   const [allDocs, setAllDocs] = useState([]);
   const [allEntities, setAllEntities] = useState([]);
   const [allTypes, setAllTypes] = useState([]);
-  const [selectedUserId, setSelectedUserId] = useState('all');
+  const [currentEntityName, setCurrentEntityName] = useState('');
+  const [selectedUserId, setSelectedUserId] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
+  const currentEntityId = getCookie('compas_user_id');
+  const displayName = currentEntityName || 'Usuario';
+
   useEffect(() => {
+    if (currentEntityId && !selectedUserId) {
+      setSelectedUserId(currentEntityId);
+    }
+  }, [currentEntityId, selectedUserId]);
+
+  const processData = (docs, entities, types) => {
+    const normalizedDocs = toArray(docs, ['documents', 'data', 'items']);
+    const normalizedEntities = toArray(entities, ['entities', 'data', 'items']);
+    const normalizedTypes = toArray(types, ['documentTypes', 'document_types', 'data', 'items']);
+
+    if (currentEntityId && normalizedEntities.length > 0) {
+      const entity = normalizedEntities.find((item) => item.id?.toString() === currentEntityId.toString());
+      if (entity) {
+        setCurrentEntityName(getEntityDisplayName(entity));
+      }
+    }
+
+    setAllDocs(normalizedDocs);
+    setAllEntities(normalizedEntities);
+    setAllTypes(normalizedTypes);
+
+    void evaluateDocumentNotificationRules({
+      documents: normalizedDocs,
+      documentTypes: normalizedTypes,
+      percentage: 100
+    });
+
+    if (!selectedUserId && currentEntityId) {
+      setSelectedUserId(currentEntityId);
+    }
+  };
+
+  useEffect(() => {
+    const snapshot = readControlDocSnapshot();
+    if (snapshot?.data) {
+      processData(snapshot.data.documents || [], snapshot.data.entities || [], snapshot.data.documentTypes || []);
+    }
+
     const fetchFreshData = async () => {
       setIsSyncing(true);
       try {
-        const requestOptions = { method: 'GET', credentials: 'same-origin' };
-
-        // ¡SÓLO 3 LLAMADAS PARALELAS Y SIN BUCLES!
+        const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
+        
+        // Peticiones paralelas optimizadas usando los endpoints consolidados en una sola llamada del Servidor
         const [docsRes, entitiesRes, typesRes] = await Promise.all([
           fetch(getApiUrl('/controldoc/documents'), requestOptions),
           fetch(getApiUrl('/controldoc/entities'), requestOptions),
@@ -105,13 +169,15 @@ export const ViewInicio = ({ setView }) => {
         ]);
 
         if (docsRes.ok && entitiesRes.ok && typesRes.ok) {
-          const docsData = await docsRes.json();
-          const entitiesData = await entitiesRes.json();
-          const typesData = await typesRes.json();
+          const rawDocs = await docsRes.json();
+          const rawEntities = await entitiesRes.json();
+          const rawTypes = await typesRes.json();
 
-          setAllDocs(docsData);
-          setAllEntities(entitiesData);
-          setAllTypes(typesData);
+          const freshDocs = toArray(rawDocs, ['documents', 'data', 'items']);
+          const freshEntities = toArray(rawEntities, ['entities', 'data', 'items']);
+          const freshTypes = toArray(rawTypes, ['documentTypes', 'document_types', 'data', 'items']);
+
+          processData(freshDocs, freshEntities, freshTypes);
         }
       } catch (error) {
         console.error('Error sincronizando inicio:', error);
@@ -123,30 +189,6 @@ export const ViewInicio = ({ setView }) => {
     fetchFreshData();
   }, []);
 
-  const isAdmin = allEntities.length > 1;
-
-  // Lógica inteligente de usuario preseleccionado
-  const activeUser = useMemo(() => {
-    if (allEntities.length === 1) return allEntities[0];
-    if (selectedUserId !== 'all') {
-      return allEntities.find(item => item.id?.toString() === selectedUserId.toString());
-    }
-    return null;
-  }, [allEntities, selectedUserId]);
-
-  const displayName = activeUser ? getEntityDisplayName(activeUser) : 'Tripulante';
-  const selectedEntityIdentifier = formatInfoValue(getEntityFieldValue(activeUser, ['identifier']));
-  const selectedEntitySex = formatInfoValue(getEntityFieldValue(activeUser, ['sexo']));
-  const selectedEntityPersonalEmail = formatInfoValue(getEntityFieldValue(activeUser, ['correo_electronico_personal']));
-  const selectedEntityCorporateEmail = formatInfoValue(getEntityFieldValue(activeUser, ['correo_electronico_corporativo']));
-
-  const selectedUserDocs = useMemo(() => {
-    if (!activeUser) return allDocs.filter(d => d.aasm_state !== 'blocked');
-    return allDocs.filter(
-      (doc) => doc.entity_id?.toString() === activeUser.id?.toString() && doc.aasm_state !== 'blocked'
-    );
-  }, [activeUser, allDocs]);
-
   const getDocName = (doc) => {
     let typeName = '';
     if (allTypes && allTypes.length > 0) {
@@ -157,6 +199,34 @@ export const ViewInicio = ({ setView }) => {
     const combinedName = `${typeName} ${docLabel}`.trim();
     return combinedName !== '' ? combinedName : 'Documento sin nombre';
   };
+
+  const activeUserId = selectedUserId || currentEntityId || '';
+  const selectedEntity = allEntities.find((item) => item.id?.toString() === activeUserId.toString());
+  
+  // Si solo hay una entidad en total (Usuario normal), ocultamos la barra de búsqueda y mostramos su perfil
+  const isSingleUser = allEntities.length === 1;
+
+  const selectedEntityLabel = selectedEntity ? getEntityDisplayName(selectedEntity) : displayName;
+  const selectedEntityIdentifier = formatInfoValue(
+    getEntityFieldValue(selectedEntity, ['identifier'])
+  );
+  const selectedEntitySex = formatInfoValue(
+    getEntityFieldValue(selectedEntity, ['sexo'])
+  );
+  const selectedEntityPersonalEmail = formatInfoValue(
+    getEntityFieldValue(selectedEntity, ['correo_electronico_personal'])
+  );
+  const selectedEntityCorporateEmail = formatInfoValue(
+    getEntityFieldValue(selectedEntity, ['correo_electronico_corporativo'])
+  );
+
+  const selectedUserDocs = useMemo(() => {
+    const docs = Array.isArray(allDocs) ? allDocs : [];
+    if (!activeUserId) return docs.filter((doc) => doc.aasm_state !== 'blocked');
+    return docs.filter(
+      (doc) => doc.entity_id?.toString() === activeUserId.toString() && doc.aasm_state !== 'blocked'
+    );
+  }, [activeUserId, allDocs]);
 
   const selectedPendingSignatures = useMemo(() =>
     selectedUserDocs
@@ -233,14 +303,15 @@ export const ViewInicio = ({ setView }) => {
   }, [allEntities, searchTerm]);
 
   const handleSelectSuggestion = (entity) => {
-    setSelectedUserId(entity?.id?.toString() || 'all');
+    const entityId = entity?.id?.toString() || '';
+    setSelectedUserId(entityId);
     setSearchTerm(getEntityDisplayName(entity));
     setIsAutocompleteOpen(false);
   };
 
   const handleClearSelection = () => {
     setSearchTerm('');
-    setSelectedUserId('all');
+    setSelectedUserId(currentEntityId || '');
     setIsAutocompleteOpen(false);
   };
 
@@ -256,102 +327,101 @@ export const ViewInicio = ({ setView }) => {
             Bienvenido
           </p>
           <h2 className="text-white text-2xl font-semibold tracking-wide">
-            {displayName}
+            {selectedEntityLabel}
           </h2>
         </div>
       </div>
 
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
         
-        {isAdmin && (
-            <div className="p-6 pb-2">
+        {/* Ocultamos el Buscador de Usuarios para Tripulantes (Solo visible para Admin) */}
+        {!isSingleUser && (
+          <div className="p-6 pb-2">
             <div className="relative">
-                <div className="relative bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
+              <div className="relative bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
                 <Search className="w-5 h-5 absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400" />
                 <input
-                    type="text"
-                    value={searchTerm}
-                    onChange={(e) => {
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => {
                     setSearchTerm(e.target.value);
                     setIsAutocompleteOpen(true);
-                    }}
-                    onFocus={() => setIsAutocompleteOpen(true)}
-                    placeholder="Busca por nombre o RUT (Solo Admin)"
-                    className="w-full bg-transparent py-4 pl-12 pr-4 focus:outline-none text-sm"
+                  }}
+                  onFocus={() => setIsAutocompleteOpen(true)}
+                  placeholder="Busca por nombre o RUT"
+                  className="w-full bg-transparent py-4 pl-12 pr-4 focus:outline-none text-sm"
                 />
-                </div>
-                {isAutocompleteOpen && searchSuggestions.length > 0 && (
+              </div>
+              {isAutocompleteOpen && searchSuggestions.length > 0 && (
                 <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 max-h-60 overflow-y-auto">
-                    {searchSuggestions.map((entity) => (
+                  {searchSuggestions.map((entity) => (
                     <button
-                        key={entity.id}
-                        type="button"
-                        onClick={() => handleSelectSuggestion(entity)}
-                        className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
-                    >
-                        <p className="text-sm font-semibold text-[#394049]">{getEntityDisplayName(entity)}</p>
-                        <p className="text-xs text-gray-500">
-                        {getEntityFieldValue(entity, ['identifier']) || entity.document_number || entity.email || 'Sin identificación'}
-                        </p>
-                    </button>
-                    ))}
-                </div>
-                )}
-            </div>
-            </div>
-        )}
-
-        {activeUser && (
-          <div className={`px-6 pb-4 ${!isAdmin ? 'pt-6' : ''}`}>
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <p className="text-xs uppercase font-semibold text-[#921E30]">
-                      {isAdmin ? 'Usuario seleccionado' : 'Mi Perfil'}
-                  </p>
-                  <h3 className="text-base font-bold text-[#394049]">{displayName}</h3>
-                  <p className="text-xs text-gray-500">
-                    {selectedEntityIdentifier}
-                  </p>
-                  <div className="mt-2 space-y-1.5">
-                    <p className="text-xs text-gray-600">
-                      <span className="font-semibold text-gray-700">Sexo:</span> {selectedEntitySex}
-                    </p>
-                    <p className="text-xs text-gray-600 break-all">
-                      <span className="font-semibold text-gray-700">Correo personal:</span> {selectedEntityPersonalEmail}
-                    </p>
-                    <p className="text-xs text-gray-600 break-all">
-                      <span className="font-semibold text-gray-700">Correo corporativo:</span> {selectedEntityCorporateEmail}
-                    </p>
-                  </div>
-                </div>
-                {isAdmin && (
-                  <button
+                      key={entity.id}
                       type="button"
-                      onClick={handleClearSelection}
-                      className="text-xs font-semibold text-[#921E30] shrink-0 hover:underline"
-                  >
-                      Limpiar
-                  </button>
-                )}
-              </div>
-              <div className="grid grid-cols-3 gap-2 mt-4">
-                <div className="rounded-xl bg-gray-50 p-2 text-center">
-                  <p className="text-[10px] uppercase text-gray-500">Docs</p>
-                  <p className="text-base font-bold text-[#394049]">{selectedUserDocs.length}</p>
+                      onClick={() => handleSelectSuggestion(entity)}
+                      className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
+                    >
+                      <p className="text-sm font-semibold text-[#394049]">{getEntityDisplayName(entity)}</p>
+                      <p className="text-xs text-gray-500">
+                        {getEntityFieldValue(entity, ['identifier']) || entity.document_number || entity.email || 'Sin identificación'}
+                      </p>
+                    </button>
+                  ))}
                 </div>
-                <div className="rounded-xl bg-red-50 p-2 text-center">
-                  <p className="text-[10px] uppercase text-gray-500">Firmas</p>
-                  <p className="text-base font-bold text-[#921E30]">{selectedPendingSignatures.length}</p>
-                </div>
-                <div className="rounded-xl bg-amber-50 p-2 text-center">
-                  <p className="text-[10px] uppercase text-gray-500">Alertas</p>
-                  <p className="text-base font-bold text-[#B8860B]">{selectedExpiringDocs.length}</p>
-                </div>
-              </div>
+              )}
             </div>
           </div>
         )}
+
+        <div className="px-6 pb-4 pt-4">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-xs uppercase font-semibold text-[#921E30]">{isSingleUser ? 'Mi Perfil' : 'Usuario seleccionado'}</p>
+                <h3 className="text-base font-bold text-[#394049]">{selectedEntityLabel}</h3>
+                <p className="text-xs text-gray-500">
+                  {selectedEntityIdentifier}
+                </p>
+                <div className="mt-2 space-y-1.5">
+                  <p className="text-xs text-gray-600">
+                    <span className="font-semibold text-gray-700">Sexo:</span> {selectedEntitySex}
+                  </p>
+                  <p className="text-xs text-gray-600 break-all">
+                    <span className="font-semibold text-gray-700">Correo personal:</span> {selectedEntityPersonalEmail}
+                  </p>
+                  <p className="text-xs text-gray-600 break-all">
+                    <span className="font-semibold text-gray-700">Correo corporativo:</span> {selectedEntityCorporateEmail}
+                  </p>
+                </div>
+              </div>
+              
+              {!isSingleUser && (
+                <button
+                  type="button"
+                  onClick={handleClearSelection}
+                  className="text-xs font-semibold text-[#921E30] shrink-0"
+                >
+                  Mi perfil
+                </button>
+              )}
+            </div>
+            
+            <div className="grid grid-cols-3 gap-2 mt-4">
+              <div className="rounded-xl bg-gray-50 p-2 text-center">
+                <p className="text-[10px] uppercase text-gray-500">Docs</p>
+                <p className="text-base font-bold text-[#394049]">{selectedUserDocs.length}</p>
+              </div>
+              <div className="rounded-xl bg-red-50 p-2 text-center">
+                <p className="text-[10px] uppercase text-gray-500">Firmas</p>
+                <p className="text-base font-bold text-[#921E30]">{selectedPendingSignatures.length}</p>
+              </div>
+              <div className="rounded-xl bg-amber-50 p-2 text-center">
+                <p className="text-[10px] uppercase text-gray-500">Alertas</p>
+                <p className="text-base font-bold text-[#B8860B]">{selectedExpiringDocs.length}</p>
+              </div>
+            </div>
+          </div>
+        </div>
 
         <div className="px-6 pt-2 pb-2 flex justify-between items-end">
           <h3 className="font-bold text-[#394049] text-lg border-b-2 border-[#921E30] pb-1">

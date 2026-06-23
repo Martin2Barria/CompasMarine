@@ -1,25 +1,12 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Download, User as UserIcon, Tag } from 'lucide-react';
+import React from 'react';
+import { FileText, User as UserIcon, Tag, Download, AlertCircle } from 'lucide-react';
 
-// Mock de las funciones externas para que compile en un solo archivo
-const getApiUrl = (path) => `/api${path}`;
-const readControlDocSnapshot = () => null;
-const saveControlDocSnapshot = (data) => {};
-
-const urls = {
-  documents: getApiUrl('/controldoc/documents'), // ¡Añadida la ruta del proxy seguro!
-  documentsSync: getApiUrl('/controldoc/documents/sync'), 
-  entities: getApiUrl('/controldoc/entities'),
-  documentTypes: getApiUrl('/controldoc/document-types')
-};
-
-// Componente ApiDocumentCard integrado
-const ApiDocumentCard = ({ doc, entities, documentTypes, entityById, documentTypeById }) => {
+export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entityById, documentTypeById }) => {
   const entity = entityById ? entityById.get(doc.entity_id?.toString()) : entities.find(e => e.id?.toString() === doc.entity_id?.toString());
   const docType = documentTypeById ? documentTypeById.get(doc.document_type_id?.toString()) : documentTypes.find(t => t.id?.toString() === doc.document_type_id?.toString());
   
-  const entityName = entity?.full_name || entity?.name || entity?.label || entity?.email || doc.entity_id;
-  const typeName = docType?.name || docType?.label || docType?.id || doc.document_type_id;
+  const entityName = entity?.full_name || entity?.name || entity?.label || entity?.email || doc.entity_id || 'Sin Nombre';
+  const typeName = docType?.name || docType?.label || docType?.id || doc.document_type_id || 'Documento';
 
   let status = { text: 'Sin Fecha', days: '--', bgClass: 'bg-gray-100 text-gray-600', borderClass: 'border-gray-500', textClass: 'text-gray-600', glowClass: 'bg-gray-500' };
   
@@ -116,89 +103,4 @@ const ApiDocumentCard = ({ doc, entities, documentTypes, entityById, documentTyp
   );
 };
 
-const getDaysRemaining = (dateString) => {
-  if (!dateString) return null;
-  const expirationDate = new Date(dateString);
-  const currentDate = new Date();
-  currentDate.setHours(0, 0, 0, 0);
-  const diff = expirationDate.getTime() - currentDate.getTime();
-  return Math.ceil(diff / (1000 * 3600 * 24));
-};
-
-const toArray = (value, fallbackKeys = []) => {
-  if (Array.isArray(value)) return value;
-  if (!value || typeof value !== 'object') return [];
-
-  for (const key of fallbackKeys) {
-    if (Array.isArray(value[key])) return value[key];
-  }
-
-  const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
-  return dynamicArrayKey ? value[dynamicArrayKey] : [];
-};
-
-const normalizeApiData = (rawData) => {
-  const raw = rawData || {};
-  return {
-    documents: toArray(raw.documents, ['documents', 'items', 'data']),
-    entities: toArray(raw.entities, ['entities', 'items', 'data']),
-    documentTypes: toArray(raw.documentTypes || raw.document_types, ['documentTypes', 'document_types', 'items', 'data'])
-  };
-};
-
-const normalizeText = (value) => (value || '').toString().trim().toLowerCase();
-
-const hasPendingSignature = (doc) => {
-  if (!doc || typeof doc !== 'object') return false;
-
-  const normalizedString = (value) => {
-    if (typeof value !== 'string') return '';
-    return value.trim().toLowerCase();
-  };
-
-  const matchesPendingText = (value) => {
-    const lower = normalizedString(value);
-    return (
-      lower === 'true' ||
-      lower === '1' ||
-      lower === 'pending' ||
-      lower === 'pendiente' ||
-      lower.includes('pendiente') ||
-      lower.includes('pending') ||
-      lower.includes('por firmar') ||
-      lower.includes('sin firmar') ||
-      lower.includes('to sign') ||
-      lower.includes('needs signature') ||
-      lower.includes('signature') && lower.includes('pending')
-    );
-  };
-
-  const keysToCheck = [
-    'pending_signature',
-    'signature_pending',
-    'pending_signatures',
-    'pending_signatures_count',
-    'signature_status',
-    'signature_state',
-    'aasm_state',
-    'state',
-    'status',
-    'workflow_state'
-  ];
-
-  for (const key of keysToCheck) {
-    const value = doc[key];
-    if (value === true) return true;
-    if (typeof value === 'number' && value > 0) return true;
-    if (matchesPendingText(value)) return true;
-  }
-
-  return Object.entries(doc).some(([key, value]) => {
-    if (!/pending.*sign|sign.*pending|signature.*pending|pending.*signature|firma|firmas/i.test(key)) {
-      return false;
-    }
-    if (value === true) return true;
-    if (typeof value === 'number' && value > 0) return true;
-    return matchesPendingText(value);
-  });
-};
+export default ApiDocumentCard;
