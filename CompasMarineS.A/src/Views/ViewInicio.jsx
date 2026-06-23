@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Search, User, Clock, PenTool, Globe, ShieldAlert } from 'lucide-react';
 
-
 // Fallbacks de integración local
 const getApiUrl = (path) => `/api${path}`;
 const readControlDocSnapshot = () => {
