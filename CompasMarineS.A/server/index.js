@@ -51,6 +51,13 @@ const securityHeaders = {
   'Referrer-Policy': 'same-origin'
 };
 
+// Configuración de Caché en el Servidor (Server Cache)
+const serverCache = {
+  documentTypes: { data: null, expiresAt: 0 },
+  entities: { data: null, expiresAt: 0 }
+};
+const CACHE_TTL = 15 * 60 * 1000; // Guardar diccionarios en caché por 15 minutos
+
 let documentsSyncCache = null;
 let lastDocumentsSyncTime = null;
 const CACHE_DURATION_MS = 5 * 60 * 1000; 
@@ -143,6 +150,55 @@ server.listen(port, host, () => {
   console.log(`Compas Marine server listening on http://${host}:${port}`);
 });
 
+// Función auxiliar para descargar de forma recursiva todas las páginas de ControlDoc (Server-side Pagination)
+async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = {}) {
+  let allItems = [];
+  let page = 1;
+  let hasMore = true;
+  
+  while (hasMore && page <= 50) {
+    const url = new URL(upstreamPath, controlDocBaseUrl);
+    url.searchParams.append('page', page);
+    url.searchParams.append('per_page', '100');
+    for (const [k, v] of Object.entries(extraParams)) {
+      url.searchParams.append(k, v);
+    }
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-User-Email': credentials.email,
+      'X-User-Token': credentials.token,
+      'Customer-Id': credentials.customerId,
+      'Entity-Type-Id': credentials.entityTypeId
+    };
+    if (credentials.authorization) headers.AUTHORIZATION = credentials.authorization;
+
+    const response = await fetch(url, { method: 'GET', headers, redirect: 'follow' });
+    if (response.status === 429) {
+      await new Promise(r => setTimeout(r, 2000));
+      continue;
+    }
+    if (!response.ok) throw new Error(`Error de ControlDoc en servidor: ${response.status}`);
+
+    const json = await response.json();
+    let items = Array.isArray(json) ? json : (Object.values(json).find(v => Array.isArray(v)) || []);
+
+    if (items.length === 0) {
+      hasMore = false;
+    } else {
+      allItems.push(...items);
+      page++;
+      // ControlDoc limita a 25 registros por página obligatoriamente
+      if (items.length < 25) {
+        hasMore = false;
+      } else {
+        await new Promise(r => setTimeout(r, 50)); 
+      }
+    }
+  }
+  return allItems;
+}
+
 async function handleSyncUsersToDB(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
   
@@ -154,46 +210,11 @@ async function handleSyncUsersToDB(req, res) {
     }
 
     const upstreamPath = '/api/v1/abstract/entities';
-    const headers = {
-      'Content-Type': 'application/json',
-      'X-User-Email': credentials.email,
-      'X-User-Token': credentials.token,
-      'Customer-Id': credentials.customerId,
-      'Entity-Type-Id': credentials.entityTypeId
-    };
-    if (credentials.authorization) headers.AUTHORIZATION = credentials.authorization;
-
-    let allEntities = [];
-    let page = 1;
-    let hasMore = true;
-
-    while (hasMore && page <= 50) {
-      const url = new URL(upstreamPath, controlDocBaseUrl);
-      url.searchParams.append('page', page);
-      url.searchParams.append('per_page', '100');
-
-      const response = await fetch(url, { method: 'GET', headers, redirect: 'follow' });
-      if (response.status === 429) {
-        await new Promise(r => setTimeout(r, 2000));
-        continue;
-      }
-      if (!response.ok) throw new Error(`Error HTTP ${response.status}`);
-
-      const json = await response.json();
-      let items = Array.isArray(json) ? json : (json.entities || []);
-
-      if (items.length === 0) {
-        hasMore = false;
-      } else {
-        allEntities.push(...items);
-        page++;
-        await new Promise(r => setTimeout(r, 200)); 
-      }
-    }
+    const allEntities = await fetchAllControlDocPages(upstreamPath, credentials);
 
     console.log(`Descarga completa: ${allEntities.length} usuarios obtenidos. Guardando en MySQL...`);
 
-let insertados = 0;
+    let insertados = 0;
     for (const entity of allEntities) {
       const external_id = entity.id?.toString();
       if (!external_id) continue;
@@ -212,7 +233,6 @@ let insertados = 0;
 
       await dbPool.execute(`
         INSERT INTO entidades_api (external_id, nombre, rut, email, customer_id, entity_type_id, data_json)
-
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
         nombre = VALUES(nombre), rut = VALUES(rut), email = VALUES(email), data_json = VALUES(data_json), sincronizado_en = CURRENT_TIMESTAMP
@@ -342,7 +362,7 @@ async function proxyControlDocRequest(req, res, requestUrl) {
   if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado. Inicia sesión.' });
 
   let userEmail = '';
-let isAdmin = false;
+  let isAdmin = false;
 
   try {
     const [userRows] = await dbPool.execute(`
@@ -362,70 +382,77 @@ let isAdmin = false;
   }
 
   const upstreamPath = controlDocRoutes.get(requestUrl.pathname);
-  const upstreamUrl = new URL(upstreamPath, controlDocBaseUrl);
-  appendSafeControlDocQueryParams(requestUrl.searchParams, upstreamUrl.searchParams);
-
-  let myExternalId = null;
-
-  if (!isAdmin) {
-    try {
-      // CAMBIO 3: BÚSQUEDA INTELIGENTE PARA LOS DOCUMENTOS (para que ControlDoc sepa quién es)
-      const [entityRows] = await dbPool.execute(
-          'SELECT external_id FROM entidades_api WHERE email = ? OR data_json LIKE ?', 
-          [userEmail, `%"${userEmail}"%`]
-      );
-      myExternalId = entityRows.length > 0 ? entityRows[0].external_id?.toString() : 'NO_ENTITY';
-      
-      if (upstreamPath === '/api/v1/abstract/documents') {
-        upstreamUrl.searchParams.set('entity_id', myExternalId);
-      }
-    } catch (e) { console.error("Error buscando external_id", e); }
-  }
-
   const credentials = resolveControlDocCredentials(req);
   if (!credentials.email || !credentials.token || !credentials.customerId || !credentials.entityTypeId) {
     sendJson(res, 500, { error: 'ControlDoc credentials are not configured on the server' });
     return;
   }
 
-  const headers = {
-    'Content-Type': 'application/json',
-    'X-User-Email': credentials.email,
-    'X-User-Token': credentials.token,
-    'Customer-Id': credentials.customerId,
-    'Entity-Type-Id': credentials.entityTypeId
-  };
+  const now = Date.now();
 
-  if (credentials.authorization) {
-    headers.AUTHORIZATION = credentials.authorization;
-  }
-
-  const upstreamResponse = await fetch(upstreamUrl, { method: 'GET', headers, redirect: 'follow' });
-
-  if (!isAdmin && upstreamResponse.ok && upstreamPath === '/api/v1/abstract/entities') {
-      try {
-          const bodyText = await upstreamResponse.text();
-          let json = JSON.parse(bodyText);
-          const filterItems = (items) => items.filter(item => item.id?.toString() === myExternalId);
-          if (Array.isArray(json)) json = filterItems(json);
-          else if (json.entities) json.entities = filterItems(json.entities);
-
-          const filteredBody = Buffer.from(JSON.stringify(json));
-          res.writeHead(upstreamResponse.status, { ...securityHeaders, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-          res.end(filteredBody);
-          return; 
-      } catch (e) {
-          console.error("Error filtrando JSON", e);
+  try {
+    // 1. Tipos de Documento (Con caché del servidor)
+    if (upstreamPath === '/api/v1/abstract/document_types') {
+      if (serverCache.documentTypes.data && serverCache.documentTypes.expiresAt > now) {
+        return sendJson(res, 200, serverCache.documentTypes.data);
       }
-  }
+      const data = await fetchAllControlDocPages(upstreamPath, credentials);
+      serverCache.documentTypes = { data, expiresAt: now + CACHE_TTL };
+      return sendJson(res, 200, data);
+    }
 
-  const body = Buffer.from(await upstreamResponse.arrayBuffer());
-  res.writeHead(upstreamResponse.status, {
-    ...securityHeaders,
-    'Content-Type': upstreamResponse.headers.get('content-type') || 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store'
-  });
-  res.end(body);
+    // 2. Entidades / Usuarios (Con caché y filtro de roles)
+    if (upstreamPath === '/api/v1/abstract/entities') {
+      let myExternalId = null;
+      try {
+        const [entityRows] = await dbPool.execute(
+          'SELECT external_id FROM entidades_api WHERE email = ? OR data_json LIKE ?', 
+          [userEmail, `%"${userEmail}"%`]
+        );
+        myExternalId = entityRows.length > 0 ? entityRows[0].external_id?.toString() : 'NO_ENTITY';
+      } catch(e) { console.error("Error buscando ID de usuario", e); }
+
+      let allEntities = [];
+      if (serverCache.entities.data && serverCache.entities.expiresAt > now) {
+        allEntities = serverCache.entities.data;
+      } else {
+        allEntities = await fetchAllControlDocPages(upstreamPath, credentials);
+        serverCache.entities = { data: allEntities, expiresAt: now + CACHE_TTL };
+      }
+
+      if (isAdmin) {
+        return sendJson(res, 200, allEntities);
+      } else {
+        const filtered = allEntities.filter(item => item.id?.toString() === myExternalId);
+        return sendJson(res, 200, filtered);
+      }
+    }
+
+    // 3. Documentos (Paginación automática de ControlDoc del lado del servidor)
+    if (upstreamPath === '/api/v1/abstract/documents') {
+      let myExternalId = null;
+      try {
+        const [entityRows] = await dbPool.execute(
+          'SELECT external_id FROM entidades_api WHERE email = ? OR data_json LIKE ?', 
+          [userEmail, `%"${userEmail}"%`]
+        );
+        myExternalId = entityRows.length > 0 ? entityRows[0].external_id?.toString() : 'NO_ENTITY';
+      } catch(e) { console.error("Error buscando ID para documentos", e); }
+
+      const extraParams = {};
+      if (!isAdmin) {
+        extraParams.entity_id = myExternalId;
+      }
+      const allDocs = await fetchAllControlDocPages(upstreamPath, credentials, extraParams);
+      return sendJson(res, 200, allDocs);
+    }
+
+    return sendJson(res, 400, { error: 'Ruta no soportada por el proxy' });
+
+  } catch (err) {
+    console.error(`Error en proxy request:`, err);
+    return sendJson(res, 500, { error: 'Fallo al procesar petición con ControlDoc', message: err.message });
+  }
 }
 
 async function handleDocumentsSync(req, res) {
@@ -544,7 +571,7 @@ async function handleLogin(req, res) {
         }
     }
 
-const [entityRows] = await dbPool.execute(
+    const [entityRows] = await dbPool.execute(
         `SELECT * FROM entidades_api WHERE email = ? OR data_json LIKE ?`, 
         [email, `%"${email}"%`]
     );
@@ -836,6 +863,7 @@ function requireSameOriginRequest(req, res) {
   return false;
 }
 
+// Validación de orígenes seguros (CORS y Origen)
 function isAllowedRequestOrigin(req) {
   const requestOrigin = getRequestOrigin(req);
   if (!requestOrigin) {

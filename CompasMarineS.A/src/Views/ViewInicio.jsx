@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Search, User, Clock, PenTool } from 'lucide-react';
-import { readControlDocSnapshot } from '../storage/controlDocOffline';
 import { getApiUrl } from '../config/api';
-import { evaluateDocumentNotificationRules } from '../pwa/notificationRules';
 
 const formatDate = (dateString) => {
   if (!dateString) return 'N/A';
@@ -18,14 +16,8 @@ const getDaysRemaining = (dateString) => {
   return Math.ceil(diff / (1000 * 3600 * 24));
 };
 
-const getCookie = (name) => {
-  if (typeof document === 'undefined') return null;
-  const match = document.cookie.match(new RegExp(`(?:^|; )${name.replace(/([.*+?^${}()|[\]\\])/g, '\\$1')}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : null;
-};
-
 const normalizeText = (value) => (value || '').toString().trim().toLowerCase();
-const normalizeIdentifier = (value) => normalizeText(value).replace(/[^a-z0-9]/g, '');
+const normalizeIdentifier = (value) => normalizeText(value).replace(/[^a-z0-9]/g);
 
 const normalizeFieldKey = (value) =>
   (value || '')
@@ -37,7 +29,6 @@ const normalizeFieldKey = (value) =>
 
 const getEntityFieldValue = (entity, candidateKeys) => {
   if (!entity) return '';
-
   for (const key of candidateKeys) {
     const directValue = entity?.[key];
     if (directValue !== undefined && directValue !== null && `${directValue}`.trim() !== '') {
@@ -79,7 +70,6 @@ const getEntityFieldValue = (entity, candidateKeys) => {
       }
     }
   }
-
   return '';
 };
 
@@ -89,18 +79,6 @@ const formatInfoValue = (value) => {
   return normalized === '' ? 'No informado' : normalized;
 };
 
-const toArray = (value, fallbackKeys = []) => {
-  if (Array.isArray(value)) return value;
-  if (!value || typeof value !== 'object') return [];
-
-  for (const key of fallbackKeys) {
-    if (Array.isArray(value[key])) return value[key];
-  }
-
-  const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
-  return dynamicArrayKey ? value[dynamicArrayKey] : [];
-};
-
 const getEntityDisplayName = (entity) =>
   entity?.full_name || entity?.name || entity?.email || `Usuario ${entity?.id || ''}`;
 
@@ -108,115 +86,33 @@ export const ViewInicio = ({ setView }) => {
   const [allDocs, setAllDocs] = useState([]);
   const [allEntities, setAllEntities] = useState([]);
   const [allTypes, setAllTypes] = useState([]);
-  const [currentEntityName, setCurrentEntityName] = useState('');
-  const [selectedUserId, setSelectedUserId] = useState('');
+  const [selectedUserId, setSelectedUserId] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  const currentEntityId = getCookie('compas_user_id');
-  const displayName = currentEntityName || 'Usuario';
-  const isAdmin = allEntities.length > 1;
-
   useEffect(() => {
-    if (currentEntityId && !selectedUserId) {
-      setSelectedUserId(currentEntityId);
-    }
-  }, [currentEntityId, selectedUserId]);
-
-  const processData = (docs, entities, types) => {
-    const normalizedDocs = toArray(docs, ['documents', 'data', 'items']);
-    const normalizedEntities = toArray(entities, ['entities', 'data', 'items']);
-    const normalizedTypes = toArray(types, ['documentTypes', 'document_types', 'data', 'items']);
-
-    const getDocName = (doc) => {
-      let typeName = '';
-      if (normalizedTypes.length > 0) {
-        const type = normalizedTypes.find((t) => t.id?.toString() === doc.document_type_id?.toString());
-        if (type) typeName = type.name || type.label || '';
-      }
-      const docLabel = doc.label || '';
-      const combinedName = `${typeName} ${docLabel}`.trim();
-      return combinedName !== '' ? combinedName : 'Documento sin nombre';
-    };
-
-    if (currentEntityId && normalizedEntities.length > 0) {
-      const entity = normalizedEntities.find((item) => item.id?.toString() === currentEntityId.toString());
-      if (entity) {
-        setCurrentEntityName(getEntityDisplayName(entity));
-      } else if (normalizedEntities.length > 1) {
-        setCurrentEntityName('Administrador');
-      }
-    }
-
-    setAllDocs(normalizedDocs);
-    setAllEntities(normalizedEntities);
-    setAllTypes(normalizedTypes);
-
-    void evaluateDocumentNotificationRules({
-      documents: normalizedDocs,
-      documentTypes: normalizedTypes,
-      percentage: 100
-    });
-
-    if (!selectedUserId && currentEntityId) {
-      setSelectedUserId(currentEntityId);
-    }
-  };
-
-  useEffect(() => {
-    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-    const snapshot = readControlDocSnapshot();
-    if (snapshot?.data) {
-      processData(snapshot.data.documents || [], snapshot.data.entities || [], snapshot.data.documentTypes || []);
-    }
-
     const fetchFreshData = async () => {
       setIsSyncing(true);
       try {
-        const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
+        const requestOptions = { method: 'GET', credentials: 'same-origin' };
 
-        // Paginador Inteligente Optimizado
-        const fetchAllPages = async (path) => {
-          let all = [];
-          let page = 1;
-          let hasMore = true;
-          
-          while (hasMore && page <= 50) {
-            const separator = path.includes('?') ? '&' : '?';
-            const res = await fetch(getApiUrl(`${path}${separator}page=${page}&per_page=100`), requestOptions);
-            
-            if (res.status === 401) throw new Error("Sesión expirada");
-            if (res.status === 429) { await delay(2000); continue; }
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            
-            const json = await res.json();
-            const items = Array.isArray(json) ? json : (Object.keys(json).find(k => Array.isArray(json[k])) ? json[Object.keys(json).find(k => Array.isArray(json[k]))] : []);
-            
-            all.push(...items);
-
-            if (json.total_pages) {
-                hasMore = page < json.total_pages;
-            } else {
-                hasMore = items.length > 0;
-            }
-
-            if (hasMore) {
-                page++;
-                await delay(100);
-            }
-          }
-          return all;
-        };
-
-        const [docsData, entitiesData, typesData] = await Promise.all([
-          fetchAllPages('/controldoc/documents'),
-          fetchAllPages('/controldoc/entities'),
-          fetchAllPages('/controldoc/document-types')
+        // ¡SÓLO 3 LLAMADAS PARALELAS Y SIN BUCLES!
+        const [docsRes, entitiesRes, typesRes] = await Promise.all([
+          fetch(getApiUrl('/controldoc/documents'), requestOptions),
+          fetch(getApiUrl('/controldoc/entities'), requestOptions),
+          fetch(getApiUrl('/controldoc/document-types'), requestOptions)
         ]);
 
-        processData(docsData, entitiesData, typesData);
+        if (docsRes.ok && entitiesRes.ok && typesRes.ok) {
+          const docsData = await docsRes.json();
+          const entitiesData = await entitiesRes.json();
+          const typesData = await typesRes.json();
+
+          setAllDocs(docsData);
+          setAllEntities(entitiesData);
+          setAllTypes(typesData);
+        }
       } catch (error) {
         console.error('Error sincronizando inicio:', error);
       } finally {
@@ -227,29 +123,29 @@ export const ViewInicio = ({ setView }) => {
     fetchFreshData();
   }, []);
 
-  const activeUserId = selectedUserId || currentEntityId || '';
-  const selectedEntity = allEntities.find((item) => item.id?.toString() === activeUserId.toString());
-  const selectedEntityLabel = selectedEntity ? getEntityDisplayName(selectedEntity) : displayName;
-  const selectedEntityIdentifier = formatInfoValue(
-    getEntityFieldValue(selectedEntity, ['identifier'])
-  );
-  const selectedEntitySex = formatInfoValue(
-    getEntityFieldValue(selectedEntity, ['sexo'])
-  );
-  const selectedEntityPersonalEmail = formatInfoValue(
-    getEntityFieldValue(selectedEntity, ['correo_electronico_personal'])
-  );
-  const selectedEntityCorporateEmail = formatInfoValue(
-    getEntityFieldValue(selectedEntity, ['correo_electronico_corporativo'])
-  );
+  const isAdmin = allEntities.length > 1;
+
+  // Lógica inteligente de usuario preseleccionado
+  const activeUser = useMemo(() => {
+    if (allEntities.length === 1) return allEntities[0];
+    if (selectedUserId !== 'all') {
+      return allEntities.find(item => item.id?.toString() === selectedUserId.toString());
+    }
+    return null;
+  }, [allEntities, selectedUserId]);
+
+  const displayName = activeUser ? getEntityDisplayName(activeUser) : 'Tripulante';
+  const selectedEntityIdentifier = formatInfoValue(getEntityFieldValue(activeUser, ['identifier']));
+  const selectedEntitySex = formatInfoValue(getEntityFieldValue(activeUser, ['sexo']));
+  const selectedEntityPersonalEmail = formatInfoValue(getEntityFieldValue(activeUser, ['correo_electronico_personal']));
+  const selectedEntityCorporateEmail = formatInfoValue(getEntityFieldValue(activeUser, ['correo_electronico_corporativo']));
 
   const selectedUserDocs = useMemo(() => {
-    const docs = Array.isArray(allDocs) ? allDocs : [];
-    if (!activeUserId) return docs.filter((doc) => doc.aasm_state !== 'blocked');
-    return docs.filter(
-      (doc) => doc.entity_id?.toString() === activeUserId.toString() && doc.aasm_state !== 'blocked'
+    if (!activeUser) return allDocs.filter(d => d.aasm_state !== 'blocked');
+    return allDocs.filter(
+      (doc) => doc.entity_id?.toString() === activeUser.id?.toString() && doc.aasm_state !== 'blocked'
     );
-  }, [activeUserId, allDocs]);
+  }, [activeUser, allDocs]);
 
   const getDocName = (doc) => {
     let typeName = '';
@@ -337,15 +233,14 @@ export const ViewInicio = ({ setView }) => {
   }, [allEntities, searchTerm]);
 
   const handleSelectSuggestion = (entity) => {
-    const entityId = entity?.id?.toString() || '';
-    setSelectedUserId(entityId);
+    setSelectedUserId(entity?.id?.toString() || 'all');
     setSearchTerm(getEntityDisplayName(entity));
     setIsAutocompleteOpen(false);
   };
 
   const handleClearSelection = () => {
     setSearchTerm('');
-    setSelectedUserId(currentEntityId || '');
+    setSelectedUserId('all');
     setIsAutocompleteOpen(false);
   };
 
@@ -406,55 +301,57 @@ export const ViewInicio = ({ setView }) => {
             </div>
         )}
 
-        <div className={`px-6 pb-4 ${!isAdmin ? 'pt-6' : ''}`}>
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <p className="text-xs uppercase font-semibold text-[#921E30]">
-                    {isAdmin ? 'Usuario seleccionado' : 'Mi Perfil'}
-                </p>
-                <h3 className="text-base font-bold text-[#394049]">{selectedEntityLabel}</h3>
-                <p className="text-xs text-gray-500">
-                  {selectedEntityIdentifier}
-                </p>
-                <div className="mt-2 space-y-1.5">
-                  <p className="text-xs text-gray-600">
-                    <span className="font-semibold text-gray-700">Sexo:</span> {selectedEntitySex}
+        {activeUser && (
+          <div className={`px-6 pb-4 ${!isAdmin ? 'pt-6' : ''}`}>
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-xs uppercase font-semibold text-[#921E30]">
+                      {isAdmin ? 'Usuario seleccionado' : 'Mi Perfil'}
                   </p>
-                  <p className="text-xs text-gray-600 break-all">
-                    <span className="font-semibold text-gray-700">Correo personal:</span> {selectedEntityPersonalEmail}
+                  <h3 className="text-base font-bold text-[#394049]">{displayName}</h3>
+                  <p className="text-xs text-gray-500">
+                    {selectedEntityIdentifier}
                   </p>
-                  <p className="text-xs text-gray-600 break-all">
-                    <span className="font-semibold text-gray-700">Correo corporativo:</span> {selectedEntityCorporateEmail}
-                  </p>
+                  <div className="mt-2 space-y-1.5">
+                    <p className="text-xs text-gray-600">
+                      <span className="font-semibold text-gray-700">Sexo:</span> {selectedEntitySex}
+                    </p>
+                    <p className="text-xs text-gray-600 break-all">
+                      <span className="font-semibold text-gray-700">Correo personal:</span> {selectedEntityPersonalEmail}
+                    </p>
+                    <p className="text-xs text-gray-600 break-all">
+                      <span className="font-semibold text-gray-700">Correo corporativo:</span> {selectedEntityCorporateEmail}
+                    </p>
+                  </div>
                 </div>
+                {isAdmin && (
+                  <button
+                      type="button"
+                      onClick={handleClearSelection}
+                      className="text-xs font-semibold text-[#921E30] shrink-0 hover:underline"
+                  >
+                      Limpiar
+                  </button>
+                )}
               </div>
-              {isAdmin && (
-                <button
-                    type="button"
-                    onClick={handleClearSelection}
-                    className="text-xs font-semibold text-[#921E30] shrink-0 hover:underline"
-                >
-                    Mi perfil
-                </button>
-              )}
-            </div>
-            <div className="grid grid-cols-3 gap-2 mt-4">
-              <div className="rounded-xl bg-gray-50 p-2 text-center">
-                <p className="text-[10px] uppercase text-gray-500">Docs</p>
-                <p className="text-base font-bold text-[#394049]">{selectedUserDocs.length}</p>
-              </div>
-              <div className="rounded-xl bg-red-50 p-2 text-center">
-                <p className="text-[10px] uppercase text-gray-500">Firmas</p>
-                <p className="text-base font-bold text-[#921E30]">{selectedPendingSignatures.length}</p>
-              </div>
-              <div className="rounded-xl bg-amber-50 p-2 text-center">
-                <p className="text-[10px] uppercase text-gray-500">Alertas</p>
-                <p className="text-base font-bold text-[#B8860B]">{selectedExpiringDocs.length}</p>
+              <div className="grid grid-cols-3 gap-2 mt-4">
+                <div className="rounded-xl bg-gray-50 p-2 text-center">
+                  <p className="text-[10px] uppercase text-gray-500">Docs</p>
+                  <p className="text-base font-bold text-[#394049]">{selectedUserDocs.length}</p>
+                </div>
+                <div className="rounded-xl bg-red-50 p-2 text-center">
+                  <p className="text-[10px] uppercase text-gray-500">Firmas</p>
+                  <p className="text-base font-bold text-[#921E30]">{selectedPendingSignatures.length}</p>
+                </div>
+                <div className="rounded-xl bg-amber-50 p-2 text-center">
+                  <p className="text-[10px] uppercase text-gray-500">Alertas</p>
+                  <p className="text-base font-bold text-[#B8860B]">{selectedExpiringDocs.length}</p>
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        )}
 
         <div className="px-6 pt-2 pb-2 flex justify-between items-end">
           <h3 className="font-bold text-[#394049] text-lg border-b-2 border-[#921E30] pb-1">
