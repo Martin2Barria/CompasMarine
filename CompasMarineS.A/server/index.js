@@ -24,9 +24,16 @@ const controlDocBaseUrl = trimTrailingSlash(
   process.env.CONTROLDOC_BASE_URL || 'https://compliance.controldoc.legal'
 );
 
-const dbPool = mysql.createPool(
-  process.env.DATABASE_URL || 'mysql://root:sGffPxtAzleDJNlqVXzsHNirJmqztYuC@thomas.proxy.rlwy.net:59617/railway'
-);
+const dbPool = mysql.createPool({
+  host: process.env.MYSQLHOST,
+  port: process.env.MYSQLPORT,
+  user: process.env.MYSQLUSER,
+  password: process.env.MYSQLPASSWORD,
+  database: process.env.MYSQLDATABASE,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
 
 const controlDocRoutes = new Map([
   ['/api/controldoc/document-types', '/api/v1/abstract/document_types'],
