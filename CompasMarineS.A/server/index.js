@@ -103,6 +103,12 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // NUEVO: Ruta para saber quién inició sesión
+    if (requestUrl.pathname === '/api/auth/me') {
+      await handleAuthMe(req, res);
+      return;
+    }
+
     if (requestUrl.pathname === '/api/notifications/vapid-public-key') {
       sendJson(res, 200, {
         publicKey: process.env.VAPID_PUBLIC_KEY || null,
@@ -351,11 +357,54 @@ async function handleSetupDB(req, res) {
       await dbPool.query(query);
     }
 
+    // --- NUEVO: CREAR USUARIO ADMIN POR DEFECTO AUTOMÁTICAMENTE ---
+    const [adminCheck] = await dbPool.execute('SELECT id FROM usuarios WHERE email = "admin@compasmarine.cl"');
+    if (adminCheck.length === 0) {
+      const hash = await bcrypt.hash('admin123', 12);
+      const [insertUser] = await dbPool.execute(
+        'INSERT INTO usuarios (nombre, email, password_hash) VALUES (?, ?, ?)',
+        ['Super Administrador', 'admin@compasmarine.cl', hash]
+      );
+      const [roleCheck] = await dbPool.execute('SELECT id FROM roles WHERE nombre = "Admin"');
+      if (roleCheck.length > 0) {
+        await dbPool.execute(
+          'INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)',
+          [insertUser.insertId, roleCheck[0].id]
+        );
+      }
+      console.log("Usuario administrador creado por defecto.");
+    }
+
     console.log("Tablas creadas con éxito.");
     sendJson(res, 200, { ok: true, message: 'Tablas creadas y roles inicializados correctamente en MySQL.' });
   } catch (error) {
     console.error('Error creando tablas:', error);
     sendJson(res, 500, { error: 'No se pudieron crear las tablas', detalle: error.message });
+  }
+}
+
+// NUEVO: Función para comprobar la sesión y rol actual
+async function handleAuthMe(req, res) {
+  if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
+  
+  const cookieUserId = getCookie(req, 'compas_user_id');
+  if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado' });
+
+  try {
+    const [userRows] = await dbPool.execute(`
+      SELECT u.id, u.nombre, u.email, r.nombre as rol 
+      FROM usuarios u 
+      LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id 
+      LEFT JOIN roles r ON ur.rol_id = r.id 
+      WHERE u.id = ? AND u.activo = TRUE
+    `, [cookieUserId]);
+    
+    if (userRows.length === 0) return sendJson(res, 401, { error: 'Usuario no encontrado o inactivo' });
+    
+    return sendJson(res, 200, { user: userRows[0] });
+  } catch (error) {
+    console.error('Error en /auth/me:', error);
+    return sendJson(res, 500, { error: 'Error interno' });
   }
 }
 
@@ -870,7 +919,6 @@ function requireSameOriginRequest(req, res) {
   return false;
 }
 
-// Validación de orígenes seguros (CORS y Origen)
 function isAllowedRequestOrigin(req) {
   const requestOrigin = getRequestOrigin(req);
   if (!requestOrigin) {
