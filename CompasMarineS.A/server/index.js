@@ -586,7 +586,6 @@ function clampInteger(value, min, max) {
 async function handleRegister(req, res) {
   sendJson(res, 403, { error: 'El registro manual está deshabilitado. Inicie sesión utilizando su Email y RUT.' });
 }
-
 async function handleLogin(req, res) {
   if (req.method !== 'POST') {
     sendJson(res, 405, { error: 'Method not allowed' });
@@ -603,15 +602,17 @@ async function handleLogin(req, res) {
     return;
   }
 
+  // Restablecemos para que sea estrictamente por Email
   const email = (payload.email || '').trim().toLowerCase();
   const password = payload.password || ''; 
 
   if (!email || !password) {
-    sendJson(res, 400, { error: 'Email y contraseña/RUT son obligatorios.' });
+    sendJson(res, 400, { error: 'El correo electrónico y la contraseña son obligatorios.' });
     return;
   }
 
   try {
+    // 1. Buscamos primero en la tabla de usuarios ya registrados (incluyendo el Admin)
     const [rows] = await dbPool.execute('SELECT * FROM usuarios WHERE email = ? AND activo = TRUE', [email]);
     
     if (rows.length > 0) {
@@ -627,6 +628,7 @@ async function handleLogin(req, res) {
         }
     }
 
+    // 2. Si no existe en usuarios, verificamos si es un Tripulante nuevo en entidades_api
     const [entityRows] = await dbPool.execute(
         `SELECT * FROM entidades_api WHERE email = ? OR data_json LIKE ?`, 
         [email, `%"${email}"%`]
@@ -636,12 +638,12 @@ async function handleLogin(req, res) {
         let isMatched = false;
         let matchedEntidad = null;
 
-        // Bucle inteligente: Busca en todos los perfiles duplicados y elimina ceros a la izquierda
+        // Bucle inteligente: Compara la contraseña ingresada con el RUT registrado para activar su cuenta
         for (const entidad of entityRows) {
             const rutDB = entidad.rut ? entidad.rut.replace(/[^0-9kK]/g, '').toLowerCase().replace(/^0+/, '') : null;
-            const inputRut = password.replace(/[^0-9kK]/g, '').toLowerCase().replace(/^0+/, '');
+            const inputPasswordRut = password.replace(/[^0-9kK]/g, '').toLowerCase().replace(/^0+/, '');
 
-            if (rutDB && rutDB === inputRut) {
+            if (rutDB && rutDB === inputPasswordRut) {
                 isMatched = true;
                 matchedEntidad = entidad;
                 break;
@@ -649,32 +651,29 @@ async function handleLogin(req, res) {
         }
 
         if (isMatched) {
-            let userIdToLogin;
+            // Es su primera vez: creamos la cuenta en la tabla usuarios y encriptamos su RUT como contraseña
+            const hash = await bcrypt.hash(password, 12); 
+            const [insertResult] = await dbPool.execute(
+                'INSERT INTO usuarios (nombre, email, password_hash) VALUES (?, ?, ?)', 
+                [matchedEntidad.nombre || email, email, hash]
+            );
+            const userIdToLogin = insertResult.insertId;
             
-            if (rows.length === 0) {
-                const hash = await bcrypt.hash(password, 12); 
-                const [insertResult] = await dbPool.execute(
-                    'INSERT INTO usuarios (nombre, email, password_hash) VALUES (?, ?, ?)', 
-                    [matchedEntidad.nombre || email, email, hash]
-                );
-                userIdToLogin = insertResult.insertId;
-                
-                try {
-                    const [roles] = await dbPool.execute('SELECT id FROM roles WHERE nombre = "Usuario" LIMIT 1');
-                    if (roles.length > 0) {
-                        await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [userIdToLogin, roles[0].id]);
-                    }
-                } catch(e) { console.error("Error asignando rol", e); }
-            } else {
-                userIdToLogin = rows[0].id; 
-            }
+            try {
+                const [roles] = await dbPool.execute('SELECT id FROM roles WHERE nombre = "Usuario" LIMIT 1');
+                if (roles.length > 0) {
+                    await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [userIdToLogin, roles[0].id]);
+                }
+            } catch(e) { console.error("Error asignando rol automático:", e); }
 
             res.setHeader('Set-Cookie', `compas_user_id=${userIdToLogin}; Path=/; HttpOnly; SameSite=Lax`);
-            return sendJson(res, 200, { ok: true, message: 'Sesión iniciada.', user: { id: userIdToLogin, nombre: matchedEntidad.nombre, email: email, rol: 'Usuario' } });
+            return sendJson(res, 200, { ok: true, message: 'Cuenta activada e inicio de sesión correcto.', user: { id: userIdToLogin, nombre: matchedEntidad.nombre, email: email, rol: 'Usuario' } });
+        } else {
+            return sendJson(res, 401, { error: 'Para activar tu cuenta por primera vez, tu contraseña debe ser tu RUT.' });
         }
     }
 
-    sendJson(res, 401, { error: 'Credenciales incorrectas o correo no registrado en ControlDoc.' });
+    sendJson(res, 401, { error: 'Credenciales incorrectas o correo no registrado en la empresa.' });
   } catch (error) {
     console.error('Error validando usuario:', error);
     sendJson(res, 500, { error: 'No se pudo iniciar sesión.' });
