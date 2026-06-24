@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { getApiUrl } from '../config/api';
+import logoCompasMarine1 from '../assets/images/compas-marine1.jpeg';
 
 export const Login = ({ onLoginSuccess, onNavigate }) => {
   const [email, setEmail] = useState('');
@@ -53,10 +54,14 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
           {/* Cabecera aislada con nombres de clase únicos */}
           <header className="auth-branding-header">
             <div className="auth-branding-logo">
-              <div className="auth-branding-text">
-                <span className="auth-branding-title">COMPAS</span>
-                <span className="auth-branding-subtitle">marine</span>
-              </div>
+              <img 
+                src={logoCompasMarine1} 
+                alt="COMPAS marine Logo" 
+                className="header-logo-img"
+                width="669"
+                height="373"
+                decoding="async"
+              />
             </div>
             
             <div className="auth-branding-titles">
@@ -71,7 +76,7 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
               <input
                 className="input"
                 type="email"
-                placeholder="correo@compas.com"
+                placeholder="Correo Electrónico Personal"
                 autoComplete="username"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -160,7 +165,7 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
           </div>
           {/* ========================================================================== */}
 
-          <p className="footer-note">Compas Marine &copy; 2026 &middot; Gestión de Tripulación</p>
+          <p className="footer-note">Compas Marine &copy; 2026 &middot; Gestión Documental</p>
         </div>
       </div>
     </main>

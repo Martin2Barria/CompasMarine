@@ -164,34 +164,36 @@ export const ViewInicio = ({ setView }) => {
     return combinedName !== '' ? combinedName : 'Documento sin nombre';
   };
 
-  // --- LÓGICA INTELIGENTE DE ROLES E IDENTIFICACIÓN ---
-  // Si el backend nos envía más de 1 usuario, sabemos con seguridad que somos Administradores.
+  // --- LÓGICA DE ROLES E IDENTIFICACIÓN ---
   const isAdminUser = allEntities.length > 1;
   
   let selectedEntity = null;
-  
   if (isAdminUser) {
-    // Si es Administrador y seleccionó a alguien en el buscador, cargamos su perfil.
     selectedEntity = selectedUserId ? allEntities.find((item) => item.id?.toString() === selectedUserId.toString()) : null;
   } else {
-    // Si es Tripulante (1 o 0 entidades devueltas), forzamos su perfil como el activo siempre.
     selectedEntity = allEntities.length > 0 ? allEntities[0] : null;
   }
   
   const activeExternalId = selectedEntity?.id?.toString() || '';
-
-  // Es "Vista Global" SOLAMENTE si es Admin y no ha seleccionado a ningún tripulante en particular.
   const isGlobalView = isAdminUser && !selectedEntity;
 
-  // El nombre de bienvenida cambia mágicamente
-  const welcomeName = isGlobalView 
-      ? 'Administrador' 
-      : getEntityDisplayName(selectedEntity);
+  // --- LÓGICA DE TEXTOS DE CABECERA ---
+  const appRoleText = isGlobalView ? 'Administrador' : 'Tripulante';
+  const fullNameText = isGlobalView ? 'Panel General de la Empresa' : getEntityDisplayName(selectedEntity);
+  const cargoHeader = isGlobalView 
+    ? 'Gestión Central' 
+    : formatInfoValue(getEntityFieldValue(selectedEntity, ['cargo', 'position', 'job_title', 'puesto']));
+
+  // --- NUEVOS CAMPOS DEL DETALLE REQUERIDOS ---
+  const detailCargo = formatInfoValue(getEntityFieldValue(selectedEntity, ['cargo', 'position', 'job_title', 'puesto']));
+  const detailEmpresa = formatInfoValue(getEntityFieldValue(selectedEntity, ['empresa', 'company', 'organization', 'razon_social']));
+  const rawContractDate = getEntityFieldValue(selectedEntity, ['fecha_contrato', 'contract_date', 'hired_at', 'fecha_ingreso']);
+  const detailFechaContrato = rawContractDate ? formatDate(rawContractDate) : 'No informado';
 
   const selectedUserDocs = useMemo(() => {
     const docs = Array.isArray(allDocs) ? allDocs : [];
-    if (isGlobalView) return docs.filter((doc) => doc.aasm_state !== 'blocked'); // Admin ve todos
-    if (!activeExternalId) return []; // Seguridad: no mostrar nada cruzado si no hay ID válido
+    if (isGlobalView) return docs.filter((doc) => doc.aasm_state !== 'blocked');
+    if (!activeExternalId) return [];
     return docs.filter(
       (doc) => doc.entity_id?.toString() === activeExternalId && doc.aasm_state !== 'blocked'
     );
@@ -236,10 +238,82 @@ export const ViewInicio = ({ setView }) => {
     if (selectedUserDocs.length === 0) return 100;
     const healthyDocs = selectedUserDocs.filter((doc) => {
       const days = getDaysRemaining(doc.expires_at);
-      return days === null || days > 30;
+      return days === null || days > 0; // Documento no caducado
     }).length;
     return Math.round((healthyDocs / selectedUserDocs.length) * 100);
   }, [selectedUserDocs]);
+
+  // --- NUEVA LÓGICA DE MÉTRICAS GLOBALES (VISTA MODERADOR) ---
+  const globalMetrics = useMemo(() => {
+    const totalDocsCount = allDocs.filter((doc) => doc.aasm_state !== 'blocked').length;
+    
+    // Contadores de documentos globales
+    let docsCaducados = 0;
+    let docsEn30Dias = 0;
+    let docsEn3060Dias = 0;
+
+    // Mapa para trazar el estado de salud de cada colaborador
+    // Estructura: { [entity_id]: 'healthy' | 'warning' | 'critical' | 'caducado' }
+    const collaboratorStatusMap = {};
+    allEntities.forEach(ent => {
+      collaboratorStatusMap[ent.id?.toString()] = 'healthy';
+    });
+
+    allDocs.forEach((doc) => {
+      if (doc.aasm_state === 'blocked') return;
+      const days = getDaysRemaining(doc.expires_at);
+      const entId = doc.entity_id?.toString();
+
+      if (days !== null) {
+        if (days < 0) {
+          docsCaducados++;
+          if (entId && collaboratorStatusMap[entId]) {
+            collaboratorStatusMap[entId] = 'caducado';
+          }
+        } else if (days >= 0 && days <= 30) {
+          docsEn30Dias++;
+          if (entId && collaboratorStatusMap[entId] && collaboratorStatusMap[entId] !== 'caducado') {
+            collaboratorStatusMap[entId] = 'critical';
+          }
+        } else if (days > 30 && days <= 60) {
+          docsEn3060Dias++;
+          if (entId && collaboratorStatusMap[entId] && !['caducado', 'critical'].includes(collaboratorStatusMap[entId])) {
+            collaboratorStatusMap[entId] = 'warning';
+          }
+        }
+      }
+    });
+
+    // Contadores de colaboradores basados en su peor documento
+    let colabCaducados = 0;
+    let colabEn30Dias = 0;
+    let colabEn3060Dias = 0;
+
+    Object.values(collaboratorStatusMap).forEach((status) => {
+      if (status === 'caducado') colabCaducados++;
+      else if (status === 'critical') colabEn30Dias++;
+      else if (status === 'warning') colabEn3060Dias++;
+    });
+
+    const totalColabs = allEntities.length;
+    const colabsAlDia = totalColabs - colabCaducados;
+    
+    const cumplimientoColaboradores = totalColabs > 0 ? Math.round((colabsAlDia / totalColabs) * 100) : 100;
+    const cumplimientoDocumental = totalDocsCount > 0 ? Math.round(((totalDocsCount - docsCaducados) / totalDocsCount) * 100) : 100;
+
+    return {
+      totalColabs,
+      cumplimientoColaboradores,
+      colabCaducados,
+      colabEn30Dias,
+      colabEn3060Dias,
+      totalDocsCount,
+      cumplimientoDocumental,
+      docsCaducados,
+      docsEn30Dias,
+      docsEn3060Dias
+    };
+  }, [allDocs, allEntities]);
 
   const searchSuggestions = useMemo(() => {
     const query = normalizeText(searchTerm);
@@ -272,30 +346,36 @@ export const ViewInicio = ({ setView }) => {
 
   const handleClearSelection = () => {
     setSearchTerm('');
-    setSelectedUserId(''); // Vuelve a la vista global de empresa
+    setSelectedUserId('');
     setIsAutocompleteOpen(false);
   };
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
+      {/* CABECERA */}
       <div className="bg-[#394049] p-6 flex flex-row items-center justify-between relative overflow-hidden flex-shrink-0 text-left shadow-lg">
         <div className="absolute -right-10 -top-10 w-40 h-40 bg-white opacity-5 blur-2xl pointer-events-none"></div>
         
         <div className="flex items-center gap-4 relative z-10">
           <div className="w-16 h-16 rounded-full bg-white border-2 border-[#921E30] flex-shrink-0 flex items-center justify-center shadow-lg overflow-hidden">
-            {isGlobalView ? <Globe className="w-8 h-8 text-gray-300" /> : <User className="w-8 h-8 text-gray-300" />}
+            {isGlobalView ? <Globe className="w-8 h-8 text-gray-400" /> : <User className="w-8 h-8 text-gray-400" />}
           </div>
-          <div>
-            <p className="text-white text-xs font-bold tracking-wider uppercase opacity-90 mb-1">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-white text-xs font-bold tracking-wider uppercase opacity-75">
               Bienvenido
-            </p>
-            <h2 className="text-white text-2xl font-semibold tracking-wide">
-              {welcomeName}
+            </span>
+            <span className="text-xs font-bold text-[#e1575f] tracking-wide uppercase">
+              {appRoleText} (ROL)
+            </span>
+            <h2 className="text-white text-xl font-bold tracking-wide leading-tight">
+              {fullNameText}
             </h2>
+            <span className="text-gray-300 text-xs italic font-light">
+              {cargoHeader}
+            </span>
           </div>
         </div>
 
-        {/* Botón hacia Panel Admin (Solo visible para Administradores) */}
         {isAdminUser && (
           <button 
             onClick={() => setView('admin')}
@@ -309,8 +389,7 @@ export const ViewInicio = ({ setView }) => {
       </div>
 
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
-        
-        {/* Buscador de Usuarios (Solo visible para Admin) */}
+        {/* Buscador de Usuarios */}
         {isAdminUser && (
           <div className="p-6 pb-2">
             <div className="relative">
@@ -349,36 +428,85 @@ export const ViewInicio = ({ setView }) => {
           </div>
         )}
 
-        <div className="px-6 pb-4 pt-4">
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-            
-            {/* Panel Inteligente: Global vs Usuario Específico */}
-            {isGlobalView ? (
-              <div className="mb-4">
-                <p className="text-xs uppercase font-semibold text-[#921E30]">Vista Global</p>
-                <h3 className="text-base font-bold text-[#394049]">Panel de Empresa</h3>
-                <p className="text-xs text-gray-500 mt-1">Estás viendo las métricas consolidadas de todos los trabajadores.</p>
-                <p className="text-xs text-[#921E30] font-medium mt-2">Utiliza el buscador superior para inspeccionar a un tripulante en específico.</p>
+        {/* Sección de Perfil o Panel Resumen Combinado */}
+        <div className="px-6 pb-4 pt-2">
+          {isGlobalView ? (
+            /* NUEVO COMPONENTE DE CUMPLIMIENTO GLOBAL ASOCIADO A LA IMAGEN REQUERIDA */
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
+              {/* Tarjeta Cumplimiento Colaboradores (Naranja) */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
+                <div className="bg-[#f96302] text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]">
+                  <h4 className="text-sm font-semibold uppercase tracking-wider opacity-90">Cumplimiento Colaboradores</h4>
+                  <p className="text-5xl font-black my-2">{globalMetrics.cumplimientoColaboradores} %</p>
+                  <p className="text-xs opacity-75">De {globalMetrics.totalColabs} Colaboradores</p>
+                </div>
+                <div className="p-4 bg-white text-center border-t border-gray-50">
+                  <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">Estado de Colaboradores</p>
+                  <div className="grid grid-cols-3 gap-1">
+                    <div>
+                      <p className="text-base font-bold text-red-600">{globalMetrics.colabCaducados}</p>
+                      <p className="text-[10px] text-gray-400 leading-tight">Caducados</p>
+                    </div>
+                    <div>
+                      <p className="text-base font-bold text-amber-600">{globalMetrics.colabEn30Dias}</p>
+                      <p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 días</p>
+                    </div>
+                    <div>
+                      <p className="text-base font-bold text-blue-600">{globalMetrics.colabEn3060Dias}</p>
+                      <p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 a 60 días</p>
+                    </div>
+                  </div>
+                </div>
               </div>
-            ) : (
+
+              {/* Tarjeta Cumplimiento Documental (Verde) */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
+                <div className="bg-[#008000] text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]">
+                  <h4 className="text-sm font-semibold uppercase tracking-wider opacity-90">Cumplimiento Documental</h4>
+                  <p className="text-5xl font-black my-2">{globalMetrics.cumplimientoDocumental} %</p>
+                  <p className="text-xs opacity-75">De {globalMetrics.totalDocsCount} Documentos</p>
+                </div>
+                <div className="p-4 bg-white text-center border-t border-gray-50">
+                  <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">Estado de Documentos</p>
+                  <div className="grid grid-cols-3 gap-1">
+                    <div>
+                      <p className="text-base font-bold text-red-600">{globalMetrics.docsCaducados}</p>
+                      <p className="text-[10px] text-gray-400 leading-tight">Caducados</p>
+                    </div>
+                    <div>
+                      <p className="text-base font-bold text-amber-600">{globalMetrics.docsEn30Dias}</p>
+                      <p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 días</p>
+                    </div>
+                    <div>
+                      <p className="text-base font-bold text-blue-600">{globalMetrics.docsEn3060Dias}</p>
+                      <p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 a 60 días</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Vista de Detalle de un Colaborador Específico */
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
               <div className="flex items-start justify-between gap-2 mb-4">
                 <div>
                   <p className="text-xs uppercase font-semibold text-[#921E30]">
                     {!isAdminUser ? 'Mi Perfil' : 'Usuario seleccionado'}
                   </p>
                   <h3 className="text-base font-bold text-[#394049]">{getEntityDisplayName(selectedEntity)}</h3>
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-gray-500 mb-2">
                     {formatInfoValue(getEntityFieldValue(selectedEntity, ['identifier']))}
                   </p>
-                  <div className="mt-2 space-y-1.5">
+                  
+                  <div className="mt-2 space-y-1.5 border-t border-gray-100 pt-2">
                     <p className="text-xs text-gray-600">
-                      <span className="font-semibold text-gray-700">Sexo:</span> {formatInfoValue(getEntityFieldValue(selectedEntity, ['sexo']))}
+                      <span className="font-semibold text-gray-700">Cargo:</span> {detailCargo}
                     </p>
-                    <p className="text-xs text-gray-600 break-all">
-                      <span className="font-semibold text-gray-700">Email personal:</span> {formatInfoValue(getEntityFieldValue(selectedEntity, ['correo_electronico_personal']))}
+                    <p className="text-xs text-gray-600">
+                      <span className="font-semibold text-gray-700">Empresa:</span> {detailEmpresa}
                     </p>
-                    <p className="text-xs text-gray-600 break-all">
-                      <span className="font-semibold text-gray-700">Email corporativo:</span> {formatInfoValue(getEntityFieldValue(selectedEntity, ['correo_electronico_corporativo']))}
+                    <p className="text-xs text-gray-600">
+                      <span className="font-semibold text-gray-700">Fecha de Contrato:</span> {detailFechaContrato}
                     </p>
                   </div>
                 </div>
@@ -388,53 +516,56 @@ export const ViewInicio = ({ setView }) => {
                   </button>
                 )}
               </div>
-            )}
-            
-            <div className="grid grid-cols-3 gap-2 mt-4 pt-4 border-t border-gray-100">
-              <div className="rounded-xl bg-gray-50 p-2 text-center">
-                <p className="text-[10px] uppercase text-gray-500">Docs</p>
-                <p className="text-base font-bold text-[#394049]">{selectedUserDocs.length}</p>
-              </div>
-              <div className="rounded-xl bg-red-50 p-2 text-center">
-                <p className="text-[10px] uppercase text-gray-500">Firmas</p>
-                <p className="text-base font-bold text-[#921E30]">{selectedPendingSignatures.length}</p>
-              </div>
-              <div className="rounded-xl bg-amber-50 p-2 text-center">
-                <p className="text-[10px] uppercase text-gray-500">Alertas</p>
-                <p className="text-base font-bold text-[#B8860B]">{selectedExpiringDocs.length}</p>
+              
+              <div className="grid grid-cols-3 gap-2 mt-4 pt-4 border-t border-gray-100">
+                <div className="rounded-xl bg-gray-50 p-2 text-center">
+                  <p className="text-[10px] uppercase text-gray-500">Docs</p>
+                  <p className="text-base font-bold text-[#394049]">{selectedUserDocs.length}</p>
+                </div>
+                <div className="rounded-xl bg-red-50 p-2 text-center">
+                  <p className="text-[10px] uppercase text-gray-500">Firmas</p>
+                  <p className="text-base font-bold text-[#921E30]">{selectedPendingSignatures.length}</p>
+                </div>
+                <div className="rounded-xl bg-amber-50 p-2 text-center">
+                  <p className="text-[10px] uppercase text-gray-500">Alertas</p>
+                  <p className="text-base font-bold text-[#B8860B]">{selectedExpiringDocs.length}</p>
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
 
+        {/* Barra de Porcentaje Individual (Se muestra siempre para un tripulante o como métrica complementaria) */}
+        {!isGlobalView && (
+          <>
+            <div className="px-6 pt-2 pb-2 flex justify-between items-end">
+              <h3 className="font-bold text-[#394049] text-sm uppercase tracking-wide opacity-75">
+                Porcentaje de documentos
+              </h3>
+            </div>
+
+            <div className="flex flex-col items-center justify-center py-4 px-8 bg-white border-y border-gray-100 mb-4">
+              <div className="w-full max-w-md bg-gray-200 rounded-full h-4 shadow-inner overflow-hidden">
+                <div
+                  className="h-4 rounded-full transition-all duration-500"
+                  style={{
+                    width: `${selectedDocPercentage}%`,
+                    backgroundColor: selectedDocPercentage === 100 ? '#22c55e' : '#f96302'
+                  }}
+                ></div>
+              </div>
+              <span className="text-sm mt-1.5 font-bold text-gray-700">
+                {selectedDocPercentage}%
+              </span>
+            </div>
+          </>
+        )}
+
+        {/* Listado de Firmas Pendientes */}
         <div className="px-6 pt-2 pb-2 flex justify-between items-end">
-          <h3 className="font-bold text-[#394049] text-lg border-b-2 border-[#921E30] pb-1">
-            Porcentaje de documentos
+          <h3 className="font-bold text-[#394049] text-base border-b-2 border-[#921E30] pb-0.5">
+            {isGlobalView ? 'Firmas Pendientes Globales' : 'Mis Firmas Pendientes'}
           </h3>
-        </div>
-
-        <div className="flex flex-col items-center justify-center py-6 px-8 bg-white">
-          <div className="w-full max-w-md bg-gray-800 rounded-full h-6 shadow-lg overflow-hidden">
-            <div
-              className="h-6 rounded-full transition-all duration-500"
-              style={{
-                width: `${selectedDocPercentage}%`,
-                backgroundColor:
-                  selectedDocPercentage >= 80
-                    ? '#22c55e'
-                    : selectedDocPercentage >= 50
-                    ? '#B8860B'
-                    : '#FF0000'
-              }}
-            ></div>
-          </div>
-          <span className="text-doc-percentage text-lg mt-2.5 uppercase font-bold tracking-wider">
-            {selectedDocPercentage}%
-          </span>
-        </div>
-
-        <div className="px-6 pt-4 pb-2 flex justify-between items-end">
-          <h3 className="font-bold text-[#394049] text-lg border-b-2 border-[#921E30] pb-1">Firmas Pendientes</h3>
           <button onClick={() => setView('firmas')} className="text-xs font-semibold text-[#921E30]">Ver todas</button>
         </div>
 
@@ -442,13 +573,15 @@ export const ViewInicio = ({ setView }) => {
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
             {selectedPendingSignatures.length > 0 ? (
               <div className="space-y-3">
-                {selectedPendingSignatures.map((doc) => (
+                {selectedPendingSignatures.slice(0, 5).map((doc) => (
                   <div key={doc.id} className="flex justify-between items-center bg-red-50 p-3 rounded-lg border border-red-100 mb-2 hover:shadow-md transition">
                     <div className="flex items-center gap-3 overflow-hidden">
                       <PenTool className="w-5 h-5 text-[#921E30] shrink-0" />
                       <div className="min-w-0">
                         <p className="text-sm font-semibold text-[#394049] truncate">{doc.displayName}</p>
-                        <p className="text-[11px] text-gray-500 truncate">Requiere firma digital vía CDOC</p>
+                        <p className="text-[11px] text-gray-500 truncate">
+                          {isGlobalView ? `Asignado a: Ente ID ${doc.entity_id}` : 'Requiere tu firma digital'}
+                        </p>
                       </div>
                     </div>
                     <a
@@ -461,25 +594,29 @@ export const ViewInicio = ({ setView }) => {
                     </a>
                   </div>
                 ))}
+                {selectedPendingSignatures.length > 5 && (
+                  <p className="text-center text-xs text-gray-400 pt-1">Y {selectedPendingSignatures.length - 5} firmas más pendientes...</p>
+                )}
               </div>
             ) : (
-              <div className="rounded-2xl border border-dashed border-gray-200 p-4 text-center text-xs text-gray-500">
-                {isSyncing ? 'Verificando firmas pendientes...' : 'No hay firmas pendientes.'}
+              <div className="rounded-xl border border-dashed border-gray-200 p-4 text-center text-xs text-gray-500">
+                {isSyncing ? 'Verificando firmas...' : 'No hay firmas pendientes registradas.'}
               </div>
             )}
           </div>
         </div>
 
+        {/* Listado de Alertas / Documentos por Vencer */}
         <div className="px-6 mb-6">
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
             <div className="flex items-center justify-between mb-4">
               <div>
                 <p className="text-xs uppercase font-semibold text-[#921E30]">Alertas</p>
-                <h4 className="text-base font-bold text-[#394049]">Documentos por Vencer</h4>
+                <h4 className="text-base font-bold text-[#394049]">Documentos Próximos a Vencer</h4>
               </div>
               <div className="inline-flex items-center gap-2 text-xs text-gray-500">
                 {isSyncing ? (
-                  <span className="flex items-center text-blue-500 animate-pulse"><Clock className="w-3 h-3 mr-1" /> Actualizando...</span>
+                  <span className="flex items-center text-blue-500 animate-pulse"><Clock className="w-3 h-3 mr-1" /> Sincronizando...</span>
                 ) : (
                   <><Clock className="w-4 h-4" /> Alertas activas</>
                 )}
@@ -488,7 +625,7 @@ export const ViewInicio = ({ setView }) => {
 
             {selectedExpiringDocs.length > 0 ? (
               <div className="space-y-3">
-                {selectedExpiringDocs.map((doc) => {
+                {selectedExpiringDocs.slice(0, 5).map((doc) => {
                   const isExpired = doc.daysRemaining < 0;
                   const isCritical = doc.daysRemaining >= 0 && doc.daysRemaining <= 30;
                   const isWarning = doc.daysRemaining > 30 && doc.daysRemaining <= 60;
@@ -498,23 +635,23 @@ export const ViewInicio = ({ setView }) => {
                   let statusText = '';
 
                   if (isExpired || isCritical) {
-                    colorClass = 'bg-[#FF0000]/10 border-[#FF0000]';
-                    textColor = 'text-[#FF0000]';
-                    statusText = isExpired ? `Expirado hace ${Math.abs(doc.daysRemaining)} días` : `Expira en ${doc.daysRemaining} días`;
+                    colorClass = 'bg-red-50 border-red-200';
+                    textColor = 'text-red-700';
+                    statusText = isExpired ? `Expirado (${Math.abs(doc.daysRemaining)}d)` : `Expira en ${doc.daysRemaining}d`;
                   } else if (isWarning) {
-                    colorClass = 'bg-[#B8860B]/10 border-[#B8860B]';
-                    textColor = 'text-[#B8860B]';
-                    statusText = `Expira en ${doc.daysRemaining} días`;
+                    colorClass = 'bg-amber-50 border-amber-200';
+                    textColor = 'text-amber-700';
+                    statusText = `Expira en ${doc.daysRemaining}d`;
                   }
 
                   return (
-                    <div key={doc.id} className="rounded-2xl border border-gray-200 p-3 bg-white shadow-sm hover:shadow transition">
+                    <div key={doc.id} className={`rounded-xl border p-3 bg-white shadow-sm hover:shadow transition ${colorClass}`}>
                       <div className="flex justify-between items-start gap-3">
                         <div className="flex-1 overflow-hidden">
                           <p className="text-sm font-semibold text-[#394049] truncate">{doc.displayName}</p>
-                          <p className="text-[11px] text-gray-500">Expira {formatDate(doc.expires_at)}</p>
+                          <p className="text-[11px] text-gray-500">Vence el {formatDate(doc.expires_at)}</p>
                         </div>
-                        <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border flex-shrink-0 ${colorClass} ${textColor}`}>
+                        <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border flex-shrink-0 ${textColor}`}>
                           {statusText}
                         </span>
                       </div>
@@ -523,53 +660,8 @@ export const ViewInicio = ({ setView }) => {
                 })}
               </div>
             ) : (
-              <div className="rounded-2xl border border-dashed border-gray-200 p-4 text-center text-xs text-gray-500">
-                {isSyncing ? 'Buscando alertas...' : '¡Excelente! No hay documentos próximos a expirar.'}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="px-6 mb-6">
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <p className="text-xs uppercase font-semibold text-[#22c55e]">Vigentes</p>
-                <h4 className="text-base font-bold text-[#394049]">Documentos Vigentes</h4>
-              </div>
-              <span className="text-xs text-gray-500">
-                {selectedValidDocs.length} vigentes
-              </span>
-            </div>
-
-            {selectedValidDocs.length > 0 ? (
-              <div className="space-y-3">
-                {selectedValidDocs.map((doc) => {
-                  const statusText =
-                    doc.daysRemaining === null
-                      ? 'Sin fecha de expiración'
-                      : `Vigente por ${doc.daysRemaining} días`;
-
-                  return (
-                    <div key={doc.id} className="rounded-2xl border border-green-200 p-3 bg-green-50/40 shadow-sm hover:shadow transition">
-                      <div className="flex justify-between items-start gap-3">
-                        <div className="flex-1 overflow-hidden">
-                          <p className="text-sm font-semibold text-[#394049] truncate">{doc.displayName}</p>
-                          <p className="text-[11px] text-gray-500">
-                            {doc.expires_at ? `Expira ${formatDate(doc.expires_at)}` : 'Sin expiración registrada'}
-                          </p>
-                        </div>
-                        <span className="text-[10px] font-bold px-2.5 py-1 rounded-full border border-green-300 bg-green-100 text-green-700 flex-shrink-0">
-                          {statusText}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="rounded-2xl border border-dashed border-gray-200 p-4 text-center text-xs text-gray-500">
-                {isSyncing ? 'Buscando documentos vigentes...' : 'No hay documentos vigentes.'}
+              <div className="rounded-xl border border-dashed border-gray-200 p-4 text-center text-xs text-gray-500">
+                {isSyncing ? 'Buscando alertas...' : 'No se registran alertas urgentes de vencimiento.'}
               </div>
             )}
           </div>

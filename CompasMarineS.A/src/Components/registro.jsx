@@ -1,9 +1,53 @@
 import { useState } from 'react';
 import { Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import { getApiUrl } from '../config/api';
+import logoCompasMarine1 from '../assets/images/compas-marine1.jpeg';
+
+// Función para formatear RUT/RUN
+const formatRut = (value) => {
+  let rut = value.replace(/[^0-9kK]/g, '').toUpperCase();
+  if (rut.length <= 1) return rut;
+
+  const cuerpo = rut.slice(0, -1);
+  const dv = rut.slice(-1);
+
+  let cuerpoFormateado = '';
+  let i = 0;
+  for (let j = cuerpo.length - 1; j >= 0; j--) {
+    cuerpoFormateado = cuerpo[j] + cuerpoFormateado;
+    i++;
+    if (i === 3 && j !== 0) {
+      cuerpoFormateado = '.' + cuerpoFormateado;
+      i = 0;
+    }
+  }
+
+  return `${cuerpoFormateado}-${dv}`;
+};
+
+// Validación módulo 11
+const validarRut = (rut) => {
+  rut = rut.replace(/\./g, '').replace(/-/g, '').toUpperCase();
+  const cuerpo = rut.slice(0, -1);
+  const dv = rut.slice(-1);
+
+  let suma = 0;
+  let multiplo = 2;
+
+  for (let i = cuerpo.length - 1; i >= 0; i--) {
+    suma += parseInt(cuerpo[i]) * multiplo;
+    multiplo = multiplo < 7 ? multiplo + 1 : 2;
+  }
+
+  const dvEsperado = 11 - (suma % 11);
+  let dvFinal = dvEsperado === 11 ? '0' : dvEsperado === 10 ? 'K' : dvEsperado.toString();
+
+  return dvFinal === dv;
+};
 
 export const Registro = ({ onNavigate }) => {
   const [name, setName] = useState('');
+  const [rut, setRut] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [passVisible, setPassVisible] = useState(false);
@@ -16,8 +60,13 @@ export const Registro = ({ onNavigate }) => {
     setError('');
     setSuccessMsg('');
 
-    if (!name.trim() || !email.trim() || !password) {
+    if (!name.trim() || !rut.trim() || !email.trim() || !password) {
       setError('Por favor completa todos los campos.');
+      return;
+    }
+
+    if (!validarRut(rut)) {
+      setError('El RUT ingresado no es válido. Ejemplo: 12.345.678-9');
       return;
     }
 
@@ -36,6 +85,7 @@ export const Registro = ({ onNavigate }) => {
         },
         body: JSON.stringify({
           nombre: name.trim(),
+          rut: rut.trim(),
           email: email.trim().toLowerCase(),
           password
         })
@@ -64,18 +114,19 @@ export const Registro = ({ onNavigate }) => {
         <div className="card-bg-deco"></div>
 
         <div className="card-body">
-          
-          {/* Cabecera unificada y protegida contra colisiones */}
           <header className="auth-branding-header">
-            <div className="auth-branding-logo-wrapper">
-              <div className="auth-branding-logo">
-                <div className="auth-branding-text">
-                  <span className="auth-branding-title">COMPAS</span>
-                  <span className="auth-branding-subtitle">marine</span>
+              <div className="auth-branding-logo-wrapper">
+                <div className="auth-branding-logo">
+                  <img 
+                    src={logoCompasMarine1} 
+                    alt="COMPAS marine Logo" 
+                    className="header-logo-img"
+                    width="669"
+                    height="373"
+                    decoding="async"
+                  />
                 </div>
-              </div>
 
-              {/* Botón de regreso integrado perfectamente al lado del logo */}
               <button 
                 type="button" 
                 className="auth-back-inline-btn" 
@@ -88,7 +139,6 @@ export const Registro = ({ onNavigate }) => {
             
             <div className="auth-branding-titles">
               <h2 className="card-heading">Crear Cuenta</h2>
-              <p className="card-sub">Regístrate en la plataforma de tripulación</p>
             </div>
           </header>
 
@@ -105,11 +155,22 @@ export const Registro = ({ onNavigate }) => {
             </div>
 
             <div className="field">
+              <label className="field-label">RUN / RUT</label>
+              <input
+                className="input"
+                type="text"
+                placeholder="Ej: 12.345.678-9"
+                value={rut}
+                onChange={(e) => setRut(formatRut(e.target.value))}
+              />
+            </div>
+
+            <div className="field">
               <label className="field-label">Correo electrónico corporativo</label>
               <input
                 className="input"
                 type="email"
-                placeholder="correo@compas.com"
+                placeholder="Correo Electrónico Personal"
                 autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -156,7 +217,7 @@ export const Registro = ({ onNavigate }) => {
             <div className="divider-line"></div>
           </div>
 
-          <p className="footer-note">Compas Marine &copy; 2026 &middot; Gestión de Tripulación</p>
+          <p className="footer-note">Compas Marine &copy; 2026 &middot; Gestión Documental</p>
         </div>
       </div>
     </main>

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
+import logoCompasMarine1 from '../assets/images/compas-marine1.jpeg';
 
 export const OlvidastePassword = ({ onNavigate }) => {
   const [email, setEmail] = useState('');
@@ -35,13 +36,17 @@ export const OlvidastePassword = ({ onNavigate }) => {
           
           {/* Cabecera unificada y protegida */}
           <header className="auth-branding-header">
-            <div className="auth-branding-logo-wrapper">
-              <div className="auth-branding-logo">
-                <div className="auth-branding-text">
-                  <span className="auth-branding-title">COMPAS</span>
-                  <span className="auth-branding-subtitle">marine</span>
+              <div className="auth-branding-logo-wrapper">
+                <div className="auth-branding-logo">
+                  <img 
+                    src={logoCompasMarine1} 
+                    alt="COMPAS marine Logo" 
+                    className="header-logo-img"
+                    width="669"
+                    height="373"
+                    decoding="async"
+                  />
                 </div>
-              </div>
 
               {/* Botón de regreso alineado estéticamente a la derecha del logo */}
               <button 
@@ -66,7 +71,7 @@ export const OlvidastePassword = ({ onNavigate }) => {
               <input
                 className="input"
                 type="email"
-                placeholder="correo@compas.com"
+                placeholder="Correo Electrónico Personal"
                 autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -91,7 +96,7 @@ export const OlvidastePassword = ({ onNavigate }) => {
             <div className="divider-line"></div>
           </div>
 
-          <p className="footer-note">Compas Marine &copy; 2026 &middot; Gestión de Tripulación</p>
+          <p className="footer-note">Compas Marine &copy; 2026 &middot; Gestión Documental</p>
         </div>
       </div>
     </main>
