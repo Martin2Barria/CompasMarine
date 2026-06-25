@@ -9,8 +9,8 @@ const urls = {
   entities: getApiUrl('/controldoc/entities'),
   documentTypes: getApiUrl('/controldoc/document-types')
 };
-
-// EL CATÁLOGO OFICIAL
+//PEQUEÑO CAMBIO
+// EL CATÁLOGO OFICIAL CAPACITACIONES
 const baseCapacitaciones = [
   { id: 'autocuidado', title: 'Autocuidado', keyword: 'autocuidado', description: 'Seguridad y bienestar personal en faenas.', icon: ShieldCheck },
   { id: 'higiene-manipulacion', title: 'Higiene y manipulación', keyword: 'higiene y manipulacion', description: 'Buenas prácticas para manipulación segura.', icon: Hammer },
