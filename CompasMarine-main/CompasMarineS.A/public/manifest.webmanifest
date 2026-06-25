@@ -1,7 +1,7 @@
 {
   "name": "Compas Marine",
   "short_name": "Compas",
-  "description": "Progreso, documentos y capacitaciones de Compas Marine.",
+  "description": "Progreso y documentos de Compas Marine.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

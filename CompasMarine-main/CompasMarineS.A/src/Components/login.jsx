@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { getApiUrl } from '../config/api';
+import logoCompasMarine1 from '../assets/images/compas-marine1.jpeg';
 
-export const Login = ({ onLoginSuccess, onNavigate }) => {
+export const Login = ({ onLoginSuccess, onNavigate, onLoadingProgress }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [passVisible, setPassVisible] = useState(false);
@@ -19,6 +20,7 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
     }
 
     setIsLoading(true);
+    onLoadingProgress?.({ percent: 12 });
 
     try {
       const response = await fetch(getApiUrl('/auth/login'), {
@@ -29,14 +31,18 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
         body: JSON.stringify({ email: email.trim().toLowerCase(), password })
       });
 
+      onLoadingProgress?.({ percent: 68 });
       const data = await response.json();
+      onLoadingProgress?.({ percent: 88 });
 
       if (!response.ok) {
         throw new Error(data.error || 'Credenciales incorrectas. Intenta nuevamente.');
       }
 
-      onLoginSuccess();
+      onLoadingProgress?.({ percent: 100, done: true });
+      onLoginSuccess(data.user);
     } catch (err) {
+      onLoadingProgress?.({ active: false });
       setError(err.message || 'No se pudo iniciar sesión.');
     } finally {
       setIsLoading(false);
@@ -53,10 +59,14 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
           {/* Cabecera aislada con nombres de clase únicos */}
           <header className="auth-branding-header">
             <div className="auth-branding-logo">
-              <div className="auth-branding-text">
-                <span className="auth-branding-title">COMPAS</span>
-                <span className="auth-branding-subtitle">marine</span>
-              </div>
+              <img 
+                src={logoCompasMarine1} 
+                alt="COMPAS marine Logo" 
+                className="header-logo-img"
+                width="669"
+                height="373"
+                decoding="async"
+              />
             </div>
             
             <div className="auth-branding-titles">
@@ -71,7 +81,7 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
               <input
                 className="input"
                 type="email"
-                placeholder="correo@compas.com"
+                placeholder="Correo Electrónico Personal"
                 autoComplete="username"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -120,14 +130,6 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
               >
                 {isLoading ? 'Ingresando...' : 'Ingresar'}
               </button>
-
-              <button 
-                type="button" 
-                className="secondary-btn" 
-                onClick={() => onNavigate('register')}
-              >
-                Crear una cuenta
-              </button>
             </div>
           </form>
 
@@ -160,7 +162,7 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
           </div>
           {/* ========================================================================== */}
 
-          <p className="footer-note">Compas Marine &copy; 2026 &middot; Gestión de Tripulación</p>
+          <p className="footer-note">Compas Marine &copy; 2026 &middot; Gestión Documental</p>
         </div>
       </div>
     </main>

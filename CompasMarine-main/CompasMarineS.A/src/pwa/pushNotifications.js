@@ -75,14 +75,14 @@ export async function showAppNotification({ title, body, url = '/', tag }) {
   }
 }
 
-export async function sendTestPushNotification(notification = {}) {
+export async function sendTestPushNotification() {
   const response = await fetch(getApiUrl('/notifications/test'), {
     method: 'POST',
     credentials: 'same-origin',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(notification)
+    body: JSON.stringify({})
   });
 
   const payload = await response.json();

@@ -5,8 +5,8 @@ const SENT_EVENTS_KEY = 'compas:notifications:sent-events:v1';
 const LAST_PROGRESS_BUCKET_KEY = 'compas:notifications:last-progress-bucket:v1';
 const MAX_STORED_EVENTS = 800;
 
-export async function runCachedNotificationRules() {
-  const snapshot = readControlDocSnapshot();
+export async function runCachedNotificationRules(ownerKey) {
+  const snapshot = readControlDocSnapshot(ownerKey);
   if (!snapshot?.data) {
     return {
       checked: false,

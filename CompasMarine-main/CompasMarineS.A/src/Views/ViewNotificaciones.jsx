@@ -2,33 +2,25 @@ import { useState } from 'react';
 import { X, Hand, AlertTriangle, Clock, BellRing, Loader2, Send } from 'lucide-react';
 import { enablePushNotifications, sendTestPushNotification } from '../pwa/pushNotifications';
 import { runCachedNotificationRules } from '../pwa/notificationRules';
-import { addNotificationToInbox, readNotificationInbox } from '../storage/notificationInbox';
+import { getUserSnapshotKey } from '../auth/userScope';
 
-const TEST_NOTIFICATION = {
-  title: 'Notificación de prueba',
-  body: 'La notificación push funciona correctamente.',
-  url: '/notificaciones'
-};
-
-const formatNotificationDate = (date) => new Date(date).toLocaleString('es-CL', {
-  dateStyle: 'short',
-  timeStyle: 'short'
-});
-
-export const ViewNotificaciones = ({ setView }) => {
+export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) => {
   const [notificationStatus, setNotificationStatus] = useState('idle');
   const [notificationMessage, setNotificationMessage] = useState('');
   const [testStatus, setTestStatus] = useState('idle');
-  const [inboxNotifications, setInboxNotifications] = useState(readNotificationInbox);
+  const snapshotOwnerKey = getUserSnapshotKey(currentUser);
 
   const handleEnableNotifications = async () => {
     setNotificationStatus('loading');
     setTestStatus('idle');
     setNotificationMessage('');
+    onLoadingProgress?.({ percent: 14 });
 
     try {
       const mode = await enablePushNotifications();
-      const summary = await runCachedNotificationRules();
+      onLoadingProgress?.({ percent: 72 });
+      const summary = await runCachedNotificationRules(snapshotOwnerKey);
+      onLoadingProgress?.({ percent: 100, done: true });
       setNotificationStatus('enabled');
       setNotificationMessage(
         `${mode === 'push' ? 'Avisos push activos.' : 'Avisos locales activos.'} ${
@@ -36,6 +28,7 @@ export const ViewNotificaciones = ({ setView }) => {
         }`
       );
     } catch (error) {
+      onLoadingProgress?.({ active: false });
       setNotificationStatus('error');
       setNotificationMessage(error.message);
     }
@@ -45,13 +38,15 @@ export const ViewNotificaciones = ({ setView }) => {
     setTestStatus('loading');
     setNotificationStatus((currentStatus) => currentStatus === 'error' ? 'idle' : currentStatus);
     setNotificationMessage('');
+    onLoadingProgress?.({ percent: 25 });
 
     try {
-      await sendTestPushNotification(TEST_NOTIFICATION);
-      setInboxNotifications(addNotificationToInbox(TEST_NOTIFICATION));
+      await sendTestPushNotification();
+      onLoadingProgress?.({ percent: 100, done: true });
       setTestStatus('sent');
-      setNotificationMessage('Notificación push enviada y agregada a la pantalla.');
+      setNotificationMessage('Notificacion push de prueba enviada.');
     } catch (error) {
+      onLoadingProgress?.({ active: false });
       setTestStatus('error');
       setNotificationMessage(error.message);
     }
@@ -109,28 +104,6 @@ export const ViewNotificaciones = ({ setView }) => {
             </div>
           </div>
         </div>
-
-        {inboxNotifications.map((notification) => (
-          <div key={notification.id} className="bg-white rounded-2xl p-5 shadow-sm relative overflow-hidden">
-            <div className="absolute left-0 top-0 bottom-0 w-2 bg-[#921E30]"></div>
-            <div className="flex gap-4">
-              <div className="bg-red-100 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
-                <BellRing className="w-5 h-5 text-[#921E30]" />
-              </div>
-              <div>
-                <h4 className="font-bold text-gray-800 bg-white inline-block mb-1">
-                  {notification.title}
-                </h4>
-                <p className="text-sm text-gray-600 leading-relaxed">
-                  {notification.body}
-                </p>
-                <span className="text-[10px] text-gray-400 mt-2 flex items-center">
-                  <Clock className="w-3 h-3 mr-1" /> {formatNotificationDate(notification.createdAt)}
-                </span>
-              </div>
-            </div>
-          </div>
-        ))}
 
         <div className="bg-white rounded-2xl p-5 shadow-sm relative overflow-hidden">
           <div className="absolute left-0 top-0 bottom-0 w-2 bg-green-500"></div>

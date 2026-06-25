@@ -61,9 +61,19 @@ const securityHeaders = {
 // Configuración de Caché en el Servidor (Server Cache)
 const serverCache = {
   documentTypes: { data: null, expiresAt: 0 },
-  entities: { data: null, expiresAt: 0 }
+  entities: { data: null, expiresAt: 0 },
+  documents: new Map()
 };
 const CACHE_TTL = 15 * 60 * 1000; // Guardar diccionarios en caché por 15 minutos
+const DOCUMENTS_CACHE_TTL = Number(process.env.CONTROLDOC_DOCUMENTS_CACHE_TTL_MS || 5 * 60 * 1000);
+const CONTROL_DOC_PAGE_SIZE = Number(process.env.CONTROLDOC_PAGE_SIZE || 100);
+const CONTROL_DOC_PAGE_CONCURRENCY = Number(process.env.CONTROLDOC_PAGE_CONCURRENCY || 6);
+const CONTROL_DOC_PAGINATION_PROFILES = [
+  { type: 'page', pageParam: 'page', sizeParam: 'per_page' },
+  { type: 'page', pageParam: 'page', sizeParam: 'per' },
+  { type: 'page', pageParam: 'page', sizeParam: 'page_size' },
+  { type: 'offset', offsetParam: 'offset', sizeParam: 'limit' }
+];
 
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
@@ -158,53 +168,206 @@ server.listen(port, host, () => {
   console.log(`Compas Marine server listening on http://${host}:${port}`);
 });
 
-// Función auxiliar para descargar de forma recursiva todas las páginas de ControlDoc (Server-side Pagination)
+// Descarga todas las páginas de ControlDoc en lotes para evitar el cuello de botella secuencial.
 async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = {}) {
-  let allItems = [];
-  let page = 1;
-  let hasMore = true;
-  
-  while (hasMore && page <= 50) {
-    const url = new URL(upstreamPath, controlDocBaseUrl);
-    url.searchParams.append('page', page);
-    url.searchParams.append('per_page', '100');
-    for (const [k, v] of Object.entries(extraParams)) {
-      url.searchParams.append(k, v);
-    }
+  let repeatedPageError = null;
 
-    const headers = {
-      'Content-Type': 'application/json',
-      'X-User-Email': credentials.email,
-      'X-User-Token': credentials.token,
-      'Customer-Id': credentials.customerId,
-      'Entity-Type-Id': credentials.entityTypeId
-    };
-    if (credentials.authorization) headers.AUTHORIZATION = credentials.authorization;
-
-    const response = await fetch(url, { method: 'GET', headers, redirect: 'follow' });
-    if (response.status === 429) {
-      await new Promise(r => setTimeout(r, 2000));
-      continue;
-    }
-    if (!response.ok) throw new Error(`Error de ControlDoc en servidor: ${response.status}`);
-
-    const json = await response.json();
-    let items = Array.isArray(json) ? json : (Object.values(json).find(v => Array.isArray(v)) || []);
-
-    if (items.length === 0) {
-      hasMore = false;
-    } else {
-      allItems.push(...items);
-      page++;
-      // ControlDoc limita a 25 registros por página obligatoriamente
-      if (items.length < 25) {
-        hasMore = false;
-      } else {
-        await new Promise(r => setTimeout(r, 50)); 
-      }
+  for (const paginationProfile of CONTROL_DOC_PAGINATION_PROFILES) {
+    try {
+      return await fetchAllControlDocPagesWithProfile(upstreamPath, credentials, extraParams, paginationProfile);
+    } catch (error) {
+      if (error?.code !== 'CONTROL_DOC_REPEATED_PAGE') throw error;
+      repeatedPageError = error;
     }
   }
+
+  throw repeatedPageError || new Error('No se pudo paginar ControlDoc.');
+}
+
+async function fetchAllControlDocPagesWithProfile(upstreamPath, credentials, extraParams = {}, paginationProfile) {
+  const firstPage = await fetchControlDocPage(upstreamPath, credentials, 1, extraParams, paginationProfile);
+  const firstItems = firstPage.items;
+  if (firstItems.length === 0) return [];
+
+  const knownTotalPages = firstPage.totalPages || (
+    firstPage.totalCount ? Math.ceil(firstPage.totalCount / CONTROL_DOC_PAGE_SIZE) : null
+  );
+
+  if (knownTotalPages) {
+    const lastPage = knownTotalPages;
+    const remainingPages = createPageRange(2, lastPage);
+    const remainingItems = await fetchControlDocPagesInBatches(upstreamPath, credentials, extraParams, remainingPages, paginationProfile);
+    return firstItems.concat(remainingItems);
+  }
+
+  const allItems = [...firstItems];
+  const inferredPageSize = firstItems.length;
+  let nextPage = 2;
+  let keepFetching = true;
+  const seenPageSignatures = new Set([buildPageSignature(firstItems)]);
+
+  while (keepFetching) {
+    const batchPages = createPageRange(nextPage, nextPage + CONTROL_DOC_PAGE_CONCURRENCY - 1);
+    const batchResults = await Promise.all(
+      batchPages.map((page) => fetchControlDocPage(upstreamPath, credentials, page, extraParams, paginationProfile))
+    );
+
+    for (const result of batchResults) {
+      if (result.items.length === 0) {
+        keepFetching = false;
+        break;
+      }
+
+      const pageSignature = buildPageSignature(result.items);
+      if (seenPageSignatures.has(pageSignature)) {
+        const error = new Error('ControlDoc repitió una página de resultados; se detuvo para probar otra paginación.');
+        error.code = 'CONTROL_DOC_REPEATED_PAGE';
+        throw error;
+      }
+      seenPageSignatures.add(pageSignature);
+
+      allItems.push(...result.items);
+
+      if (result.items.length < inferredPageSize) {
+        keepFetching = false;
+        break;
+      }
+    }
+
+    nextPage += CONTROL_DOC_PAGE_CONCURRENCY;
+  }
+
   return allItems;
+}
+
+async function fetchControlDocPagesInBatches(upstreamPath, credentials, extraParams, pages, paginationProfile) {
+  const allItems = [];
+
+  for (let index = 0; index < pages.length; index += CONTROL_DOC_PAGE_CONCURRENCY) {
+    const batchPages = pages.slice(index, index + CONTROL_DOC_PAGE_CONCURRENCY);
+    const batchResults = await Promise.all(
+      batchPages.map((page) => fetchControlDocPage(upstreamPath, credentials, page, extraParams, paginationProfile))
+    );
+
+    batchResults.forEach((result) => {
+      allItems.push(...result.items);
+    });
+  }
+
+  return allItems;
+}
+
+async function fetchControlDocPage(upstreamPath, credentials, page, extraParams = {}, paginationProfile = CONTROL_DOC_PAGINATION_PROFILES[0], attempt = 0) {
+  const url = new URL(upstreamPath, controlDocBaseUrl);
+  appendPaginationParams(url, page, paginationProfile);
+  for (const [key, value] of Object.entries(extraParams)) {
+    url.searchParams.append(key, value);
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-User-Email': credentials.email,
+    'X-User-Token': credentials.token,
+    'Customer-Id': credentials.customerId,
+    'Entity-Type-Id': credentials.entityTypeId
+  };
+  if (credentials.authorization) headers.AUTHORIZATION = credentials.authorization;
+
+  const response = await fetch(url, { method: 'GET', headers, redirect: 'follow' });
+  if (response.status === 429 && attempt < 4) {
+    await delay(600 * 2 ** attempt);
+    return fetchControlDocPage(upstreamPath, credentials, page, extraParams, paginationProfile, attempt + 1);
+  }
+  if (!response.ok) throw new Error(`Error de ControlDoc en servidor: ${response.status}`);
+
+  const json = await response.json();
+  return {
+    items: extractControlDocItems(json),
+    totalPages:
+      readNumericHeader(response.headers, ['x-total-pages', 'total-pages', 'x-pagination-pages']) ||
+      readNumericValue(json, ['total_pages', 'totalPages', 'last_page', 'lastPage', 'pages', 'page_count', 'pageCount']),
+    totalCount:
+      readNumericHeader(response.headers, ['x-total-count', 'total-count', 'x-pagination-total']) ||
+      readNumericValue(json, ['total_count', 'totalCount', 'total', 'recordsTotal'])
+  };
+}
+
+function appendPaginationParams(url, page, paginationProfile) {
+  if (paginationProfile.type === 'offset') {
+    url.searchParams.append(paginationProfile.offsetParam, ((page - 1) * CONTROL_DOC_PAGE_SIZE).toString());
+    url.searchParams.append(paginationProfile.sizeParam, CONTROL_DOC_PAGE_SIZE.toString());
+    return;
+  }
+
+  url.searchParams.append(paginationProfile.pageParam, page.toString());
+  url.searchParams.append(paginationProfile.sizeParam, CONTROL_DOC_PAGE_SIZE.toString());
+}
+
+function extractControlDocItems(json) {
+  if (Array.isArray(json)) return json;
+  if (!json || typeof json !== 'object') return [];
+
+  for (const key of ['data', 'items', 'documents', 'entities', 'document_types']) {
+    if (Array.isArray(json[key])) return json[key];
+  }
+
+  for (const sourceKey of ['data', 'result', 'response', 'payload']) {
+    const source = json[sourceKey];
+    if (!source || typeof source !== 'object' || Array.isArray(source)) continue;
+
+    for (const key of ['data', 'items', 'documents', 'entities', 'document_types', 'records', 'results']) {
+      if (Array.isArray(source[key])) return source[key];
+    }
+  }
+
+  return Object.values(json).find((value) => Array.isArray(value)) || [];
+}
+
+function readNumericHeader(headers, names) {
+  for (const name of names) {
+    const value = Number(headers.get(name));
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
+}
+
+function readNumericValue(json, names) {
+  const sources = [
+    json,
+    json?.meta,
+    json?.pagination,
+    json?.meta?.pagination,
+    json?.data?.pagination,
+    json?.data?.meta,
+    json?.data?.meta?.pagination,
+    json?.result?.pagination,
+    json?.response?.pagination,
+    json?.payload?.pagination
+  ].filter((source) => source && typeof source === 'object' && !Array.isArray(source));
+
+  for (const source of sources) {
+    for (const name of names) {
+      const value = Number(source[name]);
+      if (Number.isFinite(value) && value > 0) return value;
+    }
+  }
+
+  return null;
+}
+
+function createPageRange(start, end) {
+  if (end < start) return [];
+  return Array.from({ length: end - start + 1 }, (_, index) => start + index);
+}
+
+function buildPageSignature(items) {
+  return items
+    .map((item) => item?.id ?? item?.external_id ?? JSON.stringify(item).slice(0, 80))
+    .join('|');
+}
+
+function delay(ms) {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
 async function handleSyncUsersToDB(req, res) {
@@ -403,6 +566,225 @@ async function handleAuthMe(req, res) {
   }
 }
 
+async function findExternalEntityIdByEmail(email, credentials = {}, forceRefresh = false) {
+  const normalizedEmail = (email || '').trim().toLowerCase();
+  if (!normalizedEmail) return null;
+
+  try {
+    const whereClauses = ['(email = ? OR LOWER(CAST(data_json AS CHAR)) LIKE ?)'];
+    const params = [normalizedEmail, `%"${normalizedEmail}"%`];
+
+    if (credentials.customerId) {
+      whereClauses.push('customer_id = ?');
+      params.push(credentials.customerId);
+    }
+
+    if (credentials.entityTypeId) {
+      whereClauses.push('entity_type_id = ?');
+      params.push(credentials.entityTypeId);
+    }
+
+    const [entityRows] = await dbPool.execute(
+      `SELECT external_id FROM entidades_api WHERE ${whereClauses.join(' AND ')} LIMIT 1`,
+      params
+    );
+
+    if (entityRows.length > 0) return entityRows[0].external_id?.toString() || null;
+
+    const allEntities = await getAllControlDocEntities(credentials, forceRefresh);
+    const liveEntity = allEntities.find((entity) => controlDocEntityMatchesEmail(entity, normalizedEmail));
+    return liveEntity?.id?.toString() || liveEntity?.external_id?.toString() || null;
+  } catch (error) {
+    console.error('Error buscando entidad externa de usuario:', error);
+    return null;
+  }
+}
+
+async function getAllControlDocEntities(credentials, forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && serverCache.entities.data && serverCache.entities.expiresAt > now) {
+    return serverCache.entities.data;
+  }
+
+  const data = await fetchAllControlDocPages('/api/v1/abstract/entities', credentials);
+  serverCache.entities = { data, expiresAt: now + CACHE_TTL };
+  return data;
+}
+
+function controlDocEntityMatchesEmail(entity, normalizedEmail) {
+  if (!entity || !normalizedEmail) return false;
+
+  const directValues = [
+    entity.email,
+    entity?.custom_fields?.correo_electronico_personal,
+    entity?.custom_fields?.correo_electronico_corporativo,
+    entity?.customFields?.correo_electronico_personal,
+    entity?.customFields?.correo_electronico_corporativo
+  ];
+
+  if (directValues.some((value) => (value || '').toString().trim().toLowerCase() === normalizedEmail)) {
+    return true;
+  }
+
+  try {
+    return JSON.stringify(entity).toLowerCase().includes(normalizedEmail);
+  } catch {
+    return false;
+  }
+}
+
+const CONTROL_DOC_DOCUMENT_ENTITY_ID_KEYS = [
+  'entity_id',
+  'entityId',
+  'entity_external_id',
+  'entityExternalId',
+  'entidad_external_id',
+  'entidadExternalId',
+  'abstract_entity_id',
+  'abstractEntityId',
+  'abstract_entity_external_id',
+  'abstractEntityExternalId',
+  'owner_entity_id',
+  'ownerEntityId',
+  'employee_id',
+  'employeeId',
+  'employee_external_id',
+  'employeeExternalId',
+  'collaborator_id',
+  'collaboratorId',
+  'colaborador_id',
+  'colaboradorId',
+  'person_id',
+  'personId'
+];
+
+const CONTROL_DOC_DOCUMENT_ENTITY_OBJECT_KEYS = [
+  'entity',
+  'abstract_entity',
+  'abstractEntity',
+  'entidad',
+  'owner',
+  'employee',
+  'collaborator',
+  'colaborador',
+  'person',
+  'worker'
+];
+
+const CONTROL_DOC_DOCUMENT_ENTITY_COLLECTION_KEYS = [
+  'entities',
+  'entity_ids',
+  'entityIds',
+  'abstract_entities',
+  'abstractEntities',
+  'employees',
+  'collaborators',
+  'colaboradores',
+  'people',
+  'workers'
+];
+
+function normalizeControlDocEntityId(value) {
+  if (value === undefined || value === null || value === '') return '';
+
+  if (typeof value === 'object') {
+    for (const key of ['id', 'external_id', 'externalId', ...CONTROL_DOC_DOCUMENT_ENTITY_ID_KEYS]) {
+      const nestedValue = value?.[key];
+      if (nestedValue !== undefined && nestedValue !== null && nestedValue !== '') {
+        return nestedValue.toString();
+      }
+    }
+    return '';
+  }
+
+  return value.toString();
+}
+
+function getControlDocDocumentEntityIds(doc) {
+  if (!doc || typeof doc !== 'object') return [];
+
+  const ids = [];
+  const pushId = (value) => {
+    const id = normalizeControlDocEntityId(value);
+    if (id && !ids.includes(id)) ids.push(id);
+  };
+
+  CONTROL_DOC_DOCUMENT_ENTITY_ID_KEYS.forEach((key) => pushId(doc[key]));
+  CONTROL_DOC_DOCUMENT_ENTITY_OBJECT_KEYS.forEach((key) => pushId(doc[key]));
+
+  CONTROL_DOC_DOCUMENT_ENTITY_COLLECTION_KEYS.forEach((key) => {
+    const collection = doc[key];
+    if (!Array.isArray(collection)) return;
+    collection.forEach(pushId);
+  });
+
+  return ids;
+}
+
+function buildControlDocCacheKey(upstreamPath, credentials, extraParams = {}) {
+  const sortedParams = Object.keys(extraParams)
+    .sort()
+    .map((key) => [key, extraParams[key]]);
+
+  return JSON.stringify({
+    upstreamPath,
+    customerId: credentials.customerId,
+    entityTypeId: credentials.entityTypeId,
+    params: sortedParams
+  });
+}
+
+function readCachedMapValue(cacheMap, key) {
+  const entry = cacheMap.get(key);
+  if (!entry || entry.promise) return null;
+  if (entry.expiresAt <= Date.now()) {
+    cacheMap.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+
+async function getCachedMapValue(cacheMap, key, ttl, fetcher) {
+  const cached = readCachedMapValue(cacheMap, key);
+  if (cached) return cached;
+
+  const existingEntry = cacheMap.get(key);
+  if (existingEntry?.promise) return existingEntry.promise;
+
+  const promise = fetcher()
+    .then((data) => {
+      cacheMap.set(key, { data, expiresAt: Date.now() + ttl });
+      return data;
+    })
+    .catch((error) => {
+      cacheMap.delete(key);
+      throw error;
+    });
+
+  cacheMap.set(key, { promise });
+  return promise;
+}
+
+async function refreshCachedMapValue(cacheMap, key, ttl, fetcher) {
+  cacheMap.delete(key);
+  const data = await fetcher();
+  cacheMap.set(key, { data, expiresAt: Date.now() + ttl });
+  return data;
+}
+
+function shouldRefreshControlDocCache(requestUrl) {
+  const refresh = (requestUrl.searchParams.get('refresh') || requestUrl.searchParams.get('fresh') || '')
+    .trim()
+    .toLowerCase();
+  const cacheMode = (requestUrl.searchParams.get('cache') || '').trim().toLowerCase();
+
+  return (
+    ['1', 'true', 'yes', 'force'].includes(refresh) ||
+    cacheMode === 'no-store' ||
+    requestUrl.searchParams.has('_')
+  );
+}
+
 async function proxyControlDocRequest(req, res, requestUrl) {
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'Method not allowed' });
@@ -412,8 +794,7 @@ async function proxyControlDocRequest(req, res, requestUrl) {
   const cookieUserId = getCookie(req, 'compas_user_id');
   if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado. Inicia sesión.' });
 
-  let userEmail;
-  let isAdmin;
+  let sessionUser;
 
   try {
     const [userRows] = await dbPool.execute(`
@@ -425,12 +806,14 @@ async function proxyControlDocRequest(req, res, requestUrl) {
     `, [cookieUserId]);
     
     if (userRows.length === 0) return sendJson(res, 401, { error: 'Usuario inválido o inactivo.' });
-    userEmail = userRows[0].email;
-    isAdmin = userRows[0].rol?.toLowerCase() === 'admin';
+    sessionUser = userRows[0];
   } catch (error) {
     console.error('Error validando sesión:', error);
     return sendJson(res, 500, { error: 'Error interno validando sesión' });
   }
+
+  const userEmail = sessionUser.email;
+  const isAdmin = sessionUser.rol?.toLowerCase() === 'admin';
 
   const upstreamPath = controlDocRoutes.get(requestUrl.pathname);
   const credentials = resolveControlDocCredentials(req);
@@ -440,11 +823,12 @@ async function proxyControlDocRequest(req, res, requestUrl) {
   }
 
   const now = Date.now();
+  const forceRefresh = shouldRefreshControlDocCache(requestUrl);
 
   try {
     // 1. Tipos de Documento (Con caché del servidor)
     if (upstreamPath === '/api/v1/abstract/document_types') {
-      if (serverCache.documentTypes.data && serverCache.documentTypes.expiresAt > now) {
+      if (!forceRefresh && serverCache.documentTypes.data && serverCache.documentTypes.expiresAt > now) {
         return sendJson(res, 200, serverCache.documentTypes.data);
       }
       const data = await fetchAllControlDocPages(upstreamPath, credentials);
@@ -454,26 +838,13 @@ async function proxyControlDocRequest(req, res, requestUrl) {
 
     // 2. Entidades / Usuarios (Con caché y filtro de roles)
     if (upstreamPath === '/api/v1/abstract/entities') {
-      let myExternalId = null;
-      try {
-        const [entityRows] = await dbPool.execute(
-          'SELECT external_id FROM entidades_api WHERE email = ? OR data_json LIKE ?', 
-          [userEmail, `%"${userEmail}"%`]
-        );
-        myExternalId = entityRows.length > 0 ? entityRows[0].external_id?.toString() : 'NO_ENTITY';
-      } catch(e) { console.error("Error buscando ID de usuario", e); }
-
-      let allEntities = [];
-      if (serverCache.entities.data && serverCache.entities.expiresAt > now) {
-        allEntities = serverCache.entities.data;
-      } else {
-        allEntities = await fetchAllControlDocPages(upstreamPath, credentials);
-        serverCache.entities = { data: allEntities, expiresAt: now + CACHE_TTL };
-      }
+      const allEntities = await getAllControlDocEntities(credentials, forceRefresh);
 
       if (isAdmin) {
         return sendJson(res, 200, allEntities);
       } else {
+        const myExternalId = await findExternalEntityIdByEmail(userEmail, credentials, false);
+        if (!myExternalId) return sendJson(res, 200, []);
         const filtered = allEntities.filter(item => item.id?.toString() === myExternalId);
         return sendJson(res, 200, filtered);
       }
@@ -481,21 +852,26 @@ async function proxyControlDocRequest(req, res, requestUrl) {
 
     // 3. Documentos (Paginación automática de ControlDoc del lado del servidor)
     if (upstreamPath === '/api/v1/abstract/documents') {
-      let myExternalId = null;
-      try {
-        const [entityRows] = await dbPool.execute(
-          'SELECT external_id FROM entidades_api WHERE email = ? OR data_json LIKE ?', 
-          [userEmail, `%"${userEmail}"%`]
-        );
-        myExternalId = entityRows.length > 0 ? entityRows[0].external_id?.toString() : 'NO_ENTITY';
-      } catch(e) { console.error("Error buscando ID para documentos", e); }
+      const myExternalId = isAdmin ? null : await findExternalEntityIdByEmail(userEmail, credentials, forceRefresh);
 
-      const extraParams = {};
-      if (!isAdmin) {
-        extraParams.entity_id = myExternalId;
+      if (!isAdmin && !myExternalId) {
+        return sendJson(res, 200, []);
       }
-      const allDocs = await fetchAllControlDocPages(upstreamPath, credentials, extraParams);
-      return sendJson(res, 200, allDocs);
+
+      const adminCacheKey = buildControlDocCacheKey(upstreamPath, credentials, {});
+      const fetchAllDocuments = () => fetchAllControlDocPages(upstreamPath, credentials);
+
+      const allDocs = forceRefresh
+        ? await refreshCachedMapValue(serverCache.documents, adminCacheKey, DOCUMENTS_CACHE_TTL, fetchAllDocuments)
+        : await getCachedMapValue(serverCache.documents, adminCacheKey, DOCUMENTS_CACHE_TTL, fetchAllDocuments);
+
+      if (isAdmin) {
+        return sendJson(res, 200, allDocs);
+      }
+
+      const scopedDocs = allDocs.filter((doc) => getControlDocDocumentEntityIds(doc).includes(myExternalId));
+
+      return sendJson(res, 200, scopedDocs);
     }
 
     return sendJson(res, 400, { error: 'Ruta no soportada por el proxy' });
@@ -508,7 +884,10 @@ async function proxyControlDocRequest(req, res, requestUrl) {
 
 async function handleDocumentsSync(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
-  sendJson(res, 200, { message: "Sync mantenido" });
+  serverCache.documents.clear();
+  serverCache.documentTypes = { data: null, expiresAt: 0 };
+  serverCache.entities = { data: null, expiresAt: 0 };
+  sendJson(res, 200, { ok: true, message: 'Caché de ControlDoc limpiado. La próxima consulta traerá datos frescos.' });
 }
 
 function resolveControlDocCredentials(req) {
@@ -863,11 +1242,6 @@ function cleanNotificationText(value, fallback, maxLength) {
   return cleanValue ? cleanValue.slice(0, maxLength) : fallback;
 }
 
-function isControlCharacter(character) {
-  const code = character.charCodeAt(0);
-  return code <= 31 || code === 127;
-}
-
 function normalizeNotificationUrl(value) {
   if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) {
     return '/notificaciones';
@@ -981,6 +1355,11 @@ function getClientIp(req) {
   }
 
   return req.socket.remoteAddress || 'unknown';
+}
+
+function isControlCharacter(character) {
+  const code = character.charCodeAt(0);
+  return code <= 31 || code === 127;
 }
 
 function loadNotificationsStore() {

@@ -339,7 +339,7 @@ form {
   margin-bottom: 1.75rem;
 }
 
-.submit-btn, .secondary-btn {
+.submit-btn {
   width: 100%;
   padding: 0.8rem;
   font-size: 0.95rem;
@@ -368,17 +368,6 @@ form {
   background-color: #e5e7eb;
   color: #9ca3af;
   cursor: not-allowed;
-}
-
-.secondary-btn {
-  background-color: transparent;
-  color: #4b5563;
-  border: 1px solid #d1d5db;
-}
-
-.secondary-btn:hover {
-  background-color: #f9fafb;
-  border-color: #9ca3af;
 }
 
 .error-box {

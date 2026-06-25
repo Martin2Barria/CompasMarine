@@ -22,7 +22,7 @@ export default defineConfig([
     },
   },
   {
-    files: ['server/**/*.js', 'vite.config.js'],
+    files: ['server/**/*.js', 'vite.config.js', 'EndPoints.js'],
     extends: [
       js.configs.recommended,
     ],
