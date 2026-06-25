@@ -5,7 +5,7 @@ import { readControlDocSnapshot, saveControlDocSnapshot } from '../storage/contr
 import { ApiDocumentCard } from './ApiDocumentCard'; 
 
 const urls = {
-  documents: getApiUrl('/controldoc/documents'), // Proxy seguro filtrado
+  documents: getApiUrl('/controldoc/documents'), 
   documentsSync: getApiUrl('/controldoc/documents/sync'), 
   entities: getApiUrl('/controldoc/entities'),
   documentTypes: getApiUrl('/controldoc/document-types')
@@ -115,6 +115,10 @@ export const ViewDocumentos = () => {
 
   const [visibleCount, setVisibleCount] = useState(50);
 
+  // Determinar si es admin basado en la cantidad de entidades recibidas.
+  // Un tripulante recibe máximo 1.
+  const isAdmin = apiData.entities.length > 1;
+
   useEffect(() => {
     setVisibleCount(50);
   }, [selectedType, selectedEntityId, statusFilter, signatureFilter]);
@@ -158,20 +162,19 @@ export const ViewDocumentos = () => {
       try {
         if (!hasCachedData) setProgressInfo("Conectando con Compas Marine...");
         
-        // El backend ahora emite diccionarios completos y unificados en una sola petición gracias a la optimización
         const [allTypes, allEntities, allDocs] = await Promise.all([
           fetchData(urls.documentTypes),
           fetchData(urls.entities),
           fetchData(urls.documents)
         ]);
 
-        const validTypes = allTypes;
+        const validTypes = allTypes || [];
         const validTypeIds = validTypes.map(t => t.id?.toString());
-        const validDocs = allDocs.filter(doc => validTypeIds.includes(doc.document_type_id?.toString()));
+        const validDocs = (allDocs || []).filter(doc => validTypeIds.includes(doc.document_type_id?.toString()));
         
         const nextApiData = {
           documents: validDocs,
-          entities: allEntities,
+          entities: allEntities || [],
           documentTypes: validTypes
         };
 
@@ -194,9 +197,41 @@ export const ViewDocumentos = () => {
     fetchAllData();
   }, []);
 
+  // --- CORRECCIÓN: CONSTRUIR LISTA DE USUARIOS ROBUSTA ---
   const relevantEntities = useMemo(() => {
-    const activeEntityIds = new Set(apiData.documents.map(d => d.entity_id?.toString()));
-    return apiData.entities.filter(e => activeEntityIds.has(e.id?.toString()));
+    // 1. Extraer todos los IDs únicos de usuarios que tienen documentos
+    const activeEntityIds = new Set(
+      apiData.documents
+        .map(d => d.entity_id?.toString())
+        .filter(id => id && id !== 'undefined' && id !== 'null')
+    );
+
+    // 2. Intentar buscar su nombre en la lista de entidades
+    const usersMap = new Map();
+    
+    // Primero añadimos las entidades conocidas
+    apiData.entities.forEach(e => {
+      if (e && e.id) {
+        usersMap.set(e.id.toString(), {
+          id: e.id.toString(),
+          name: e.full_name || e.name || e.email || `Usuario ${e.id}`
+        });
+      }
+    });
+
+    // Luego, nos aseguramos de que TODO ID de documento tenga una representación, 
+    // incluso si la API de entidades no lo trajo.
+    const finalUsers = [];
+    activeEntityIds.forEach(id => {
+      if (usersMap.has(id)) {
+        finalUsers.push(usersMap.get(id));
+      } else {
+        finalUsers.push({ id: id, name: `ID ControlDoc: ${id}` });
+      }
+    });
+
+    // Ordenar alfabéticamente por nombre
+    return finalUsers.sort((a, b) => a.name.localeCompare(b.name));
   }, [apiData.documents, apiData.entities]);
 
   const entityById = useMemo(
@@ -415,13 +450,18 @@ export const ViewDocumentos = () => {
                     {apiData.documentTypes.map(type => <option key={type.id} value={type.id?.toString()}>{type.name || type.label || `Tipo ${type.id}`}</option>)}
                   </select>
                 </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-wider">Usuario</label>
-                  <select value={selectedEntityId} onChange={(e) => setSelectedEntityId(e.target.value)} className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white truncate">
-                    <option value="all">Todos los usuarios</option>
-                    {relevantEntities.map(entity => <option key={entity.id} value={entity.id?.toString()}>{entity.name || entity.full_name || entity.email || `Usuario ${entity.id}`}</option>)}
-                  </select>
-                </div>
+                
+                {/* Selector de Usuario - Solo visible si es Admin */}
+                {isAdmin && (
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-wider">Usuario</label>
+                    <select value={selectedEntityId} onChange={(e) => setSelectedEntityId(e.target.value)} className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white truncate">
+                      <option value="all">Todos los usuarios</option>
+                      {relevantEntities.map(entity => <option key={entity.id} value={entity.id?.toString()}>{entity.name}</option>)}
+                    </select>
+                  </div>
+                )}
+                
                 <div>
                   <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-wider">Estado</label>
                   <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white">
