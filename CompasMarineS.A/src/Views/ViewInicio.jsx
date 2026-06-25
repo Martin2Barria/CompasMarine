@@ -585,7 +585,7 @@ export const ViewInicio = ({ setView }) => {
                       </div>
                     </div>
                     <a
-                      href={`https://compliance.controldoc.legal/documentos/${doc.id}`}
+                      href={`https://compliance.controldoc.legal/p/compasmarine/sign_documents`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="bg-[#921E30] text-white text-xs px-3 py-1.5 rounded-md font-semibold shadow-sm hover:bg-red-800 transition-colors ml-2 shrink-0"
