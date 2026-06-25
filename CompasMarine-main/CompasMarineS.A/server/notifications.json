@@ -1,0 +1,18 @@
+{
+  "subscriptions": [
+    {
+      "userId": "demo",
+      "endpoint": "https://fcm.googleapis.com/fcm/send/fiFySgnGvgE:APA91bESWQ1VB38abcW3cF2uA8Hc605Dvbbci_-b-JVqMvnBYgoo5GZd4dUy4kZ9Pm7mMSuLKAhy0h8TED0pOioldOVfz3nb2eYK1h8TOGmZYiEaJPLGLaO3on7_xZxUB3spy5qRy9ah",
+      "subscription": {
+        "endpoint": "https://fcm.googleapis.com/fcm/send/fiFySgnGvgE:APA91bESWQ1VB38abcW3cF2uA8Hc605Dvbbci_-b-JVqMvnBYgoo5GZd4dUy4kZ9Pm7mMSuLKAhy0h8TED0pOioldOVfz3nb2eYK1h8TOGmZYiEaJPLGLaO3on7_xZxUB3spy5qRy9ah",
+        "expirationTime": null,
+        "keys": {
+          "p256dh": "BLymRHaonQNzJFBi-lMpVd5Y06LfKK13XJG7TwFCWM3g1Kn6WSZAZcqUVPKr8iBDWh7hBvEh7-CsdCP-GZ4axCc",
+          "auth": "wd2TQCcuu-bW3cTDuEVPnA"
+        }
+      },
+      "createdAt": "2026-06-23T18:07:02.553Z",
+      "updatedAt": "2026-06-23T18:07:02.553Z"
+    }
+  ]
+}
