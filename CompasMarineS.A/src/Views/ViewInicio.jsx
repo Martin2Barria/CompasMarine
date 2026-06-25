@@ -585,6 +585,7 @@ export const ViewInicio = ({ setView }) => {
                       </div>
                     </div>
                     <a
+                    //url redirigue a inicio de sesion
                       href={`https://compliance.controldoc.legal/p/compasmarine/sign_documents`}
                       target="_blank"
                       rel="noopener noreferrer"
