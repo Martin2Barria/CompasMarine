@@ -1,16 +1,20 @@
-import { readControlDocSnapshot } from '../storage/controlDocOffline';
+import { readControlDocSnapshot, readControlDocSnapshotAsync } from '../storage/controlDocOffline';
+import { getDocumentExpirationDate, getDocumentStatusText, hasExpiredDocumentStatus, hasNonCompliantDocumentStatus, isBlockedDocument, parseControlDocDate } from '../controldoc/fields';
 import { showAppNotification } from './pushNotifications';
 
 const SENT_EVENTS_KEY = 'compas:notifications:sent-events:v1';
 const LAST_PROGRESS_BUCKET_KEY = 'compas:notifications:last-progress-bucket:v1';
+const ALERT_RECORDS_KEY = 'compas:notifications:alert-records:v1';
 const MAX_STORED_EVENTS = 800;
+const MAX_STORED_ALERTS = 120;
 
-export async function runCachedNotificationRules() {
-  const snapshot = readControlDocSnapshot();
+export async function runCachedNotificationRules(ownerKey) {
+  const snapshot = await readControlDocSnapshotAsync(ownerKey) || readControlDocSnapshot(ownerKey);
   if (!snapshot?.data) {
     return {
       checked: false,
       shown: 0,
+      records: [],
       reason: 'No hay datos offline para revisar.'
     };
   }
@@ -18,68 +22,77 @@ export async function runCachedNotificationRules() {
   return evaluateDocumentNotificationRules({
     documents: snapshot.data.documents || [],
     documentTypes: snapshot.data.documentTypes || [],
-    percentage: calculateHealthyPercentage(snapshot.data.documents || [])
+    percentage: calculateHealthyPercentage(snapshot.data.documents || []),
+    ownerKey
   });
+}
+
+export async function getCachedNotificationRecords(ownerKey) {
+  const snapshot = await readControlDocSnapshotAsync(ownerKey) || readControlDocSnapshot(ownerKey);
+  const existingRecords = readAlertRecords(ownerKey);
+
+  if (!snapshot?.data) return existingRecords;
+
+  const records = buildDocumentAlertRecords({
+    documents: snapshot.data.documents || [],
+    documentTypes: snapshot.data.documentTypes || []
+  });
+
+  return mergeAlertRecords(ownerKey, records);
 }
 
 export async function evaluateDocumentNotificationRules({
   documents = [],
   documentTypes = [],
-  percentage = null
+  percentage = null,
+  ownerKey = null
 }) {
+  const records = buildDocumentAlertRecords({ documents, documentTypes });
+  mergeAlertRecords(ownerKey, records);
+
   if (!canNotify()) {
     return {
-      checked: false,
+      checked: true,
       shown: 0,
+      records,
       reason: 'Las notificaciones no estan activadas.'
     };
   }
 
   const sentEvents = readSentEvents();
-  const criticalDocs = [];
-  const warningDocs = [];
-
-  documents.forEach((doc) => {
-    const daysRemaining = getDaysRemaining(doc.expires_at);
-    if (daysRemaining === null || daysRemaining < 0) return;
-
-    if (daysRemaining <= 30) {
-      const eventId = buildDocumentEventId(doc, '30');
-      if (!sentEvents[eventId]) {
-        criticalDocs.push({ doc, daysRemaining, eventId });
-      }
-      return;
-    }
-
-    if (daysRemaining <= 60) {
-      const eventId = buildDocumentEventId(doc, '60');
-      if (!sentEvents[eventId]) {
-        warningDocs.push({ doc, daysRemaining, eventId });
-      }
-    }
-  });
+  const expiredDocs = records.filter((record) => record.threshold === 0 && !sentEvents[record.id]);
+  const criticalDocs = records.filter((record) => record.threshold === 30 && !sentEvents[record.id]);
+  const warningDocs = records.filter((record) => record.threshold === 60 && !sentEvents[record.id]);
 
   let shown = 0;
 
   if (await notifyDocumentGroup({
-    docs: criticalDocs,
-    documentTypes,
-    title: criticalDocs.length === 1 ? 'Documento critico' : 'Documentos criticos',
-    thresholdDays: 30,
-    tag: 'compas-docs-expiring-30'
+    records: expiredDocs,
+    title: expiredDocs.length === 1 ? 'Documento vencido' : 'Documentos vencidos',
+    thresholdDays: 0,
+    tag: 'compas-docs-expired'
   })) {
-    markEventsAsSent(criticalDocs.map((item) => item.eventId));
+    markEventsAsSent(expiredDocs.map((item) => item.id));
     shown += 1;
   }
 
   if (await notifyDocumentGroup({
-    docs: warningDocs,
-    documentTypes,
+    records: criticalDocs,
+    title: criticalDocs.length === 1 ? 'Documento critico' : 'Documentos criticos',
+    thresholdDays: 30,
+    tag: 'compas-docs-expiring-30'
+  })) {
+    markEventsAsSent(criticalDocs.map((item) => item.id));
+    shown += 1;
+  }
+
+  if (await notifyDocumentGroup({
+    records: warningDocs,
     title: warningDocs.length === 1 ? 'Documento por vencer' : 'Documentos por vencer',
     thresholdDays: 60,
     tag: 'compas-docs-expiring-60'
   })) {
-    markEventsAsSent(warningDocs.map((item) => item.eventId));
+    markEventsAsSent(warningDocs.map((item) => item.id));
     shown += 1;
   }
 
@@ -89,16 +102,64 @@ export async function evaluateDocumentNotificationRules({
 
   return {
     checked: true,
-    shown
+    shown,
+    records
   };
 }
 
-async function notifyDocumentGroup({ docs, documentTypes, title, thresholdDays, tag }) {
-  if (docs.length === 0) return false;
+export function buildDocumentAlertRecords({ documents = [], documentTypes = [] }) {
+  return documents
+    .map((doc) => {
+      const expirationDate = getDocumentExpirationDate(doc);
+      const daysRemaining = getDaysRemaining(expirationDate);
+      const expiredByStatus = hasExpiredDocumentStatus(doc);
+      const blocked = isBlockedDocument(doc) || hasNonCompliantDocumentStatus(doc);
+      const expired = blocked || expiredByStatus || (daysRemaining !== null && daysRemaining < 0);
+      const threshold = expired
+        ? 0
+        : daysRemaining !== null && daysRemaining <= 30
+          ? 30
+          : daysRemaining !== null && daysRemaining <= 60
+            ? 60
+            : null;
 
-  const body = docs.length === 1
-    ? `${getDocName(docs[0].doc, documentTypes)} vence en ${docs[0].daysRemaining} dias.`
-    : `${docs.length} documentos vencen dentro de ${thresholdDays} dias. Revisa tus documentos.`;
+      if (threshold === null) return null;
+
+      const docName = getDocName(doc, documentTypes);
+      const id = buildDocumentEventId(doc, threshold);
+      const severity = threshold === 0 ? 'expired' : threshold === 30 ? 'critical' : 'warning';
+      const title = threshold === 0 ? 'Documento vencido' : threshold === 30 ? 'Documento critico' : 'Documento por vencer';
+      const body = threshold === 0
+        ? `${docName} esta vencido o bloqueado.`
+        : `${docName} vence en ${daysRemaining} dias.`;
+
+      return {
+        id,
+        type: 'document',
+        severity,
+        threshold,
+        title,
+        body,
+        docName,
+        documentId: doc.id || doc.uuid || '',
+        daysRemaining,
+        expirationDate: expirationDate || '',
+        url: '/documentos',
+        createdAt: new Date().toISOString()
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity) || (a.daysRemaining ?? -9999) - (b.daysRemaining ?? -9999));
+}
+
+async function notifyDocumentGroup({ records, title, thresholdDays, tag }) {
+  if (records.length === 0) return false;
+
+  const body = records.length === 1
+    ? records[0].body
+    : thresholdDays === 0
+      ? `${records.length} documentos estan vencidos o bloqueados. Revisa tus documentos.`
+      : `${records.length} documentos vencen dentro de ${thresholdDays} dias. Revisa tus documentos.`;
 
   return showAppNotification({
     title,
@@ -132,7 +193,11 @@ function calculateHealthyPercentage(documents) {
   if (documents.length === 0) return 100;
 
   const healthyDocs = documents.filter((doc) => {
-    const days = getDaysRemaining(doc.expires_at);
+    const days = getDaysRemaining(getDocumentExpirationDate(doc));
+    const status = getDocumentStatusText(doc);
+    if (isBlockedDocument(doc) || hasNonCompliantDocumentStatus(doc)) return false;
+    if (days === null && !status) return false;
+    if (days === null && hasExpiredDocumentStatus(doc)) return false;
     return days === null || days > 30;
   }).length;
 
@@ -142,8 +207,8 @@ function calculateHealthyPercentage(documents) {
 function getDaysRemaining(dateString) {
   if (!dateString) return null;
 
-  const expirationDate = new Date(dateString);
-  if (Number.isNaN(expirationDate.getTime())) return null;
+  const expirationDate = parseControlDocDate(dateString);
+  if (!expirationDate) return null;
 
   const currentDate = new Date();
   currentDate.setHours(0, 0, 0, 0);
@@ -170,7 +235,7 @@ function buildDocumentEventId(doc, threshold) {
     doc.label || doc.name || 'documento'
   ].join('-');
 
-  return `document:${threshold}:${docId}:${doc.expires_at || 'sin-fecha'}`;
+  return `document:${threshold}:${docId}:${getDocumentExpirationDate(doc) || 'sin-fecha'}`;
 }
 
 function canNotify() {
@@ -207,6 +272,48 @@ function markEventsAsSent(eventIds) {
   );
 
   window.localStorage.setItem(SENT_EVENTS_KEY, JSON.stringify(prunedEvents));
+}
+
+function mergeAlertRecords(ownerKey, records) {
+  const key = getAlertRecordsKey(ownerKey);
+  const previousRecords = readAlertRecords(ownerKey);
+  const mergedById = new Map();
+
+  [...records, ...previousRecords].forEach((record) => {
+    if (!record?.id || mergedById.has(record.id)) return;
+    mergedById.set(record.id, record);
+  });
+
+  const mergedRecords = [...mergedById.values()]
+    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity) || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, MAX_STORED_ALERTS);
+
+  try {
+    window.localStorage.setItem(key, JSON.stringify(mergedRecords));
+  } catch {
+    return mergedRecords;
+  }
+
+  return mergedRecords;
+}
+
+function readAlertRecords(ownerKey) {
+  try {
+    return JSON.parse(window.localStorage.getItem(getAlertRecordsKey(ownerKey)) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function getAlertRecordsKey(ownerKey) {
+  return ownerKey ? `${ALERT_RECORDS_KEY}:${ownerKey}` : ALERT_RECORDS_KEY;
+}
+
+function severityRank(severity) {
+  if (severity === 'expired') return 0;
+  if (severity === 'critical') return 1;
+  if (severity === 'warning') return 2;
+  return 3;
 }
 
 function readStoredNumber(key) {

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:local": "VITE_DEV_API_PROXY_TARGET=http://127.0.0.1:8787/ vite",
     "dev:api": "node server/index.js",
     "prebuild": "chmod +x node_modules/.bin/vite",
     "build": "vite build",

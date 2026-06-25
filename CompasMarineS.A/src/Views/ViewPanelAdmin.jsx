@@ -1,12 +1,23 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { ShieldAlert, Database, RefreshCw, Users, ServerCrash, CheckCircle2 } from 'lucide-react';
 
-export const ViewAdmin = () => {
+export const ViewAdmin = ({ onLoadingProgress }) => {
   const [syncStatus, setSyncStatus] = useState(null); // 'loading', 'success', 'error'
   const [dbStatus, setDbStatus] = useState(null);
   const [message, setMessage] = useState('');
 
+  const startProgressTicker = (initialPercent = 10) => {
+    let currentPercent = initialPercent;
+    onLoadingProgress?.({ percent: currentPercent });
+
+    return window.setInterval(() => {
+      currentPercent = Math.min(92, currentPercent + (currentPercent < 60 ? 8 : 3));
+      onLoadingProgress?.({ percent: currentPercent });
+    }, 700);
+  };
+
   const handleSyncUsers = async () => {
+    const progressTimer = startProgressTicker(10);
     setSyncStatus('loading');
     setMessage('Descargando usuarios desde ControlDoc. Esto puede tomar un minuto...');
     try {
@@ -15,18 +26,23 @@ export const ViewAdmin = () => {
       if (res.ok) {
         setSyncStatus('success');
         setMessage(data.message || 'Sincronización completada con éxito.');
+        onLoadingProgress?.({ percent: 100, done: true });
       } else {
         throw new Error(data.error || 'Fallo desconocido');
       }
     } catch (err) {
+      onLoadingProgress?.({ active: false });
       setSyncStatus('error');
       setMessage(err.message);
+    } finally {
+      window.clearInterval(progressTimer);
     }
   };
 
   const handleSetupDb = async () => {
     if (!window.confirm('¿Estás seguro? Esto verificará y recreará las tablas necesarias en MySQL.')) return;
     
+    const progressTimer = startProgressTicker(16);
     setDbStatus('loading');
     try {
       const res = await fetch('/api/admin/setup-db');
@@ -34,12 +50,16 @@ export const ViewAdmin = () => {
       if (res.ok) {
         setDbStatus('success');
         setMessage(data.message || 'Tablas configuradas correctamente.');
+        onLoadingProgress?.({ percent: 100, done: true });
       } else {
         throw new Error(data.error || 'Fallo desconocido');
       }
     } catch (err) {
+      onLoadingProgress?.({ active: false });
       setDbStatus('error');
       setMessage(err.message);
+    } finally {
+      window.clearInterval(progressTimer);
     }
   };
 

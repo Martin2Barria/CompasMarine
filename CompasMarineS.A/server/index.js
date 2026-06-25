@@ -61,14 +61,26 @@ const securityHeaders = {
 // Configuración de Caché en el Servidor (Server Cache)
 const serverCache = {
   documentTypes: { data: null, expiresAt: 0 },
-  entities: { data: null, expiresAt: 0 }
+  entities: { data: null, expiresAt: 0 },
+  documents: new Map()
 };
 const CACHE_TTL = 15 * 60 * 1000; // Guardar diccionarios en caché por 15 minutos
-
-let documentsSyncCache = null;
-let lastDocumentsSyncTime = null;
-const CACHE_DURATION_MS = 5 * 60 * 1000; 
-let isSyncing = false;
+const DOCUMENTS_CACHE_TTL = Number(process.env.CONTROLDOC_DOCUMENTS_CACHE_TTL_MS || 5 * 60 * 1000);
+const CONTROL_DOC_PAGE_SIZE = Number(process.env.CONTROLDOC_PAGE_SIZE || 100);
+const CONTROL_DOC_PAGE_CONCURRENCY = Number(process.env.CONTROLDOC_PAGE_CONCURRENCY || 6);
+const CONTROL_DOC_MAX_PAGES = Number(process.env.CONTROLDOC_MAX_PAGES || 300);
+const CONTROL_DOC_DOCUMENT_ENTITY_FILTER_PARAM = process.env.CONTROLDOC_DOCUMENT_ENTITY_FILTER_PARAM || 'abstract_entity_id';
+const CONTROL_DOC_PAGINATION_PROFILES = [
+  { type: 'page', pageParam: 'page', sizeParam: 'per_page' },
+  { type: 'page', pageParam: 'page', sizeParam: 'per' },
+  { type: 'page', pageParam: 'page', sizeParam: 'page_size' },
+  { type: 'page', pageParam: 'page[number]', sizeParam: 'page[size]' },
+  { type: 'offset', offsetParam: 'offset', sizeParam: 'limit' },
+  { type: 'offset', offsetParam: 'offset', sizeParam: 'per_page' },
+  { type: 'offset', offsetParam: 'offset', sizeParam: 'per' },
+  { type: 'offset', offsetParam: 'skip', sizeParam: 'limit' },
+  { type: 'offset', offsetParam: 'start', sizeParam: 'limit' }
+];
 
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
@@ -127,6 +139,11 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/notifications/email-alerts') {
+      await handleEmailAlerts(req, res);
+      return;
+    }
+
     if (requestUrl.pathname === '/api/admin/setup-db') {
       await handleSetupDB(req, res);
       return;
@@ -138,6 +155,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (requestUrl.pathname === '/api/controldoc/documents/sync') {
+      console.log('[ControlDoc] Limpiando caché de documentos por solicitud del cliente.');
       await handleDocumentsSync(req, res);
       return;
     }
@@ -163,53 +181,247 @@ server.listen(port, host, () => {
   console.log(`Compas Marine server listening on http://${host}:${port}`);
 });
 
-// Función auxiliar para descargar de forma recursiva todas las páginas de ControlDoc (Server-side Pagination)
+// Descarga todas las páginas de ControlDoc en lotes para evitar el cuello de botella secuencial.
 async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = {}) {
-  let allItems = [];
-  let page = 1;
-  let hasMore = true;
-  
-  while (hasMore && page <= 50) {
-    const url = new URL(upstreamPath, controlDocBaseUrl);
-    url.searchParams.append('page', page);
-    url.searchParams.append('per_page', '100');
-    for (const [k, v] of Object.entries(extraParams)) {
-      url.searchParams.append(k, v);
-    }
+  const results = [];
+  let lastError = null;
 
-    const headers = {
-      'Content-Type': 'application/json',
-      'X-User-Email': credentials.email,
-      'X-User-Token': credentials.token,
-      'Customer-Id': credentials.customerId,
-      'Entity-Type-Id': credentials.entityTypeId
-    };
-    if (credentials.authorization) headers.AUTHORIZATION = credentials.authorization;
-
-    const response = await fetch(url, { method: 'GET', headers, redirect: 'follow' });
-    if (response.status === 429) {
-      await new Promise(r => setTimeout(r, 2000));
-      continue;
-    }
-    if (!response.ok) throw new Error(`Error de ControlDoc en servidor: ${response.status}`);
-
-    const json = await response.json();
-    let items = Array.isArray(json) ? json : (Object.values(json).find(v => Array.isArray(v)) || []);
-
-    if (items.length === 0) {
-      hasMore = false;
-    } else {
-      allItems.push(...items);
-      page++;
-      // ControlDoc limita a 25 registros por página obligatoriamente
-      if (items.length < 25) {
-        hasMore = false;
-      } else {
-        await new Promise(r => setTimeout(r, 50)); 
-      }
+  for (const paginationProfile of CONTROL_DOC_PAGINATION_PROFILES) {
+    try {
+      const items = await fetchAllControlDocPagesWithProfile(upstreamPath, credentials, extraParams, paginationProfile);
+      results.push({ items, paginationProfile });
+    } catch (error) {
+      lastError = error;
+      console.warn('[ControlDoc] Estrategia de paginación descartada:', {
+        upstreamPath,
+        paginationProfile,
+        reason: error?.message || error
+      });
     }
   }
+
+  if (results.length === 0) {
+    throw lastError || new Error('No se pudo paginar ControlDoc.');
+  }
+
+  const bestResult = results
+    .map((result) => ({
+      ...result,
+      items: dedupeControlDocItems(result.items)
+    }))
+    .sort((a, b) => b.items.length - a.items.length)[0];
+
+  console.log('[ControlDoc] Resultado de paginación seleccionado:', {
+    upstreamPath,
+    totalItems: bestResult.items.length,
+    paginationProfile: bestResult.paginationProfile,
+    candidates: results.map((result) => ({
+      totalItems: result.items.length,
+      paginationProfile: result.paginationProfile
+    }))
+  });
+
+  return bestResult.items;
+}
+
+async function fetchAllControlDocPagesWithProfile(upstreamPath, credentials, extraParams = {}, paginationProfile) {
+  const firstPage = await fetchControlDocPage(upstreamPath, credentials, 1, extraParams, paginationProfile);
+  const firstItems = firstPage.items;
+  if (firstItems.length === 0) return [];
+
+  const knownTotalPages = firstPage.totalPages || (
+    firstPage.totalCount ? Math.ceil(firstPage.totalCount / CONTROL_DOC_PAGE_SIZE) : null
+  );
+
+  if (knownTotalPages) {
+    const lastPage = knownTotalPages;
+    const remainingPages = createPageRange(2, lastPage);
+    const remainingItems = await fetchControlDocPagesInBatches(upstreamPath, credentials, extraParams, remainingPages, paginationProfile);
+    return firstItems.concat(remainingItems);
+  }
+
+  const allItems = [...firstItems];
+  const inferredPageSize = firstItems.length;
+  let nextPage = 2;
+  let keepFetching = true;
+  const seenPageSignatures = new Set([buildPageSignature(firstItems)]);
+
+  while (keepFetching && nextPage <= CONTROL_DOC_MAX_PAGES) {
+    const batchPages = createPageRange(nextPage, nextPage + CONTROL_DOC_PAGE_CONCURRENCY - 1);
+    const batchResults = await Promise.all(
+      batchPages.map((page) => fetchControlDocPage(upstreamPath, credentials, page, extraParams, paginationProfile))
+    );
+
+    for (const result of batchResults) {
+      if (result.items.length === 0) {
+        keepFetching = false;
+        break;
+      }
+
+      const pageSignature = buildPageSignature(result.items);
+      if (seenPageSignatures.has(pageSignature)) {
+        const error = new Error('ControlDoc repitió una página de resultados; se detuvo para probar otra paginación.');
+        error.code = 'CONTROL_DOC_REPEATED_PAGE';
+        throw error;
+      }
+      seenPageSignatures.add(pageSignature);
+
+      allItems.push(...result.items);
+
+      if (result.items.length < inferredPageSize) {
+        keepFetching = false;
+        break;
+      }
+    }
+
+    nextPage += CONTROL_DOC_PAGE_CONCURRENCY;
+  }
+
   return allItems;
+}
+
+async function fetchControlDocPagesInBatches(upstreamPath, credentials, extraParams, pages, paginationProfile) {
+  const allItems = [];
+
+  for (let index = 0; index < pages.length; index += CONTROL_DOC_PAGE_CONCURRENCY) {
+    const batchPages = pages.slice(index, index + CONTROL_DOC_PAGE_CONCURRENCY);
+    const batchResults = await Promise.all(
+      batchPages.map((page) => fetchControlDocPage(upstreamPath, credentials, page, extraParams, paginationProfile))
+    );
+
+    batchResults.forEach((result) => {
+      allItems.push(...result.items);
+    });
+  }
+
+  return allItems;
+}
+
+async function fetchControlDocPage(upstreamPath, credentials, page, extraParams = {}, paginationProfile = CONTROL_DOC_PAGINATION_PROFILES[0], attempt = 0) {
+  const url = new URL(upstreamPath, controlDocBaseUrl);
+  appendPaginationParams(url, page, paginationProfile);
+  for (const [key, value] of Object.entries(extraParams)) {
+    url.searchParams.append(key, value);
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-User-Email': credentials.email,
+    'X-User-Token': credentials.token,
+    'Customer-Id': credentials.customerId,
+    'Entity-Type-Id': credentials.entityTypeId
+  };
+  if (credentials.authorization) headers.AUTHORIZATION = credentials.authorization;
+
+  const response = await fetch(url, { method: 'GET', headers, redirect: 'follow' });
+  if (response.status === 429 && attempt < 4) {
+    await delay(600 * 2 ** attempt);
+    return fetchControlDocPage(upstreamPath, credentials, page, extraParams, paginationProfile, attempt + 1);
+  }
+  if (!response.ok) throw new Error(`Error de ControlDoc en servidor: ${response.status}`);
+
+  const json = await response.json();
+  return {
+    items: extractControlDocItems(json),
+    totalPages:
+      readNumericHeader(response.headers, ['x-total-pages', 'total-pages', 'x-pagination-pages']) ||
+      readNumericValue(json, ['total_pages', 'totalPages', 'last_page', 'lastPage', 'pages', 'page_count', 'pageCount']),
+    totalCount:
+      readNumericHeader(response.headers, ['x-total-count', 'total-count', 'x-pagination-total']) ||
+      readNumericValue(json, ['total_count', 'totalCount', 'total', 'recordsTotal'])
+  };
+}
+
+function appendPaginationParams(url, page, paginationProfile) {
+  if (paginationProfile.type === 'offset') {
+    url.searchParams.append(paginationProfile.offsetParam, ((page - 1) * CONTROL_DOC_PAGE_SIZE).toString());
+    url.searchParams.append(paginationProfile.sizeParam, CONTROL_DOC_PAGE_SIZE.toString());
+    return;
+  }
+
+  url.searchParams.append(paginationProfile.pageParam, page.toString());
+  url.searchParams.append(paginationProfile.sizeParam, CONTROL_DOC_PAGE_SIZE.toString());
+}
+
+function extractControlDocItems(json) {
+  if (Array.isArray(json)) return json;
+  if (!json || typeof json !== 'object') return [];
+
+  for (const key of ['data', 'items', 'documents', 'entities', 'document_types']) {
+    if (Array.isArray(json[key])) return json[key];
+  }
+
+  for (const sourceKey of ['data', 'result', 'response', 'payload']) {
+    const source = json[sourceKey];
+    if (!source || typeof source !== 'object' || Array.isArray(source)) continue;
+
+    for (const key of ['data', 'items', 'documents', 'entities', 'document_types', 'records', 'results']) {
+      if (Array.isArray(source[key])) return source[key];
+    }
+  }
+
+  return Object.values(json).find((value) => Array.isArray(value)) || [];
+}
+
+function readNumericHeader(headers, names) {
+  for (const name of names) {
+    const value = Number(headers.get(name));
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
+}
+
+function readNumericValue(json, names) {
+  const sources = [
+    json,
+    json?.meta,
+    json?.pagination,
+    json?.meta?.pagination,
+    json?.data?.pagination,
+    json?.data?.meta,
+    json?.data?.meta?.pagination,
+    json?.result?.pagination,
+    json?.response?.pagination,
+    json?.payload?.pagination
+  ].filter((source) => source && typeof source === 'object' && !Array.isArray(source));
+
+  for (const source of sources) {
+    for (const name of names) {
+      const value = Number(source[name]);
+      if (Number.isFinite(value) && value > 0) return value;
+    }
+  }
+
+  return null;
+}
+
+function createPageRange(start, end) {
+  if (end < start) return [];
+  return Array.from({ length: end - start + 1 }, (_, index) => start + index);
+}
+
+function buildPageSignature(items) {
+  return items
+    .map((item) => item?.id ?? item?.external_id ?? JSON.stringify(item).slice(0, 80))
+    .join('|');
+}
+
+function dedupeControlDocItems(items) {
+  const uniqueItems = [];
+  const seen = new Set();
+
+  items.forEach((item) => {
+    const key = item?.id ?? item?.external_id ?? JSON.stringify(item);
+    if (seen.has(key)) return;
+    seen.add(key);
+    uniqueItems.push(item);
+  });
+
+  return uniqueItems;
+}
+
+function delay(ms) {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
 async function handleSyncUsersToDB(req, res) {
@@ -408,6 +620,225 @@ async function handleAuthMe(req, res) {
   }
 }
 
+async function findExternalEntityIdByEmail(email, credentials = {}, forceRefresh = false) {
+  const normalizedEmail = (email || '').trim().toLowerCase();
+  if (!normalizedEmail) return null;
+
+  try {
+    const whereClauses = ['(email = ? OR LOWER(CAST(data_json AS CHAR)) LIKE ?)'];
+    const params = [normalizedEmail, `%"${normalizedEmail}"%`];
+
+    if (credentials.customerId) {
+      whereClauses.push('customer_id = ?');
+      params.push(credentials.customerId);
+    }
+
+    if (credentials.entityTypeId) {
+      whereClauses.push('entity_type_id = ?');
+      params.push(credentials.entityTypeId);
+    }
+
+    const [entityRows] = await dbPool.execute(
+      `SELECT external_id FROM entidades_api WHERE ${whereClauses.join(' AND ')} LIMIT 1`,
+      params
+    );
+
+    if (entityRows.length > 0) return entityRows[0].external_id?.toString() || null;
+
+    const allEntities = await getAllControlDocEntities(credentials, forceRefresh);
+    const liveEntity = allEntities.find((entity) => controlDocEntityMatchesEmail(entity, normalizedEmail));
+    return liveEntity?.id?.toString() || liveEntity?.external_id?.toString() || null;
+  } catch (error) {
+    console.error('Error buscando entidad externa de usuario:', error);
+    return null;
+  }
+}
+
+async function getAllControlDocEntities(credentials, forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && serverCache.entities.data && serverCache.entities.expiresAt > now) {
+    return serverCache.entities.data;
+  }
+
+  const data = await fetchAllControlDocPages('/api/v1/abstract/entities', credentials);
+  serverCache.entities = { data, expiresAt: now + CACHE_TTL };
+  return data;
+}
+
+function controlDocEntityMatchesEmail(entity, normalizedEmail) {
+  if (!entity || !normalizedEmail) return false;
+
+  const directValues = [
+    entity.email,
+    entity?.custom_fields?.correo_electronico_personal,
+    entity?.custom_fields?.correo_electronico_corporativo,
+    entity?.customFields?.correo_electronico_personal,
+    entity?.customFields?.correo_electronico_corporativo
+  ];
+
+  if (directValues.some((value) => (value || '').toString().trim().toLowerCase() === normalizedEmail)) {
+    return true;
+  }
+
+  try {
+    return JSON.stringify(entity).toLowerCase().includes(normalizedEmail);
+  } catch {
+    return false;
+  }
+}
+
+const CONTROL_DOC_DOCUMENT_ENTITY_ID_KEYS = [
+  'entity_id',
+  'entityId',
+  'entity_external_id',
+  'entityExternalId',
+  'entidad_external_id',
+  'entidadExternalId',
+  'abstract_entity_id',
+  'abstractEntityId',
+  'abstract_entity_external_id',
+  'abstractEntityExternalId',
+  'owner_entity_id',
+  'ownerEntityId',
+  'employee_id',
+  'employeeId',
+  'employee_external_id',
+  'employeeExternalId',
+  'collaborator_id',
+  'collaboratorId',
+  'colaborador_id',
+  'colaboradorId',
+  'person_id',
+  'personId'
+];
+
+const CONTROL_DOC_DOCUMENT_ENTITY_OBJECT_KEYS = [
+  'entity',
+  'abstract_entity',
+  'abstractEntity',
+  'entidad',
+  'owner',
+  'employee',
+  'collaborator',
+  'colaborador',
+  'person',
+  'worker'
+];
+
+const CONTROL_DOC_DOCUMENT_ENTITY_COLLECTION_KEYS = [
+  'entities',
+  'entity_ids',
+  'entityIds',
+  'abstract_entities',
+  'abstractEntities',
+  'employees',
+  'collaborators',
+  'colaboradores',
+  'people',
+  'workers'
+];
+
+function normalizeControlDocEntityId(value) {
+  if (value === undefined || value === null || value === '') return '';
+
+  if (typeof value === 'object') {
+    for (const key of ['id', 'external_id', 'externalId', ...CONTROL_DOC_DOCUMENT_ENTITY_ID_KEYS]) {
+      const nestedValue = value?.[key];
+      if (nestedValue !== undefined && nestedValue !== null && nestedValue !== '') {
+        return nestedValue.toString();
+      }
+    }
+    return '';
+  }
+
+  return value.toString();
+}
+
+function getControlDocDocumentEntityIds(doc) {
+  if (!doc || typeof doc !== 'object') return [];
+
+  const ids = [];
+  const pushId = (value) => {
+    const id = normalizeControlDocEntityId(value);
+    if (id && !ids.includes(id)) ids.push(id);
+  };
+
+  CONTROL_DOC_DOCUMENT_ENTITY_ID_KEYS.forEach((key) => pushId(doc[key]));
+  CONTROL_DOC_DOCUMENT_ENTITY_OBJECT_KEYS.forEach((key) => pushId(doc[key]));
+
+  CONTROL_DOC_DOCUMENT_ENTITY_COLLECTION_KEYS.forEach((key) => {
+    const collection = doc[key];
+    if (!Array.isArray(collection)) return;
+    collection.forEach(pushId);
+  });
+
+  return ids;
+}
+
+function buildControlDocCacheKey(upstreamPath, credentials, extraParams = {}) {
+  const sortedParams = Object.keys(extraParams)
+    .sort()
+    .map((key) => [key, extraParams[key]]);
+
+  return JSON.stringify({
+    upstreamPath,
+    customerId: credentials.customerId,
+    entityTypeId: credentials.entityTypeId,
+    params: sortedParams
+  });
+}
+
+function readCachedMapValue(cacheMap, key) {
+  const entry = cacheMap.get(key);
+  if (!entry || entry.promise) return null;
+  if (entry.expiresAt <= Date.now()) {
+    cacheMap.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+
+async function getCachedMapValue(cacheMap, key, ttl, fetcher) {
+  const cached = readCachedMapValue(cacheMap, key);
+  if (cached) return cached;
+
+  const existingEntry = cacheMap.get(key);
+  if (existingEntry?.promise) return existingEntry.promise;
+
+  const promise = fetcher()
+    .then((data) => {
+      cacheMap.set(key, { data, expiresAt: Date.now() + ttl });
+      return data;
+    })
+    .catch((error) => {
+      cacheMap.delete(key);
+      throw error;
+    });
+
+  cacheMap.set(key, { promise });
+  return promise;
+}
+
+async function refreshCachedMapValue(cacheMap, key, ttl, fetcher) {
+  cacheMap.delete(key);
+  const data = await fetcher();
+  cacheMap.set(key, { data, expiresAt: Date.now() + ttl });
+  return data;
+}
+
+function shouldRefreshControlDocCache(requestUrl) {
+  const refresh = (requestUrl.searchParams.get('refresh') || requestUrl.searchParams.get('fresh') || '')
+    .trim()
+    .toLowerCase();
+  const cacheMode = (requestUrl.searchParams.get('cache') || '').trim().toLowerCase();
+
+  return (
+    ['1', 'true', 'yes', 'force'].includes(refresh) ||
+    cacheMode === 'no-store' ||
+    requestUrl.searchParams.has('_')
+  );
+}
+
 async function proxyControlDocRequest(req, res, requestUrl) {
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'Method not allowed' });
@@ -417,8 +848,7 @@ async function proxyControlDocRequest(req, res, requestUrl) {
   const cookieUserId = getCookie(req, 'compas_user_id');
   if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado. Inicia sesión.' });
 
-  let userEmail = '';
-  let isAdmin = false;
+  let sessionUser;
 
   try {
     const [userRows] = await dbPool.execute(`
@@ -430,12 +860,14 @@ async function proxyControlDocRequest(req, res, requestUrl) {
     `, [cookieUserId]);
     
     if (userRows.length === 0) return sendJson(res, 401, { error: 'Usuario inválido o inactivo.' });
-    userEmail = userRows[0].email;
-    isAdmin = userRows[0].rol?.toLowerCase() === 'admin';
+    sessionUser = userRows[0];
   } catch (error) {
     console.error('Error validando sesión:', error);
     return sendJson(res, 500, { error: 'Error interno validando sesión' });
   }
+
+  const userEmail = sessionUser.email;
+  const isAdmin = sessionUser.rol?.toLowerCase() === 'admin';
 
   const upstreamPath = controlDocRoutes.get(requestUrl.pathname);
   const credentials = resolveControlDocCredentials(req);
@@ -445,11 +877,12 @@ async function proxyControlDocRequest(req, res, requestUrl) {
   }
 
   const now = Date.now();
+  const forceRefresh = shouldRefreshControlDocCache(requestUrl);
 
   try {
     // 1. Tipos de Documento (Con caché del servidor)
     if (upstreamPath === '/api/v1/abstract/document_types') {
-      if (serverCache.documentTypes.data && serverCache.documentTypes.expiresAt > now) {
+      if (!forceRefresh && serverCache.documentTypes.data && serverCache.documentTypes.expiresAt > now) {
         return sendJson(res, 200, serverCache.documentTypes.data);
       }
       const data = await fetchAllControlDocPages(upstreamPath, credentials);
@@ -459,26 +892,13 @@ async function proxyControlDocRequest(req, res, requestUrl) {
 
     // 2. Entidades / Usuarios (Con caché y filtro de roles)
     if (upstreamPath === '/api/v1/abstract/entities') {
-      let myExternalId = null;
-      try {
-        const [entityRows] = await dbPool.execute(
-          'SELECT external_id FROM entidades_api WHERE email = ? OR data_json LIKE ?', 
-          [userEmail, `%"${userEmail}"%`]
-        );
-        myExternalId = entityRows.length > 0 ? entityRows[0].external_id?.toString() : 'NO_ENTITY';
-      } catch(e) { console.error("Error buscando ID de usuario", e); }
-
-      let allEntities = [];
-      if (serverCache.entities.data && serverCache.entities.expiresAt > now) {
-        allEntities = serverCache.entities.data;
-      } else {
-        allEntities = await fetchAllControlDocPages(upstreamPath, credentials);
-        serverCache.entities = { data: allEntities, expiresAt: now + CACHE_TTL };
-      }
+      const allEntities = await getAllControlDocEntities(credentials, forceRefresh);
 
       if (isAdmin) {
         return sendJson(res, 200, allEntities);
       } else {
+        const myExternalId = await findExternalEntityIdByEmail(userEmail, credentials, false);
+        if (!myExternalId) return sendJson(res, 200, []);
         const filtered = allEntities.filter(item => item.id?.toString() === myExternalId);
         return sendJson(res, 200, filtered);
       }
@@ -486,21 +906,42 @@ async function proxyControlDocRequest(req, res, requestUrl) {
 
     // 3. Documentos (Paginación automática de ControlDoc del lado del servidor)
     if (upstreamPath === '/api/v1/abstract/documents') {
-      let myExternalId = null;
-      try {
-        const [entityRows] = await dbPool.execute(
-          'SELECT external_id FROM entidades_api WHERE email = ? OR data_json LIKE ?', 
-          [userEmail, `%"${userEmail}"%`]
-        );
-        myExternalId = entityRows.length > 0 ? entityRows[0].external_id?.toString() : 'NO_ENTITY';
-      } catch(e) { console.error("Error buscando ID para documentos", e); }
+      console.log('[ControlDoc] Solicitando documentos desde proxy local.', {
+        forceRefresh,
+        isAdmin
+      });
+      const myExternalId = isAdmin ? null : await findExternalEntityIdByEmail(userEmail, credentials, forceRefresh);
 
-      const extraParams = {};
-      if (!isAdmin) {
-        extraParams.entity_id = myExternalId;
+      if (!isAdmin && !myExternalId) {
+        return sendJson(res, 200, []);
       }
-      const allDocs = await fetchAllControlDocPages(upstreamPath, credentials, extraParams);
-      return sendJson(res, 200, allDocs);
+
+      const documentParams = isAdmin ? {} : {
+        [CONTROL_DOC_DOCUMENT_ENTITY_FILTER_PARAM]: myExternalId
+      };
+      const documentCacheKey = buildControlDocCacheKey(upstreamPath, credentials, documentParams);
+      const fetchDocuments = () => fetchAllControlDocPages(upstreamPath, credentials, documentParams);
+
+      const allDocs = forceRefresh
+        ? await refreshCachedMapValue(serverCache.documents, documentCacheKey, DOCUMENTS_CACHE_TTL, fetchDocuments)
+        : await getCachedMapValue(serverCache.documents, documentCacheKey, DOCUMENTS_CACHE_TTL, fetchDocuments);
+
+      console.log('[ControlDoc] Documentos disponibles en proxy local:', allDocs.length);
+
+      if (isAdmin) {
+        return sendJson(res, 200, allDocs);
+      }
+
+      const scopedDocs = allDocs.filter((doc) => getControlDocDocumentEntityIds(doc).includes(myExternalId));
+
+      console.log('[ControlDoc] Documentos filtrados para trabajador:', {
+        entityId: myExternalId,
+        requestedWithFilter: CONTROL_DOC_DOCUMENT_ENTITY_FILTER_PARAM,
+        totalFetched: allDocs.length,
+        totalScoped: scopedDocs.length
+      });
+
+      return sendJson(res, 200, scopedDocs);
     }
 
     return sendJson(res, 400, { error: 'Ruta no soportada por el proxy' });
@@ -513,7 +954,10 @@ async function proxyControlDocRequest(req, res, requestUrl) {
 
 async function handleDocumentsSync(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
-  sendJson(res, 200, { message: "Sync mantenido" });
+  serverCache.documents.clear();
+  serverCache.documentTypes = { data: null, expiresAt: 0 };
+  serverCache.entities = { data: null, expiresAt: 0 };
+  sendJson(res, 200, { ok: true, message: 'Caché de ControlDoc limpiado. La próxima consulta traerá datos frescos.' });
 }
 
 function resolveControlDocCredentials(req) {
@@ -552,35 +996,6 @@ function normalizeCredentialProfile(profile) {
     entityTypeId: profile.entityTypeId || profile.entity_type_id || process.env.CONTROLDOC_ENTITY_TYPE_ID || process.env.CONTROLDOC_DEFAULT_ENTITY_TYPE_ID || '467',
     authorization: profile.authorization || process.env.CONTROLDOC_AUTHORIZATION || ''
   };
-}
-
-function appendSafeControlDocQueryParams(sourceParams, targetParams) {
-  const allowedQueryKeys = new Set(['page', 'per_page', 'q', 'query', 'search']);
-
-  sourceParams.forEach((value, key) => {
-    if (!allowedQueryKeys.has(key)) return;
-
-    if (key === 'page') {
-      const page = clampInteger(value, 1, 500);
-      targetParams.set(key, String(page));
-      return;
-    }
-
-    if (key === 'per_page') {
-      const perPage = clampInteger(value, 1, 100);
-      targetParams.set(key, String(perPage));
-      return;
-    }
-
-    const safeValue = stripControlCharacters(value).trim().slice(0, 120);
-    if (safeValue) targetParams.set(key, safeValue);
-  });
-}
-
-function clampInteger(value, min, max) {
-  const number = Number.parseInt(value, 10);
-  if (!Number.isFinite(number)) return min;
-  return Math.min(max, Math.max(min, number));
 }
 
 async function handleRegister(req, res) {
@@ -622,9 +1037,14 @@ async function handleLogin(req, res) {
         if (isValid) {
             const [roles] = await dbPool.execute('SELECT r.nombre as rol FROM usuarios_roles ur JOIN roles r ON ur.rol_id = r.id WHERE ur.usuario_id = ?', [user.id]);
             const rol = roles.length > 0 ? roles[0].rol : 'Usuario';
+            const [matchedEntities] = await dbPool.execute(
+                'SELECT rut FROM entidades_api WHERE email = ? OR data_json LIKE ? LIMIT 1',
+                [email, `%"${email}"%`]
+            );
+            const rut = matchedEntities[0]?.rut || null;
             
             res.setHeader('Set-Cookie', `compas_user_id=${user.id}; Path=/; HttpOnly; SameSite=Lax`);
-            return sendJson(res, 200, { ok: true, message: 'Inicio de sesión correcto.', user: { id: user.id, nombre: user.nombre, email: user.email, rol } });
+            return sendJson(res, 200, { ok: true, message: 'Inicio de sesión correcto.', user: { id: user.id, nombre: user.nombre, email: user.email, rut, rol } });
         }
     }
 
@@ -667,7 +1087,7 @@ async function handleLogin(req, res) {
             } catch(e) { console.error("Error asignando rol automático:", e); }
 
             res.setHeader('Set-Cookie', `compas_user_id=${userIdToLogin}; Path=/; HttpOnly; SameSite=Lax`);
-            return sendJson(res, 200, { ok: true, message: 'Cuenta activada e inicio de sesión correcto.', user: { id: userIdToLogin, nombre: matchedEntidad.nombre, email: email, rol: 'Usuario' } });
+            return sendJson(res, 200, { ok: true, message: 'Cuenta activada e inicio de sesión correcto.', user: { id: userIdToLogin, nombre: matchedEntidad.nombre, email: email, rut: matchedEntidad.rut, rol: 'Usuario' } });
         } else {
             return sendJson(res, 401, { error: 'Para activar tu cuenta por primera vez, tu contraseña debe ser tu RUT.' });
         }
@@ -773,6 +1193,142 @@ async function handlePushTest(req, res) {
     userId,
     ...result
   });
+}
+
+async function handleEmailAlerts(req, res) {
+  if (!requireSameOriginRequest(req, res)) return;
+
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'Method not allowed' });
+    return;
+  }
+
+  if (!requireJsonRequest(req, res)) return;
+  if (!consumeRateLimit(req, res, 'email-alerts', 5, 60 * 60 * 1000)) return;
+
+  const rawBody = await readRequestBody(req);
+  let payload;
+
+  try {
+    payload = JSON.parse(rawBody || '{}');
+  } catch {
+    sendJson(res, 400, { error: 'Invalid JSON body' });
+    return;
+  }
+
+  const alerts = Array.isArray(payload.alerts) ? payload.alerts.slice(0, 20).map(normalizeEmailAlert).filter(Boolean) : [];
+  if (alerts.length === 0) {
+    sendJson(res, 400, { error: 'No hay alertas validas para enviar.' });
+    return;
+  }
+
+  const recipient = await resolveSessionUserEmail(req);
+  if (!recipient) {
+    sendJson(res, 401, { error: 'No se pudo resolver el correo del usuario.' });
+    return;
+  }
+
+  const result = await sendAlertEmail({ recipient, alerts });
+  sendJson(res, result.ok ? 202 : 501, result);
+}
+
+async function resolveSessionUserEmail(req) {
+  const userId = getCookie(req, 'compas_user_id');
+  if (!userId) return '';
+
+  try {
+    const [rows] = await dbPool.execute('SELECT email FROM usuarios WHERE id = ? AND activo = TRUE LIMIT 1', [userId]);
+    return rows[0]?.email || '';
+  } catch (error) {
+    console.error('Error resolviendo correo de usuario:', error);
+    return '';
+  }
+}
+
+function normalizeEmailAlert(alert) {
+  if (!alert || typeof alert !== 'object') return null;
+  return {
+    title: cleanNotificationText(alert.title, 'Alerta documental', 80),
+    body: cleanNotificationText(alert.body, 'Tienes un documento que requiere atencion.', 180),
+    docName: cleanNotificationText(alert.docName, 'Documento', 120),
+    severity: cleanNotificationText(alert.severity, 'warning', 20)
+  };
+}
+
+async function sendAlertEmail({ recipient, alerts }) {
+  if (!process.env.RESEND_API_KEY || !process.env.ALERT_EMAIL_FROM) {
+    return {
+      ok: false,
+      reason: 'Email provider is not configured. Set RESEND_API_KEY and ALERT_EMAIL_FROM.'
+    };
+  }
+
+  const subject = alerts.length === 1
+    ? 'Alerta documental Compas Marine'
+    : `${alerts.length} alertas documentales Compas Marine`;
+  const html = buildAlertEmailHtml(alerts);
+
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: process.env.ALERT_EMAIL_FROM,
+        to: [recipient],
+        subject,
+        html
+      })
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return {
+        ok: false,
+        reason: data.message || `Resend returned ${response.status}`
+      };
+    }
+
+    return {
+      ok: true,
+      sent: 1,
+      provider: 'resend',
+      id: data.id || null
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error.message
+    };
+  }
+}
+
+function buildAlertEmailHtml(alerts) {
+  const items = alerts.map((alert) => `
+    <li style="margin:0 0 14px;padding:12px;border:1px solid #eee;border-radius:8px;">
+      <strong>${escapeHtml(alert.docName)}</strong>
+      <p style="margin:6px 0 0;color:#555;">${escapeHtml(alert.body)}</p>
+    </li>
+  `).join('');
+
+  return `
+    <div style="font-family:Arial,sans-serif;line-height:1.5;color:#222;">
+      <h2 style="margin:0 0 12px;color:#921E30;">Alertas documentales</h2>
+      <p>Estos documentos requieren atencion en Compas Marine:</p>
+      <ul style="list-style:none;padding:0;margin:16px 0;">${items}</ul>
+    </div>
+  `;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 async function sendPushToUser(userId, payload) {
@@ -1010,13 +1566,6 @@ function getClientIp(req) {
   }
 
   return req.socket.remoteAddress || 'unknown';
-}
-
-function stripControlCharacters(value) {
-  return value
-    .split('')
-    .filter((character) => !isControlCharacter(character))
-    .join('');
 }
 
 function isControlCharacter(character) {

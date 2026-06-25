@@ -3,7 +3,7 @@ import { Eye, EyeOff } from 'lucide-react';
 import { getApiUrl } from '../config/api';
 import logoCompasMarine1 from '../assets/images/compas-marine1.jpeg';
 
-export const Login = ({ onLoginSuccess, onNavigate }) => {
+export const Login = ({ onLoginSuccess, onNavigate, onLoadingProgress }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [passVisible, setPassVisible] = useState(false);
@@ -20,6 +20,7 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
     }
 
     setIsLoading(true);
+    onLoadingProgress?.({ percent: 12 });
 
     try {
       const response = await fetch(getApiUrl('/auth/login'), {
@@ -30,14 +31,18 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
         body: JSON.stringify({ email: email.trim().toLowerCase(), password })
       });
 
+      onLoadingProgress?.({ percent: 68 });
       const data = await response.json();
+      onLoadingProgress?.({ percent: 88 });
 
       if (!response.ok) {
         throw new Error(data.error || 'Credenciales incorrectas. Intenta nuevamente.');
       }
 
-      onLoginSuccess();
+      onLoadingProgress?.({ percent: 100, done: true });
+      onLoginSuccess(data.user);
     } catch (err) {
+      onLoadingProgress?.({ active: false });
       setError(err.message || 'No se pudo iniciar sesión.');
     } finally {
       setIsLoading(false);
@@ -124,14 +129,6 @@ export const Login = ({ onLoginSuccess, onNavigate }) => {
                 disabled={isLoading}
               >
                 {isLoading ? 'Ingresando...' : 'Ingresar'}
-              </button>
-
-              <button 
-                type="button" 
-                className="secondary-btn" 
-                onClick={() => onNavigate('register')}
-              >
-                Crear una cuenta
               </button>
             </div>
           </form>

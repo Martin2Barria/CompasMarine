@@ -98,6 +98,28 @@ export async function sendTestPushNotification() {
   return payload;
 }
 
+export async function sendEmailAlertDigest(alerts = []) {
+  if (!Array.isArray(alerts) || alerts.length === 0) {
+    return { ok: false, reason: 'No hay alertas para enviar por correo.' };
+  }
+
+  const response = await fetch(getApiUrl('/notifications/email-alerts'), {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ alerts: alerts.slice(0, 20) })
+  });
+
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.reason || payload.error || 'No se pudo enviar el correo de alertas.');
+  }
+
+  return payload;
+}
+
 function urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
   const base64 = `${base64String}${padding}`.replace(/-/g, '+').replace(/_/g, '/');

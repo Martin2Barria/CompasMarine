@@ -1,21 +1,51 @@
-import { useState } from 'react';
-import { X, Hand, AlertTriangle, Clock, BellRing, Loader2, Send } from 'lucide-react';
-import { enablePushNotifications, sendTestPushNotification } from '../pwa/pushNotifications';
-import { runCachedNotificationRules } from '../pwa/notificationRules';
+import { useEffect, useState } from 'react';
+import { X, Hand, AlertTriangle, Clock, BellRing, Loader2, Send, Mail } from 'lucide-react';
+import { enablePushNotifications, sendEmailAlertDigest, sendTestPushNotification } from '../pwa/pushNotifications';
+import { getCachedNotificationRecords, runCachedNotificationRules } from '../pwa/notificationRules';
+import { getUserSnapshotKey } from '../auth/userScope';
 
-export const ViewNotificaciones = ({ setView }) => {
+export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) => {
   const [notificationStatus, setNotificationStatus] = useState('idle');
   const [notificationMessage, setNotificationMessage] = useState('');
   const [testStatus, setTestStatus] = useState('idle');
+  const [emailStatus, setEmailStatus] = useState('idle');
+  const [alerts, setAlerts] = useState([]);
+  const snapshotOwnerKey = getUserSnapshotKey(currentUser);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    getCachedNotificationRecords(snapshotOwnerKey).then((records) => {
+      if (!isCancelled) setAlerts(records);
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [snapshotOwnerKey]);
 
   const handleEnableNotifications = async () => {
     setNotificationStatus('loading');
     setTestStatus('idle');
     setNotificationMessage('');
+    onLoadingProgress?.({ percent: 14 });
 
     try {
       const mode = await enablePushNotifications();
-      const summary = await runCachedNotificationRules();
+      onLoadingProgress?.({ percent: 72 });
+      const summary = await runCachedNotificationRules(snapshotOwnerKey);
+      const nextAlerts = await getCachedNotificationRecords(snapshotOwnerKey);
+      setAlerts(nextAlerts);
+      try {
+        if (nextAlerts.length > 0) {
+          await sendEmailAlertDigest(nextAlerts);
+          setEmailStatus('sent');
+        }
+      } catch (emailError) {
+        setEmailStatus('error');
+        console.warn('No se pudo enviar correo de alertas:', emailError);
+      }
+      onLoadingProgress?.({ percent: 100, done: true });
       setNotificationStatus('enabled');
       setNotificationMessage(
         `${mode === 'push' ? 'Avisos push activos.' : 'Avisos locales activos.'} ${
@@ -23,6 +53,7 @@ export const ViewNotificaciones = ({ setView }) => {
         }`
       );
     } catch (error) {
+      onLoadingProgress?.({ active: false });
       setNotificationStatus('error');
       setNotificationMessage(error.message);
     }
@@ -32,12 +63,15 @@ export const ViewNotificaciones = ({ setView }) => {
     setTestStatus('loading');
     setNotificationStatus((currentStatus) => currentStatus === 'error' ? 'idle' : currentStatus);
     setNotificationMessage('');
+    onLoadingProgress?.({ percent: 25 });
 
     try {
       await sendTestPushNotification();
+      onLoadingProgress?.({ percent: 100, done: true });
       setTestStatus('sent');
       setNotificationMessage('Notificacion push de prueba enviada.');
     } catch (error) {
+      onLoadingProgress?.({ active: false });
       setTestStatus('error');
       setNotificationMessage(error.message);
     }
@@ -92,6 +126,51 @@ export const ViewNotificaciones = ({ setView }) => {
                   {notificationMessage}
                 </p>
               )}
+              {emailStatus !== 'idle' && (
+                <p className={`text-xs mt-2 flex items-center gap-1 ${emailStatus === 'sent' ? 'text-green-700' : 'text-amber-700'}`}>
+                  <Mail className="w-3 h-3" />
+                  {emailStatus === 'sent' ? 'Resumen enviado al correo del usuario.' : 'Correo pendiente: falta configurar proveedor de email.'}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl p-5 shadow-sm relative overflow-hidden">
+          <div className="absolute left-0 top-0 bottom-0 w-2 bg-[#921E30]"></div>
+          <div className="flex gap-4">
+            <div className="bg-red-100 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
+              <AlertTriangle className="w-5 h-5 text-[#921E30]" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h4 className="font-bold text-gray-800 bg-white inline-block mb-2">Registro de alertas</h4>
+              {alerts.length === 0 ? (
+                <p className="text-sm text-gray-600 leading-relaxed">
+                  No hay alertas documentales registradas por ahora.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {alerts.slice(0, 20).map((alert) => (
+                    <div key={alert.id} className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-[#394049] truncate">{alert.docName}</p>
+                          <p className="text-xs text-gray-600 mt-1">{alert.body}</p>
+                        </div>
+                        <span className={`shrink-0 text-[10px] font-bold px-2 py-1 rounded-full ${getSeverityClass(alert.severity)}`}>
+                          {getSeverityLabel(alert.severity)}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => setView('documentos')}
+                        className="mt-3 text-xs bg-[#921E30] text-white px-4 py-1.5 rounded-full font-medium shadow hover:bg-red-800 transition"
+                      >
+                        Ver Documento
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -113,28 +192,19 @@ export const ViewNotificaciones = ({ setView }) => {
             </div>
           </div>
         </div>
-
-        <div className="bg-white rounded-2xl p-5 shadow-sm relative overflow-hidden">
-          <div className="absolute left-0 top-0 bottom-0 w-2 bg-[#921E30]"></div>
-          <div className="flex gap-4">
-            <div className="bg-red-100 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
-              <AlertTriangle className="w-5 h-5 text-[#921E30]" />
-            </div>
-            <div>
-              <h4 className="font-bold text-gray-800 bg-white inline-block mb-1">Alerta de Documento</h4>
-              <p className="text-sm text-gray-600 leading-relaxed">
-                El documento <span className="font-semibold text-[#394049]">Pasaporte Marítimo</span> necesita tu atención.
-              </p>
-              <button 
-                onClick={() => setView('documentos')}
-                className="mt-3 text-xs bg-[#921E30] text-white px-4 py-1.5 rounded-full font-medium shadow hover:bg-red-800 transition"
-              >
-                Ver Documento
-              </button>
-            </div>
-          </div>
-        </div>
       </main>
     </div>
   );
 };
+
+function getSeverityLabel(severity) {
+  if (severity === 'expired') return 'Vencido';
+  if (severity === 'critical') return '30 dias';
+  return '60 dias';
+}
+
+function getSeverityClass(severity) {
+  if (severity === 'expired') return 'bg-red-100 text-[#921E30]';
+  if (severity === 'critical') return 'bg-amber-100 text-amber-700';
+  return 'bg-blue-100 text-blue-700';
+}

@@ -1,9 +1,8 @@
-import { Home, GraduationCap, FolderOpen, Bell } from 'lucide-react';
+import { Home, FolderOpen, Bell } from 'lucide-react';
 
 export const BottomNav = ({ currentView, setCurrentView }) => {
   const navItems = [
     { id: 'inicio', icon: Home, label: 'Inicio' },
-    { id: 'capacitaciones', icon: GraduationCap, label: 'Capacitaciones' },
     { id: 'documentos', icon: FolderOpen, label: 'Docs' },
     { id: 'notificaciones', icon: Bell, label: 'Notif' }
   ];

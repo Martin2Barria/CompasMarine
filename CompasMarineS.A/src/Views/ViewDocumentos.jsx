@@ -1,35 +1,30 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { FolderOpen, Loader2, FileText, AlertCircle, Filter } from 'lucide-react';
 import { getApiUrl } from '../config/api';
-import { readControlDocSnapshot, saveControlDocSnapshot } from '../storage/controlDocOffline';
+import {
+  isControlDocSnapshotFresh,
+  readControlDocSnapshotAsync,
+  saveControlDocSnapshotAsync
+} from '../storage/controlDocOffline';
+import { findEntityForUser, getScopedDocuments, getUserSnapshotKey, isAdminUser } from '../auth/userScope';
 import { ApiDocumentCard } from './ApiDocumentCard'; 
+import { clearControlDocProxyCache, fetchControlDocCollection, getControlDocCollectionStats, toArray } from '../controldoc/api';
+import { getDocumentEntityIds, getDocumentExpirationDate, getDocumentStatusText, hasExpiredDocumentStatus, hasNonCompliantDocumentStatus, hasPendingSignature, isBlockedDocument, parseControlDocDate } from '../controldoc/fields';
 
 const urls = {
-  documents: getApiUrl('/controldoc/documents'), 
-  documentsSync: getApiUrl('/controldoc/documents/sync'), 
-  entities: getApiUrl('/controldoc/entities'),
-  documentTypes: getApiUrl('/controldoc/document-types')
+  entities: getApiUrl('/controldoc/entities?refresh=1'),
+  documentTypes: getApiUrl('/controldoc/document-types?refresh=1')
 };
+const SNAPSHOT_FRESH_MS = 15 * 60 * 1000;
 
 const getDaysRemaining = (dateString) => {
   if (!dateString) return null;
-  const expirationDate = new Date(dateString);
+  const expirationDate = parseControlDocDate(dateString);
+  if (!expirationDate) return null;
   const currentDate = new Date();
   currentDate.setHours(0, 0, 0, 0);
   const diff = expirationDate.getTime() - currentDate.getTime();
   return Math.ceil(diff / (1000 * 3600 * 24));
-};
-
-const toArray = (value, fallbackKeys = []) => {
-  if (Array.isArray(value)) return value;
-  if (!value || typeof value !== 'object') return [];
-
-  for (const key of fallbackKeys) {
-    if (Array.isArray(value[key])) return value[key];
-  }
-
-  const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
-  return dynamicArrayKey ? value[dynamicArrayKey] : [];
 };
 
 const normalizeApiData = (rawData) => {
@@ -41,64 +36,21 @@ const normalizeApiData = (rawData) => {
   };
 };
 
-const normalizeText = (value) => (value || '').toString().trim().toLowerCase();
+const getDocumentComplianceBucket = (doc) => {
+  const days = getDaysRemaining(getDocumentExpirationDate(doc));
+  const status = getDocumentStatusText(doc);
 
-const hasPendingSignature = (doc) => {
-  if (!doc || typeof doc !== 'object') return false;
-
-  const normalizedString = (value) => {
-    if (typeof value !== 'string') return '';
-    return value.trim().toLowerCase();
-  };
-
-  const matchesPendingText = (value) => {
-    const lower = normalizedString(value);
-    return (
-      lower === 'true' ||
-      lower === '1' ||
-      lower === 'pending' ||
-      lower === 'pendiente' ||
-      lower.includes('pendiente') ||
-      lower.includes('pending') ||
-      lower.includes('por firmar') ||
-      lower.includes('sin firmar') ||
-      lower.includes('to sign') ||
-      lower.includes('needs signature') ||
-      lower.includes('signature') && lower.includes('pending')
-    );
-  };
-
-  const keysToCheck = [
-    'pending_signature',
-    'signature_pending',
-    'pending_signatures',
-    'pending_signatures_count',
-    'signature_status',
-    'signature_state',
-    'aasm_state',
-    'state',
-    'status',
-    'workflow_state'
-  ];
-
-  for (const key of keysToCheck) {
-    const value = doc[key];
-    if (value === true) return true;
-    if (typeof value === 'number' && value > 0) return true;
-    if (matchesPendingText(value)) return true;
+  if (isBlockedDocument(doc) || hasNonCompliantDocumentStatus(doc) || (days !== null && days < 0)) {
+    return 'nonCompliant';
   }
 
-  return Object.entries(doc).some(([key, value]) => {
-    if (!/pending.*sign|sign.*pending|signature.*pending|pending.*signature|firma|firmas/i.test(key)) {
-      return false;
-    }
-    if (value === true) return true;
-    if (typeof value === 'number' && value > 0) return true;
-    return matchesPendingText(value);
-  });
+  if (days !== null && days <= 30) return 'critical';
+  if (days !== null && days <= 60) return 'warning';
+  if (days === null && !status) return 'nonCompliant';
+  return 'healthy';
 };
 
-export const ViewDocumentos = () => {
+export const ViewDocumentos = ({ currentUser, onLoadingProgress }) => {
   const [apiData, setApiData] = useState({ documents: [], entities: [], documentTypes: [] });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -110,40 +62,46 @@ export const ViewDocumentos = () => {
   const [statusFilter, setStatusFilter] = useState('all');
   const [signatureFilter, setSignatureFilter] = useState('all');
   
-  const [searchTerm, setSearchTerm] = useState('');
-  const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
-
   const [visibleCount, setVisibleCount] = useState(50);
-
-  // Determinar si es admin basado en la cantidad de entidades recibidas.
-  // Un tripulante recibe máximo 1.
-  const isAdmin = apiData.entities.length > 1;
+  const snapshotOwnerKey = getUserSnapshotKey(currentUser);
+  const canSeeAllUsers = isAdminUser(currentUser);
 
   useEffect(() => {
     setVisibleCount(50);
   }, [selectedType, selectedEntityId, statusFilter, signatureFilter]);
 
   useEffect(() => {
-    const showCachedSnapshot = () => {
-      const snapshot = readControlDocSnapshot();
+    let isCancelled = false;
+
+    const showCachedSnapshot = async () => {
+      const snapshot = await readControlDocSnapshotAsync(snapshotOwnerKey);
       if (!snapshot) return false;
 
+      if (isCancelled) return false;
       setApiData(normalizeApiData(snapshot.data));
       const savedAt = new Date(snapshot.savedAt).toLocaleString('es-CL', {
         dateStyle: 'short', timeStyle: 'short'
       });
       setCacheNotice(`Modo offline: mostrando última sincronización (${savedAt}).`);
-      return true;
+      return isControlDocSnapshotFresh(snapshot, SNAPSHOT_FRESH_MS, { requireComplete: canSeeAllUsers }) ? 'fresh' : 'stale';
     };
 
     const fetchAllData = async () => {
-      const hasCachedData = showCachedSnapshot();
+      setCacheNotice('');
+      const cacheState = await showCachedSnapshot();
+      const hasCachedData = Boolean(cacheState);
+      if (cacheState === 'fresh') {
+        setIsLoading(false);
+        return;
+      }
+
       setIsLoading(!hasCachedData); 
       setError(null);
-      setCacheNotice('');
+      onLoadingProgress?.({ percent: 8 });
       
       const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
       let hadFetchError = false;
+      let completedRequests = 0;
 
       const fetchData = async (url) => {
         try {
@@ -152,7 +110,10 @@ export const ViewDocumentos = () => {
             throw new Error("Acceso denegado. Por favor, inicia sesión.");
           }
           if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
-          return await response.json();
+          const data = await response.json();
+          completedRequests += 1;
+          onLoadingProgress?.({ percent: 12 + completedRequests * 24 });
+          return data;
         } catch (e) {
           hadFetchError = true;
           throw e;
@@ -161,78 +122,89 @@ export const ViewDocumentos = () => {
 
       try {
         if (!hasCachedData) setProgressInfo("Conectando con Compas Marine...");
+        await clearControlDocProxyCache(requestOptions);
         
+        // El backend ahora emite diccionarios completos y unificados en una sola petición gracias a la optimización
         const [allTypes, allEntities, allDocs] = await Promise.all([
           fetchData(urls.documentTypes),
           fetchData(urls.entities),
-          fetchData(urls.documents)
+          fetchControlDocCollection('/controldoc/documents', {
+            fallbackKeys: ['documents', 'items', 'data'],
+            requestOptions,
+            forceRefresh: true,
+            clientPagination: false,
+            onPageLoaded: ({ totalItems }) => {
+              setProgressInfo(`Cargando documentos... ${totalItems} recibidos`);
+              onLoadingProgress?.({ percent: Math.min(88, 12 + Math.floor(totalItems / 100)) });
+            }
+          })
         ]);
 
-        const validTypes = allTypes || [];
-        const validTypeIds = validTypes.map(t => t.id?.toString());
-        const validDocs = (allDocs || []).filter(doc => validTypeIds.includes(doc.document_type_id?.toString()));
-        
+        const documentStats = getControlDocCollectionStats(allDocs);
         const nextApiData = {
-          documents: validDocs,
-          entities: allEntities || [],
-          documentTypes: validTypes
+          documents: allDocs,
+          entities: allEntities,
+          documentTypes: allTypes,
+          meta: { documents: documentStats }
         };
 
-        if (hadFetchError && validDocs.length === 0 && hasCachedData) {
+        if (hadFetchError && toArray(allDocs, ['documents', 'items', 'data']).length === 0 && hasCachedData) {
           setProgressInfo('');
+          onLoadingProgress?.({ active: false });
           return;
         }
         
+        onLoadingProgress?.({ percent: 90 });
+        if (isCancelled) return;
         setApiData(normalizeApiData(nextApiData));
-        if (!hadFetchError) saveControlDocSnapshot(nextApiData);
+        if (!hadFetchError && (!canSeeAllUsers || documentStats?.complete !== false)) {
+          void saveControlDocSnapshotAsync(nextApiData, snapshotOwnerKey);
+        }
+        onLoadingProgress?.({ percent: 100, done: true });
         
         setProgressInfo('');
       } catch (err) {
+        onLoadingProgress?.({ active: false });
         if (!hasCachedData) setError(err.message);
       } finally {
-        setIsLoading(false);
+        if (!isCancelled) setIsLoading(false);
       }
     };
 
     fetchAllData();
-  }, []);
 
-  // --- CORRECCIÓN: CONSTRUIR LISTA DE USUARIOS ROBUSTA ---
+    return () => {
+      isCancelled = true;
+    };
+  }, [snapshotOwnerKey, onLoadingProgress, canSeeAllUsers]);
+
+  const scopedDocuments = useMemo(
+    () => getScopedDocuments(apiData.documents, apiData.entities, currentUser),
+    [apiData.documents, apiData.entities, currentUser]
+  );
+
+  const currentUserEntity = useMemo(
+    () => findEntityForUser(apiData.entities, currentUser),
+    [apiData.entities, currentUser]
+  );
+
+  const inferredUserEntityId = useMemo(() => {
+    if (canSeeAllUsers || currentUserEntity?.id) return '';
+    return scopedDocuments.flatMap(getDocumentEntityIds)[0] || '';
+  }, [canSeeAllUsers, currentUserEntity, scopedDocuments]);
+
+  const activeEntityId = canSeeAllUsers
+    ? selectedEntityId
+    : currentUserEntity?.id?.toString() || inferredUserEntityId || 'all';
+
   const relevantEntities = useMemo(() => {
-    // 1. Extraer todos los IDs únicos de usuarios que tienen documentos
-    const activeEntityIds = new Set(
-      apiData.documents
-        .map(d => d.entity_id?.toString())
-        .filter(id => id && id !== 'undefined' && id !== 'null')
-    );
+    if (!canSeeAllUsers) {
+      return currentUserEntity ? [currentUserEntity] : [];
+    }
 
-    // 2. Intentar buscar su nombre en la lista de entidades
-    const usersMap = new Map();
-    
-    // Primero añadimos las entidades conocidas
-    apiData.entities.forEach(e => {
-      if (e && e.id) {
-        usersMap.set(e.id.toString(), {
-          id: e.id.toString(),
-          name: e.full_name || e.name || e.email || `Usuario ${e.id}`
-        });
-      }
-    });
-
-    // Luego, nos aseguramos de que TODO ID de documento tenga una representación, 
-    // incluso si la API de entidades no lo trajo.
-    const finalUsers = [];
-    activeEntityIds.forEach(id => {
-      if (usersMap.has(id)) {
-        finalUsers.push(usersMap.get(id));
-      } else {
-        finalUsers.push({ id: id, name: `ID ControlDoc: ${id}` });
-      }
-    });
-
-    // Ordenar alfabéticamente por nombre
-    return finalUsers.sort((a, b) => a.name.localeCompare(b.name));
-  }, [apiData.documents, apiData.entities]);
+    const activeEntityIds = new Set(scopedDocuments.flatMap(getDocumentEntityIds));
+    return apiData.entities.filter(e => activeEntityIds.has(e.id?.toString()));
+  }, [apiData.entities, canSeeAllUsers, currentUserEntity, scopedDocuments]);
 
   const entityById = useMemo(
     () => new Map(apiData.entities.map(entity => [entity.id?.toString(), entity])),
@@ -244,23 +216,17 @@ export const ViewDocumentos = () => {
     [apiData.documentTypes]
   );
 
-  const getDocumentDisplayName = useCallback((doc) => {
-    const type = documentTypeById.get(doc.document_type_id?.toString());
-    const typeName = type?.name || type?.label || '';
-    const docLabel = doc.label || doc.name || '';
-    return `${typeName} ${docLabel}`.trim() || `Documento ${doc.id || ''}`;
-  }, [documentTypeById]);
-
   const progressMetrics = useMemo(() => {
-    if (selectedEntityId === 'all') {
+    if (canSeeAllUsers && (!activeEntityId || activeEntityId === 'all')) {
       return { percentage: 0, count: 0, total: 0 };
     }
 
-    const userDocs = apiData.documents.filter(doc => doc.entity_id?.toString() === selectedEntityId);
+    const userDocs = !canSeeAllUsers || activeEntityId === 'all'
+      ? scopedDocuments
+      : scopedDocuments.filter(doc => getDocumentEntityIds(doc).includes(activeEntityId));
     const total = userDocs.length;
     const count = userDocs.filter((doc) => {
-      const days = getDaysRemaining(doc.expires_at);
-      return days === null || days > 30;
+      return getDocumentComplianceBucket(doc) === 'healthy';
     }).length;
 
     return {
@@ -268,7 +234,7 @@ export const ViewDocumentos = () => {
       count,
       total,
     };
-  }, [apiData.documents, selectedEntityId]);
+  }, [activeEntityId, canSeeAllUsers, scopedDocuments]);
 
   const processedDocuments = useMemo(() => {
     const urgencyValue = (days) => {
@@ -278,48 +244,37 @@ export const ViewDocumentos = () => {
       return 1000 + days;
     };
 
-    const query = normalizeText(searchTerm);
-
-    return apiData.documents
+    return scopedDocuments
       .map(doc => ({
         doc,
-        daysRemaining: getDaysRemaining(doc.expires_at)
+        daysRemaining: getDaysRemaining(getDocumentExpirationDate(doc))
       }))
       .filter(({ doc, daysRemaining }) => {
         const docTypeId = doc.document_type_id?.toString();
-        const docEntityId = doc.entity_id?.toString();
+        const docEntityIds = getDocumentEntityIds(doc);
 
         const typeMatch = selectedType === 'all' || docTypeId === selectedType;
-        const entityMatch = selectedEntityId === 'all' || docEntityId === selectedEntityId;
+        const entityMatch = !canSeeAllUsers || activeEntityId === 'all' || docEntityIds.includes(activeEntityId);
         const signatureMatch = signatureFilter === 'all' || hasPendingSignature(doc);
-        const isNotBlocked = doc.aasm_state !== 'blocked';
-        const searchableText = [
-          getDocumentDisplayName(doc),
-          doc.label,
-          doc.name,
-          doc.id,
-          doc.document_type_id
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase();
-        const searchMatch = query === '' || searchableText.includes(query);
+        const isNotBlocked = !isBlockedDocument(doc);
 
         let statusMatch = true;
         if (statusFilter !== 'all') {
           if (daysRemaining === null) {
-            statusMatch = statusFilter === 'valid';
+            statusMatch = hasExpiredDocumentStatus(doc)
+              ? statusFilter === 'expired'
+              : statusFilter === 'valid';
           } else if (statusFilter === 'expired') statusMatch = daysRemaining < 0;
           else if (statusFilter === 'critical') statusMatch = daysRemaining >= 0 && daysRemaining <= 30;
           else if (statusFilter === 'warning') statusMatch = daysRemaining > 30 && daysRemaining <= 60;
           else if (statusFilter === 'valid') statusMatch = daysRemaining > 60;
         }
 
-          return typeMatch && entityMatch && signatureMatch && statusMatch && isNotBlocked && searchMatch;
+          return typeMatch && entityMatch && signatureMatch && statusMatch && isNotBlocked;
       })
       .sort((a, b) => urgencyValue(a.daysRemaining) - urgencyValue(b.daysRemaining))
       .map(({ doc }) => doc);
-  }, [apiData.documents, selectedType, selectedEntityId, statusFilter, signatureFilter, searchTerm, getDocumentDisplayName]);
+  }, [activeEntityId, canSeeAllUsers, scopedDocuments, selectedType, statusFilter, signatureFilter]);
 
   const documentsToRender = useMemo(
     () => processedDocuments.slice(0, visibleCount),
@@ -327,24 +282,9 @@ export const ViewDocumentos = () => {
   );
 
   const totalDocumentsWithoutBlocked = useMemo(
-    () => apiData.documents.filter((doc) => doc.aasm_state !== 'blocked').length,
-    [apiData.documents]
+    () => scopedDocuments.filter((doc) => !isBlockedDocument(doc)).length,
+    [scopedDocuments]
   );
-
-  const searchSuggestions = useMemo(() => {
-    if (!searchTerm.trim()) return [];
-    return processedDocuments.slice(0, 6);
-  }, [processedDocuments, searchTerm]);
-
-  const handleSelectSuggestion = (doc) => {
-    setSearchTerm(getDocumentDisplayName(doc));
-    setIsAutocompleteOpen(false);
-  };
-
-  const handleClearSelection = () => {
-    setSearchTerm('');
-    setIsAutocompleteOpen(false);
-  };
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
@@ -363,7 +303,7 @@ export const ViewDocumentos = () => {
               </span>
             )}
 
-            {selectedEntityId !== 'all' && (
+            {activeEntityId && activeEntityId !== 'all' && (
               <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
                 <div className="flex justify-between items-end mb-2">
                   <div>
@@ -391,57 +331,12 @@ export const ViewDocumentos = () => {
             </div>
           )}
 
-          {apiData.documents.length > 0 && (
+          {scopedDocuments.length > 0 && (
             <div className="bg-white rounded-xl p-4 mb-4 border border-gray-200 shadow-sm">
               <div className="flex items-center gap-2 mb-3 border-b pb-2">
                 <Filter className="w-4 h-4 text-[#921E30]" />
                 <h3 className="text-sm font-bold text-[#394049]">Filtros de Búsqueda</h3>
               </div>
-              
-              <div className="mb-4">
-                <label className="block text-[10px] font-bold text-gray-500 mb-2 uppercase tracking-wider">Buscar Documento</label>
-                <div className="relative">
-                  <div className="relative bg-white rounded-lg border border-gray-300 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
-                    <Search className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                    <input
-                      type="text"
-                      value={searchTerm}
-                      onChange={(e) => {
-                        setSearchTerm(e.target.value);
-                        setIsAutocompleteOpen(true);
-                      }}
-                      onFocus={() => setIsAutocompleteOpen(true)}
-                      placeholder="Busca por nombre o tipo de documento"
-                      className="w-full bg-transparent py-2 pl-10 pr-4 focus:outline-none text-sm"
-                    />
-                  </div>
-                  {isAutocompleteOpen && searchSuggestions.length > 0 && (
-                    <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-lg shadow-lg border border-gray-200 max-h-60 overflow-y-auto">
-                      {searchSuggestions.map((doc) => (
-                        <button
-                          key={doc.id}
-                          type="button"
-                          onClick={() => handleSelectSuggestion(doc)}
-                          className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
-                        >
-                          <p className="text-sm font-semibold text-[#394049]">{getDocumentDisplayName(doc)}</p>
-                          <p className="text-xs text-gray-500">ID: {doc.id}</p>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {searchTerm && (
-                    <button
-                      type="button"
-                      onClick={handleClearSelection}
-                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-              </div>
-              
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-wider">Tipo</label>
@@ -450,18 +345,15 @@ export const ViewDocumentos = () => {
                     {apiData.documentTypes.map(type => <option key={type.id} value={type.id?.toString()}>{type.name || type.label || `Tipo ${type.id}`}</option>)}
                   </select>
                 </div>
-                
-                {/* Selector de Usuario - Solo visible si es Admin */}
-                {isAdmin && (
+                {canSeeAllUsers && (
                   <div>
                     <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-wider">Usuario</label>
                     <select value={selectedEntityId} onChange={(e) => setSelectedEntityId(e.target.value)} className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white truncate">
                       <option value="all">Todos los usuarios</option>
-                      {relevantEntities.map(entity => <option key={entity.id} value={entity.id?.toString()}>{entity.name}</option>)}
+                      {relevantEntities.map(entity => <option key={entity.id} value={entity.id?.toString()}>{entity.name || entity.full_name || entity.email || `Usuario ${entity.id}`}</option>)}
                     </select>
                   </div>
                 )}
-                
                 <div>
                   <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-wider">Estado</label>
                   <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white">
@@ -500,7 +392,7 @@ export const ViewDocumentos = () => {
             </div>
           )}
 
-          {!isLoading && apiData.documents.length === 0 && !error && (
+          {!isLoading && scopedDocuments.length === 0 && !error && (
             <div className="text-center py-10 text-gray-400">
               <FileText className="w-12 h-12 mx-auto mb-2 opacity-20" />
               <p>No tienes documentos cargados.</p>

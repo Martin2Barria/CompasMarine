@@ -1,30 +1,31 @@
-import React from 'react';
 import { FileText, User as UserIcon, Tag, Download, AlertCircle } from 'lucide-react';
+import { getDocumentEntityId, getDocumentExpirationDate, hasExpiredDocumentStatus, isBlockedDocument, parseControlDocDate } from '../controldoc/fields';
 
 export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entityById, documentTypeById }) => {
-  const entity = entityById ? entityById.get(doc.entity_id?.toString()) : entities.find(e => e.id?.toString() === doc.entity_id?.toString());
+  const docEntityId = getDocumentEntityId(doc);
+  const entity = entityById ? entityById.get(docEntityId) : entities.find(e => e.id?.toString() === docEntityId);
   const docType = documentTypeById ? documentTypeById.get(doc.document_type_id?.toString()) : documentTypes.find(t => t.id?.toString() === doc.document_type_id?.toString());
   
-  const entityName = entity?.full_name || entity?.name || entity?.label || entity?.email || doc.entity_id || 'Sin Nombre';
+  const entityName = entity?.full_name || entity?.name || entity?.label || entity?.email || docEntityId || 'Sin Nombre';
   const typeName = docType?.name || docType?.label || docType?.id || doc.document_type_id || 'Documento';
 
   let status = { label: 'Sin Fecha', bgClass: 'bg-gray-100 text-gray-600 border-gray-200' };
+  const expirationDateValue = getDocumentExpirationDate(doc);
 
-  let isBlocked = doc.aasm_state === 'blocked';
+  const isBlocked = isBlockedDocument(doc);
+  const hasExpiredStatus = hasExpiredDocumentStatus(doc);
 
-  if (isBlocked && doc.blocked_description?.toLowerCase().includes('cargo')) {
-    isBlocked = false;
-  }
-
-  if (doc.expires_at) {
-    const expirationDate = new Date(doc.expires_at);
+  if (expirationDateValue) {
+    const expirationDate = parseControlDocDate(expirationDateValue);
     const currentDate = new Date(); 
     currentDate.setHours(0, 0, 0, 0);
 
-    const timeDifference = expirationDate.getTime() - currentDate.getTime();
-    const daysRemaining = Math.ceil(timeDifference / (1000 * 3600 * 24));
+    const timeDifference = expirationDate ? expirationDate.getTime() - currentDate.getTime() : null;
+    const daysRemaining = timeDifference === null ? null : Math.ceil(timeDifference / (1000 * 3600 * 24));
 
-    if (isBlocked) {
+    if (daysRemaining === null) {
+      status = { label: 'Sin Fecha', bgClass: 'bg-gray-100 text-gray-600 border-gray-200' };
+    } else if (isBlocked) {
       const blockedDays = daysRemaining > 0 ? daysRemaining : 0;
       status = { label: `Bloqueado (${blockedDays} días restantes)`, bgClass: 'bg-red-50 text-[#921E30] border-red-200' };
     } else if (daysRemaining > 30) {
@@ -39,9 +40,16 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
     }
   }
 
+  if (!expirationDateValue && hasExpiredStatus) {
+    status = { label: 'Vencido', bgClass: 'bg-red-50 text-[#921E30] border-red-200' };
+  }
+
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
-    return new Date(dateString).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const parsedDate = parseControlDocDate(dateString);
+    return parsedDate
+      ? parsedDate.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' })
+      : 'N/A';
   };
 
   return (
@@ -68,10 +76,10 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
         <div className="space-y-1 mb-3 text-xs">
           <p className="text-gray-500 flex justify-between pr-4">
             <span>Emisión:</span> <span className="font-medium text-gray-700">{formatDate(doc.created_at)}</span>
-          </p>
-          <p className="text-gray-500 flex justify-between pr-4">
-            <span>Expiración:</span> <span className="font-medium text-gray-700">{formatDate(doc.expires_at)}</span>
-          </p>
+	          </p>
+	          <p className="text-gray-500 flex justify-between pr-4">
+	            <span>Expiración:</span> <span className="font-medium text-gray-700">{formatDate(expirationDateValue)}</span>
+	          </p>
         </div>
 
         <div className="flex gap-2 items-center flex-wrap">

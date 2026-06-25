@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import logoCompasMarine1 from '../assets/images/compas-marine1.jpeg';
 
-export const OlvidastePassword = ({ onNavigate }) => {
+export const OlvidastePassword = ({ onNavigate, onLoadingProgress }) => {
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -19,10 +19,16 @@ export const OlvidastePassword = ({ onNavigate }) => {
     }
 
     setIsLoading(true);
+    onLoadingProgress?.({ percent: 18 });
 
     // Simulación de envío de correo de recuperación
+    window.setTimeout(() => {
+      onLoadingProgress?.({ percent: 62 });
+    }, 600);
+
     setTimeout(() => {
       setIsLoading(false);
+      onLoadingProgress?.({ percent: 100, done: true });
       setSuccessMsg('Si el correo existe en nuestro sistema, recibirás las instrucciones de recuperación en unos minutos.');
     }, 1500);
   };
