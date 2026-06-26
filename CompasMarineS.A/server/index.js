@@ -67,9 +67,9 @@ const mimeTypes = {
 
 // --- CACHÉ DEL SERVIDOR (12 HORAS) ---
 const serverCache = {
-  documentTypes: { data: null, expiresAt: 0 },
-  entities: { data: null, expiresAt: 0 },
-  documents: { data: null, expiresAt: 0 } 
+  documentTypes: { data: [], expiresAt: 0, isUpdating: false },
+  entities: { data: [], expiresAt: 0, isUpdating: false },
+  documents: { data: [], expiresAt: 0, isUpdating: false } 
 };
 const CACHE_TTL = 12 * 60 * 60 * 1000;
 
@@ -123,7 +123,8 @@ function extractControlDocItems(json) {
 // --- LÓGICA DE CONTROLDOC ---
 function resolveControlDocCredentials(req) {
   const byUser = parseJsonEnv('CONTROLDOC_USER_CREDENTIALS_JSON');
-  const cookieUserId = getCookie(req, 'compas_user_id');
+  // Usamos el request de manera opcional, ya que el background worker no tiene 'req'
+  const cookieUserId = req ? getCookie(req, 'compas_user_id') : null;
   const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
 
   if (byUser && typeof byUser === 'object') {
@@ -151,7 +152,6 @@ async function fetchWithRetry(url, headers, maxRetries = 5) {
     try {
       const response = await fetch(url, { method: 'GET', headers });
       
-      // Si nos bloquean por velocidad (429), esperamos y reintentamos
       if (response.status === 429) {
         const waitTime = attempt * 2000 + Math.random() * 1000;
         console.warn(`[ControlDoc] 429 Rate Limit en pág ${url.searchParams.get('page')}. Intento ${attempt}/${maxRetries}. Esperando ${Math.round(waitTime/1000)}s...`);
@@ -160,7 +160,6 @@ async function fetchWithRetry(url, headers, maxRetries = 5) {
       }
       
       if (!response.ok) {
-        // Si el servidor de ControlDoc colapsa (500), esperamos y reintentamos
         if (response.status >= 500) {
            console.warn(`[ControlDoc] Error ${response.status} en pág ${url.searchParams.get('page')}. Intento ${attempt}/${maxRetries}.`);
            await new Promise(res => setTimeout(res, attempt * 2000));
@@ -171,7 +170,7 @@ async function fetchWithRetry(url, headers, maxRetries = 5) {
         if (response.status === 401 && url.searchParams.get('page') === '1') {
             console.error(`--> [DEBUG 401] ¡Credenciales rechazadas para ${headers['X-User-Email']}!`);
         }
-        return null; // Errores 400, 401, 403, 404 no se reintentan
+        return null; 
       }
       
       return await response.json();
@@ -189,9 +188,11 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
     let currentPage = 1, hasMore = true;
     
     const headers = { 
-      'Accept': 'application/json',
+      'Accept': '*/*',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
       'Content-Type': 'application/json',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      'User-Agent': 'PostmanRuntime/7.36.3'
     };
 
     if (credentials.email) headers['X-User-Email'] = credentials.email.trim();
@@ -201,7 +202,7 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
     if (credentials.authorization) headers['Authorization'] = credentials.authorization.trim();
 
     const MAX_PAGES = 500; 
-    const CONCURRENCY = 3; // Ligeramente reducido para no asustar al Firewall
+    const CONCURRENCY = 3; 
 
     console.log(`[ControlDoc] Iniciando descarga masiva en ${upstreamPath}...`);
 
@@ -216,7 +217,7 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
 
         const url = new URL(upstreamPath, controlDocBaseUrl);
         url.searchParams.append('page', page);
-        url.searchParams.append('per_page', '150'); // Extraemos más documentos por viaje
+        url.searchParams.append('per_page', '150');
         for (const [key, value] of Object.entries(extraParams)) {
           url.searchParams.append(key, value);
         }
@@ -229,7 +230,7 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
       let allNulls = true;
 
       for (const json of batchResults) {
-        if (!json) continue; // Si falla una sola página tras 5 reintentos, la ignoramos y seguimos
+        if (!json) continue; 
         
         allNulls = false;
         const items = extractControlDocItems(json);
@@ -248,15 +249,15 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
       }
 
       currentPage += CONCURRENCY;
-      if (hasMore) await new Promise(r => setTimeout(r, 600)); // Pausa saludable entre lotes
+      if (hasMore) await new Promise(r => setTimeout(r, 600)); 
     }
     
     console.log(`[ControlDoc] Finalizada descarga en ${upstreamPath}. Total items: ${allItems.length}`);
   } catch (err) { console.error("Error paginando:", err); }
   
-  // Eliminar duplicados generados por la concurrencia
   return Array.from(new Map(allItems.filter(i => i && i.id).map(item => [item.id, item])).values());
 }
+
 async function proxyControlDocRequest(req, res, cleanPath) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'No permitido' });
   const cookieUserId = getCookie(req, 'compas_user_id');
@@ -280,15 +281,29 @@ async function proxyControlDocRequest(req, res, cleanPath) {
   try {
     const serveWithSWR = async (cacheKey) => {
       const cacheStore = serverCache[cacheKey];
+      
+      // 1. Si hay datos en RAM, servimos INSTANTÁNEAMENTE
       if (cacheStore.data && cacheStore.data.length > 0) {
-        if (cacheStore.expiresAt < Date.now()) {
-          fetchAllControlDocPages(upstreamPath, credentials).then(data => { if(data.length > 0) serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL }; }).catch(()=>{});
+        // 2. Si vencieron y no se están actualizando ya, lanzamos la actualización FANTASMA
+        if (cacheStore.expiresAt < Date.now() && !cacheStore.isUpdating) {
+          cacheStore.isUpdating = true;
+          fetchAllControlDocPages(upstreamPath, credentials)
+            .then(data => { 
+                if(data.length > 0) serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL, isUpdating: false };
+                else cacheStore.isUpdating = false;
+            })
+            .catch(() => { cacheStore.isUpdating = false; });
         }
         return cacheStore.data;
       }
+      
+      // 3. Si la RAM está 100% vacía, esperamos a que la tarea termine
+      cacheStore.isUpdating = true;
       const data = await fetchAllControlDocPages(upstreamPath, credentials);
       if (data && data.length > 0) {
-        serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL };
+        serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL, isUpdating: false };
+      } else {
+        cacheStore.isUpdating = false;
       }
       return data || [];
     };
@@ -394,7 +409,7 @@ async function handleSetupDB(req, res) {
 
 async function handleSyncUsersToDB(req, res) {
   try {
-    const credentials = resolveControlDocCredentials(req);
+    const credentials = resolveControlDocCredentials(null);
     const allEntities = await fetchAllControlDocPages('/api/v1/abstract/entities', credentials);
     let insertados = 0;
     for (const entity of allEntities) {
@@ -422,11 +437,11 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/auth/me') return await handleAuthMe(req, res);
     if (cleanPath === '/api/admin/setup-db') return await handleSetupDB(req, res);
     if (cleanPath === '/api/admin/sync-users') return await handleSyncUsersToDB(req, res);
+    
+    // El botón Refrescar ahora activa el Background Worker
     if (cleanPath === '/api/controldoc/documents/sync') { 
-        serverCache.documents.data = null; 
-        serverCache.entities.data = null; 
-        serverCache.documentTypes.data = null; 
-        return sendJson(res, 200, { ok: true }); 
+        runBackgroundCachePreload(); 
+        return sendJson(res, 200, { ok: true, message: 'Descarga en segundo plano iniciada. Los datos frescos aparecerán en breve.' }); 
     }
     
     if (controlDocRoutes.has(cleanPath)) {
@@ -444,4 +459,46 @@ const server = createServer(async (req, res) => {
 
 server.listen(port, host, () => {
   console.log(`✅ Servidor Compas Marine encendido en http://${host}:${port}`);
+  
+  // Pre-carga a los 5 segundos de iniciar el servidor
+  setTimeout(runBackgroundCachePreload, 5000);
+  
+  // Actualización recurrente cada 6 horas
+  setInterval(runBackgroundCachePreload, 6 * 60 * 60 * 1000);
 });
+
+// --- TAREA FANTASMA (BACKGROUND WORKER) ---
+async function runBackgroundCachePreload() {
+  console.log("⏱️ [Background Task] Iniciando pre-carga fantasma de 7,000+ documentos...");
+  
+  const creds = resolveControlDocCredentials(null);
+
+  if (!creds.email || !creds.token) {
+    console.warn("[Background Task] Faltan credenciales. Pre-carga cancelada.");
+    return;
+  }
+
+  try {
+    serverCache.documentTypes.isUpdating = true;
+    const types = await fetchAllControlDocPages('/api/v1/abstract/document_types', creds);
+    if (types.length > 0) serverCache.documentTypes = { data: types, expiresAt: Date.now() + CACHE_TTL, isUpdating: false };
+    else serverCache.documentTypes.isUpdating = false;
+
+    serverCache.entities.isUpdating = true;
+    const entities = await fetchAllControlDocPages('/api/v1/abstract/entities', creds);
+    if (entities.length > 0) serverCache.entities = { data: entities, expiresAt: Date.now() + CACHE_TTL, isUpdating: false };
+    else serverCache.entities.isUpdating = false;
+
+    serverCache.documents.isUpdating = true;
+    const docs = await fetchAllControlDocPages('/api/v1/abstract/documents', creds);
+    if (docs.length > 0) serverCache.documents = { data: docs, expiresAt: Date.now() + CACHE_TTL, isUpdating: false };
+    else serverCache.documents.isUpdating = false;
+
+    console.log("✅ [Background Task] ¡Pre-carga completa en la RAM! Los usuarios navegarán a la velocidad de la luz.");
+  } catch (err) {
+    console.error("❌ [Background Task] Falló pre-carga:", err.message);
+    serverCache.documentTypes.isUpdating = false;
+    serverCache.entities.isUpdating = false;
+    serverCache.documents.isUpdating = false;
+  }
+}
