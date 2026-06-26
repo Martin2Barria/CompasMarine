@@ -151,7 +151,8 @@ async function fetchAllControlDocPages(upstreamPath, credentials) {
                 return fetch(url, { method: 'GET', headers }).then(r2 => r2.ok ? r2.json() : null).catch(()=>null); 
               }
               if (!r.ok) {
-                console.warn(`[ControlDoc API] Acceso denegado o fallido (${r.status}) en ${upstreamPath}`);
+                // LOG MEJORADO PARA DEPURAR EL ERROR 401: Muestra exactamente qué correo y endpoint falló
+                console.warn(`[ControlDoc API] Acceso denegado o fallido (${r.status}) en ${upstreamPath}. Verifique las credenciales para el correo: "${credentials.email}" en las variables de entorno de Railway.`);
                 return null;
               }
               return r.json();
