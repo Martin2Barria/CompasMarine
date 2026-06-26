@@ -131,7 +131,7 @@ function resolveControlDocCredentials(req) {
     if (profile) return {
       email: profile.email || profile.userEmail || '',
       token: profile.token || profile.userToken || '',
-      customerId: profile.customerId || profile.customer_id || process.env.CONTROLDOC_CUSTOMER_ID || '',
+      customerId: profile.customerId || profile.customer_id || process.env.CONTROLDOC_CUSTOMER_ID || process.env.API_CUSTOMER_ID || '',
       entityTypeId: profile.entityTypeId || profile.entity_type_id || process.env.CONTROLDOC_ENTITY_TYPE_ID || '467',
       authorization: profile.authorization || process.env.CONTROLDOC_AUTHORIZATION || ''
     };
@@ -140,7 +140,7 @@ function resolveControlDocCredentials(req) {
   return {
     email: process.env.CONTROLDOC_USER_EMAIL || process.env.API_USER_EMAIL || '',
     token: process.env.CONTROLDOC_USER_TOKEN || process.env.API_USER_TOKEN || '',
-    customerId: process.env.CONTROLDOC_CUSTOMER_ID || '',
+    customerId: process.env.CONTROLDOC_CUSTOMER_ID || process.env.API_CUSTOMER_ID || '',
     entityTypeId: process.env.CONTROLDOC_ENTITY_TYPE_ID || '467',
     authorization: process.env.CONTROLDOC_AUTHORIZATION || ''
   };
