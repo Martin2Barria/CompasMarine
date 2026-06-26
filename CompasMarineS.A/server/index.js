@@ -12,13 +12,6 @@ const distDir = resolve(appRoot, 'dist');
 const notificationsStorePath = resolve(appRoot, 'server', 'notifications.json');
 
 // --- CARGA DE VARIABLES DE ENTORNO ---
-function unquoteEnvValue(value) {
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-    return value.slice(1, -1);
-  }
-  return value;
-}
-
 function loadEnvFiles(fileNames) {
   for (const fileName of fileNames) {
     const filePath = join(appRoot, fileName);
@@ -30,13 +23,17 @@ function loadEnvFiles(fileNames) {
       const separatorIndex = trimmed.indexOf('=');
       if (separatorIndex === -1) continue;
       const key = trimmed.slice(0, separatorIndex).trim();
-      const value = unquoteEnvValue(trimmed.slice(separatorIndex + 1).trim());
+      const value = trimmed.slice(separatorIndex + 1).trim().replace(/^['"]|['"]$/g, '');
       if (!process.env[key]) process.env[key] = value;
     }
   }
 }
-
 loadEnvFiles(['.env.server.local', '.env.server', '.env.local', '.env']);
+
+function parseJsonEnv(key) {
+  if (!process.env[key]) return null;
+  try { return JSON.parse(process.env[key]); } catch { return null; }
+}
 
 // --- CONFIGURACIÓN BASE ---
 const port = Number(process.env.SERVER_PORT || process.env.PORT || 8787);
@@ -60,28 +57,21 @@ const controlDocRoutes = new Map([
   ['/api/controldoc/documents', '/api/v1/abstract/documents']
 ]);
 
-const securityHeaders = {
-  'X-Content-Type-Options': 'nosniff',
-  'Referrer-Policy': 'same-origin'
-};
+const securityHeaders = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin' };
 
 const mimeTypes = {
-  '.css': 'text/css; charset=utf-8',
-  '.html': 'text/html; charset=utf-8',
-  '.ico': 'image/x-icon',
-  '.js': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml'
+  '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.ico': 'image/x-icon',
+  '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png', '.svg': 'image/svg+xml'
 };
 
-// --- CACHÉ DEL SERVIDOR ---
+// --- CACHÉ DEL SERVIDOR (12 HORAS) ---
 const serverCache = {
-  documentTypes: { data: null, expiresAt: 0 },
-  entities: { data: null, expiresAt: 0 },
-  documents: { data: null, expiresAt: 0 } 
+  documentTypes: { data: [], expiresAt: 0 },
+  entities: { data: [], expiresAt: 0 },
+  documents: { data: [], expiresAt: 0 } 
 };
-const CACHE_TTL = 12 * 60 * 60 * 1000; // 12 horas
+const CACHE_TTL = 12 * 60 * 60 * 1000;
 
 // --- UTILIDADES ---
 function sendJson(res, statusCode, payload) {
@@ -113,8 +103,23 @@ function serveStaticFile(res, requestUrl) {
   createReadStream(filePath).pipe(res);
 }
 
-// --- LÓGICA DE CONTROLDOC (Multihilo) ---
+// --- LÓGICA DE CONTROLDOC ---
 function resolveControlDocCredentials(req) {
+  const byUser = parseJsonEnv('CONTROLDOC_USER_CREDENTIALS_JSON');
+  const cookieUserId = getCookie(req, 'compas_user_id');
+  const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
+
+  if (byUser && typeof byUser === 'object') {
+    const profile = byUser[requestedUserId] || byUser[process.env.CONTROLDOC_DEFAULT_USER_ID] || Object.values(byUser)[0];
+    if (profile) return {
+      email: profile.email || profile.userEmail || '',
+      token: profile.token || profile.userToken || '',
+      customerId: profile.customerId || profile.customer_id || process.env.CONTROLDOC_CUSTOMER_ID || '',
+      entityTypeId: profile.entityTypeId || profile.entity_type_id || process.env.CONTROLDOC_ENTITY_TYPE_ID || '467',
+      authorization: profile.authorization || process.env.CONTROLDOC_AUTHORIZATION || ''
+    };
+  }
+
   return {
     email: process.env.CONTROLDOC_USER_EMAIL || process.env.API_USER_EMAIL || '',
     token: process.env.CONTROLDOC_USER_TOKEN || process.env.API_USER_TOKEN || '',
@@ -131,9 +136,9 @@ async function fetchAllControlDocPages(upstreamPath, credentials) {
     const headers = { 'Content-Type': 'application/json', 'X-User-Email': credentials.email, 'X-User-Token': credentials.token, 'Customer-Id': credentials.customerId, 'Entity-Type-Id': credentials.entityTypeId };
     if (credentials.authorization) headers.AUTHORIZATION = credentials.authorization;
 
-    while (hasMore && currentPage <= 50) {
+    while (hasMore && currentPage <= 40) {
       const batchPromises = [];
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 3; i++) {
         const page = currentPage + i;
         const url = new URL(upstreamPath, controlDocBaseUrl);
         url.searchParams.append('page', page);
@@ -141,20 +146,43 @@ async function fetchAllControlDocPages(upstreamPath, credentials) {
         batchPromises.push(
           fetch(url, { method: 'GET', headers })
           .then(async r => {
-              if (r.status === 429) { await new Promise(res => setTimeout(res, 1000)); return fetch(url, { method: 'GET', headers }).then(r2 => r2.ok ? r2.json() : null).catch(()=>null); }
-              return r.ok ? r.json() : null;
-          }).catch(() => null)
+              if (r.status === 429) { 
+                await new Promise(res => setTimeout(res, 1500)); 
+                return fetch(url, { method: 'GET', headers }).then(r2 => r2.ok ? r2.json() : null).catch(()=>null); 
+              }
+              if (!r.ok) {
+                console.warn(`[ControlDoc API] Acceso denegado o fallido (${r.status}) en ${upstreamPath}`);
+                return null;
+              }
+              return r.json();
+          }).catch((err) => {
+              console.error("[ControlDoc Network Error]:", err.message);
+              return null;
+          })
         );
       }
 
       const batchResults = await Promise.all(batchPromises);
       for (const json of batchResults) {
         if (!json) { hasMore = false; continue; }
-        let items = Array.isArray(json) ? json : (Object.values(json).find(v => Array.isArray(v)) || []);
+        
+        let items = [];
+        if (Array.isArray(json)) {
+            items = json;
+        } else if (typeof json === 'object') {
+            for (const key of ['data', 'items', 'documents', 'entities', 'document_types']) {
+                if (Array.isArray(json[key])) { items = json[key]; break; }
+            }
+            if (items.length === 0) {
+                const foundArray = Object.values(json).find(v => Array.isArray(v));
+                if (foundArray) items = foundArray;
+            }
+        }
+
         if (items.length === 0) hasMore = false;
         else { allItems.push(...items); if (items.length < 25) hasMore = false; }
       }
-      currentPage += 5;
+      currentPage += 3;
       if (hasMore) await new Promise(r => setTimeout(r, 150)); 
     }
   } catch (err) { console.error("Error paginando:", err); }
@@ -176,7 +204,10 @@ async function proxyControlDocRequest(req, res, cleanPath) {
 
   const upstreamPath = controlDocRoutes.get(cleanPath);
   const credentials = resolveControlDocCredentials(req);
-  if (!credentials.email || !credentials.token) return sendJson(res, 200, []);
+  if (!credentials.email || !credentials.token) {
+    console.warn("Credenciales de ControlDoc vacías en el servidor.");
+    return sendJson(res, 200, []);
+  }
 
   try {
     const serveWithSWR = async (cacheKey) => {
@@ -188,7 +219,9 @@ async function proxyControlDocRequest(req, res, cleanPath) {
         return cacheStore.data;
       }
       const data = await fetchAllControlDocPages(upstreamPath, credentials);
-      if (data.length > 0) serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL };
+      if (data && data.length > 0) {
+        serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL };
+      }
       return data || [];
     };
 
@@ -200,6 +233,7 @@ async function proxyControlDocRequest(req, res, cleanPath) {
     if (isUsersEndpoint || isDocsEndpoint) {
       const cacheKey = isUsersEndpoint ? 'entities' : 'documents';
       const allData = await serveWithSWR(cacheKey);
+      
       if (isAdmin) return sendJson(res, 200, allData);
       
       let myExternalId = null;
@@ -208,12 +242,17 @@ async function proxyControlDocRequest(req, res, cleanPath) {
         if (rows.length > 0) myExternalId = rows[0].external_id?.toString();
       } catch(e) {}
 
-      const filtered = allData.filter(item => isUsersEndpoint ? item.id?.toString() === myExternalId : item.entity_id?.toString() === myExternalId);
+      // Filtro seguro para documentos
+      const filtered = allData.filter(item => {
+        if (isUsersEndpoint) return item.id?.toString() === myExternalId;
+        const docEntityId = item.entity_id?.toString() || item.abstract_entity_id?.toString() || item.employee_id?.toString();
+        return docEntityId === myExternalId;
+      });
       return sendJson(res, 200, filtered);
     }
     return sendJson(res, 200, []);
   } catch (err) {
-    return sendJson(res, 200, []); 
+    return sendJson(res, 200, []); // Fallback a prueba de balas
   }
 }
 
@@ -316,7 +355,10 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/auth/me') return await handleAuthMe(req, res);
     if (cleanPath === '/api/admin/setup-db') return await handleSetupDB(req, res);
     if (cleanPath === '/api/admin/sync-users') return await handleSyncUsersToDB(req, res);
-    if (cleanPath === '/api/controldoc/documents/sync') { serverCache.documents.data = null; return sendJson(res, 200, { ok: true }); }
+    if (cleanPath === '/api/controldoc/documents/sync') { 
+        serverCache.documents.data = []; serverCache.entities.data = []; serverCache.documentTypes.data = []; 
+        return sendJson(res, 200, { ok: true }); 
+    }
     
     // Proxy ControlDoc
     if (controlDocRoutes.has(cleanPath)) {
