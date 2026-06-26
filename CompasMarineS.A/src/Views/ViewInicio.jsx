@@ -8,7 +8,7 @@ import {
 } from '../storage/controlDocOffline';
 import { findEntityForUser, getScopedDocuments, getUserSnapshotKey, isAdminUser as hasAdminRole } from '../auth/userScope';
 import { evaluateDocumentNotificationRules } from '../pwa/notificationRules';
-import { clearControlDocProxyCache, fetchControlDocCollection, getControlDocCollectionStats, toArray } from '../controldoc/api';
+import { clearControlDocProxyCache, toArray } from '../controldoc/api';
 import { getDocumentEntityIds, getDocumentExpirationDate, getDocumentStatusText, hasNonCompliantDocumentStatus, hasPendingSignature, isBlockedDocument, parseControlDocDate } from '../controldoc/fields';
 
 const formatDate = (dateString) => {
@@ -31,11 +31,7 @@ const getDaysRemaining = (dateString) => {
 
 const calculateHealthyPercentage = (documents) => {
   if (!documents.length) return 100;
-
-  const healthyDocs = documents.filter((doc) => {
-    return getDocumentComplianceBucket(doc) === 'healthy';
-  }).length;
-
+  const healthyDocs = documents.filter((doc) => getDocumentComplianceBucket(doc) === 'healthy').length;
   return Math.round((healthyDocs / documents.length) * 100);
 };
 
@@ -43,61 +39,29 @@ const getDocumentComplianceBucket = (doc) => {
   const days = getDaysRemaining(getDocumentExpirationDate(doc));
   const status = getDocumentStatusText(doc);
 
-  if (isBlockedDocument(doc) || hasNonCompliantDocumentStatus(doc) || (days !== null && days < 0)) {
-    return 'nonCompliant';
-  }
-
+  if (isBlockedDocument(doc) || hasNonCompliantDocumentStatus(doc) || (days !== null && days < 0)) return 'nonCompliant';
   if (days !== null && days <= 30) return 'critical';
   if (days !== null && days <= 60) return 'warning';
   if (days === null && !status) return 'nonCompliant';
   return 'healthy';
 };
 
-const normalizeText = (value) =>
-  (value || '')
-    .toString()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim()
-    .toLowerCase();
+const normalizeText = (value) => (value || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
 const normalizeIdentifier = (value) => normalizeText(value).replace(/[^a-z0-9]/g, '');
 const splitSearchTokens = (value) => normalizeText(value).split(/\s+/).filter(Boolean);
 
-const ENTITY_RUT_KEYS = [
-  'rut',
-  'run',
-  'identifier',
-  'numero_de_documento',
-  'numero documento',
-  'numero_de_identificacion',
-  'document_number',
-  'identification',
-  'legal_id',
-  'dni'
-];
+const ENTITY_RUT_KEYS = ['rut', 'run', 'identifier', 'numero_de_documento', 'numero documento', 'numero_de_identificacion', 'document_number', 'identification', 'legal_id', 'dni'];
 
-const normalizeFieldKey = (value) =>
-  (value || '')
-    .toString()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');
+const normalizeFieldKey = (value) => (value || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 const getEntityFieldValue = (entity, candidateKeys) => {
   if (!entity) return '';
   for (const key of candidateKeys) {
     const directValue = entity?.[key];
-    if (directValue !== undefined && directValue !== null && `${directValue}`.trim() !== '') {
-      return directValue;
-    }
+    if (directValue !== undefined && directValue !== null && `${directValue}`.trim() !== '') return directValue;
   }
   const normalizedCandidates = candidateKeys.map(normalizeFieldKey);
-  const nestedSources = [
-    entity?.custom_fields, entity?.customFields, entity?.fields,
-    entity?.attributes, entity?.metadata, entity?.meta,
-    entity?.profile, entity?.data
-  ].filter(Boolean);
+  const nestedSources = [entity?.custom_fields, entity?.customFields, entity?.fields, entity?.attributes, entity?.metadata, entity?.meta, entity?.profile, entity?.data].filter(Boolean);
 
   for (const source of nestedSources) {
     if (Array.isArray(source)) {
@@ -105,18 +69,14 @@ const getEntityFieldValue = (entity, candidateKeys) => {
         const rawKey = item?.key || item?.name || item?.label || item?.field || item?.slug;
         const rawValue = item?.value ?? item?.content ?? item?.text ?? item?.data;
         const normalizedKey = normalizeFieldKey(rawKey);
-        if (normalizedCandidates.includes(normalizedKey) && rawValue !== undefined && rawValue !== null && `${rawValue}`.trim() !== '') {
-          return rawValue;
-        }
+        if (normalizedCandidates.includes(normalizedKey) && rawValue !== undefined && rawValue !== null && `${rawValue}`.trim() !== '') return rawValue;
       }
       continue;
     }
     if (typeof source === 'object') {
       for (const [rawKey, rawValue] of Object.entries(source)) {
         const normalizedKey = normalizeFieldKey(rawKey);
-        if (normalizedCandidates.includes(normalizedKey) && rawValue !== undefined && rawValue !== null && `${rawValue}`.trim() !== '') {
-          return rawValue;
-        }
+        if (normalizedCandidates.includes(normalizedKey) && rawValue !== undefined && rawValue !== null && `${rawValue}`.trim() !== '') return rawValue;
       }
     }
   }
@@ -140,15 +100,7 @@ const getCurrentUserDisplayName = (user) => {
 };
 
 const getEntityRut = (entity) => getEntityFieldValue(entity, ENTITY_RUT_KEYS);
-const getEntityEmail = (entity) => getEntityFieldValue(entity, [
-  'email',
-  'correo_electronico_personal',
-  'correo electronico personal',
-  'correo_electronico_corporativo',
-  'correo electronico corporativo',
-  'correo',
-  'mail'
-]);
+const getEntityEmail = (entity) => getEntityFieldValue(entity, ['email', 'correo_electronico_personal', 'correo electronico personal', 'correo_electronico_corporativo', 'correo electronico corporativo', 'correo', 'mail']);
 const SNAPSHOT_FRESH_MS = 15 * 60 * 1000;
 
 export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
@@ -188,56 +140,48 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
 
     const fetchFreshData = async ({ forceRefresh }) => {
       setIsSyncing(true);
-      onLoadingProgress?.({ percent: 8 });
+      onLoadingProgress?.({ percent: 15 });
       try {
         const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
-        let completedRequests = 0;
-
-        const fetchJson = async (url) => {
-          const response = await fetch(url, requestOptions);
-          if (!response.ok) {
-            throw new Error(`No se pudo sincronizar inicio (${response.status})`);
-          }
-
-          const data = await response.json();
-          completedRequests += 1;
-          onLoadingProgress?.({ percent: 12 + completedRequests * 24 });
-          return data;
-        };
-
-        if (forceRefresh) {
-          await clearControlDocProxyCache(requestOptions);
-        }
         
-        const [docs, entities, types] = await Promise.all([
-          fetchControlDocCollection('/controldoc/documents', {
-            fallbackKeys: ['documents', 'data', 'items'],
-            requestOptions,
-            forceRefresh,
-            clientPagination: false,
-            onPageLoaded: ({ page, totalItems }) => {
-              setSyncStats({ source: 'api', complete: false, pagesLoaded: page, totalItems, stopReason: 'loading' });
-              onLoadingProgress?.({ percent: Math.min(88, 12 + Math.floor(totalItems / 100)) });
-            }
-          }),
-          fetchJson(getApiUrl('/controldoc/entities?refresh=1')),
-          fetchJson(getApiUrl('/controldoc/document-types?refresh=1'))
+        // Si el usuario presionó el botón de "Actualizar", enviamos refresh=1.
+        // Si es carga normal de inicio, NO enviamos refresh para aprovechar la RAM del servidor.
+        const queryParams = forceRefresh ? '?refresh=1' : '';
+
+        // 1 PETICIÓN PLANA. El Backend nos envía todo armado en JSON, sin paginar en React.
+        const [docsRes, entitiesRes, typesRes] = await Promise.all([
+          fetch(getApiUrl(`/controldoc/documents${queryParams}`), requestOptions),
+          fetch(getApiUrl(`/controldoc/entities${queryParams}`), requestOptions),
+          fetch(getApiUrl(`/controldoc/document-types${queryParams}`), requestOptions)
         ]);
 
-        onLoadingProgress?.({ percent: 92 });
+        if (!docsRes.ok || !entitiesRes.ok || !typesRes.ok) {
+          throw new Error('Error de conexión con el Backend local.');
+        }
+
+        onLoadingProgress?.({ percent: 60 });
+
+        const [docsData, entitiesData, typesData] = await Promise.all([
+          docsRes.json(), entitiesRes.json(), typesRes.json()
+        ]);
+
+        onLoadingProgress?.({ percent: 90 });
         if (isCancelled) return;
-        const documentStats = getControlDocCollectionStats(docs);
-        setSyncStats({ source: 'api', ...(documentStats || {}), totalItems: docs.length });
+
         const nextData = {
-          documents: docs,
-          entities: toArray(entities, ['entities', 'data', 'items']),
-          documentTypes: toArray(types, ['documentTypes', 'document_types', 'data', 'items']),
-          meta: { documents: documentStats }
+          documents: docsData,
+          entities: toArray(entitiesData, ['entities', 'data', 'items']),
+          documentTypes: toArray(typesData, ['documentTypes', 'document_types', 'data', 'items']),
+          meta: { documents: { totalItems: docsData.length } }
         };
+
+        setSyncStats({ source: 'api', totalItems: docsData.length, complete: true });
         processData(nextData.documents, nextData.entities, nextData.documentTypes);
-        if (!hasAdminRole(currentUser) || documentStats?.complete !== false) {
+        
+        if (!hasAdminRole(currentUser)) {
           void saveControlDocSnapshotAsync(nextData, snapshotOwnerKey);
         }
+        
         onLoadingProgress?.({ percent: 100, done: true });
       } catch (error) {
         onLoadingProgress?.({ active: false });
@@ -255,17 +199,18 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         processData(snapshot.data.documents || [], snapshot.data.entities || [], snapshot.data.documentTypes || []);
         setSyncStats({
           source: 'cache',
-          ...(snapshot.meta?.documents || {}),
-          totalItems: snapshot.data.documents?.length || 0
+          totalItems: snapshot.data.documents?.length || 0,
+          complete: true
         });
       }
 
+      // Solo forzamos la actualización a la API si expira el caché o si el usuario apretó "Actualizar API"
       if (refreshToken === 0 && isControlDocSnapshotFresh(snapshot, SNAPSHOT_FRESH_MS, { requireComplete: hasAdminRole(currentUser) })) {
         setIsSyncing(false);
         return;
       }
 
-      await fetchFreshData({ forceRefresh: true });
+      await fetchFreshData({ forceRefresh: refreshToken > 0 });
     };
 
     loadData();
@@ -297,7 +242,6 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     if (isAdminUser) {
       return selectedUserId ? allEntities.find((item) => item.id?.toString() === selectedUserId.toString()) : null;
     }
-
     return findEntityForUser(allEntities, currentUser);
   }, [allEntities, currentUser, isAdminUser, selectedUserId]);
 
@@ -316,14 +260,12 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const activeExternalId = displayEntity?.id?.toString() || '';
   const isGlobalView = isAdminUser && !selectedEntity;
 
-  // --- LÓGICA DE TEXTOS DE CABECERA ---
   const appRoleText = isAdminUser ? 'Administrador' : 'Tripulante';
   const fullNameText = isAdminUser ? getCurrentUserDisplayName(currentUser) : getEntityDisplayName(displayEntity);
   const cargoHeader = isAdminUser
     ? 'Gestión Central' 
     : formatInfoValue(getEntityFieldValue(displayEntity, ['cargo', 'position', 'job_title', 'puesto']));
 
-  // --- NUEVOS CAMPOS DEL DETALLE REQUERIDOS ---
   const detailCargo = formatInfoValue(getEntityFieldValue(displayEntity, ['cargo', 'position', 'job_title', 'puesto']));
   const detailEmpresa = formatInfoValue(getEntityFieldValue(displayEntity, ['empresa', 'company', 'organization', 'razon_social']));
   const rawContractDate = getEntityFieldValue(displayEntity, ['fecha_contrato', 'contract_date', 'hired_at', 'fecha_ingreso']);
@@ -365,19 +307,13 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     return Math.round((healthyDocs / selectedUserDocs.length) * 100);
   }, [selectedUserDocs]);
 
-  // --- NUEVA LÓGICA DE MÉTRICAS GLOBALES (VISTA MODERADOR) ---
+  // --- LÓGICA DE MÉTRICAS GLOBALES (VISTA MODERADOR) ---
   const globalMetrics = useMemo(() => {
     const activeDocs = allDocs;
     const totalDocsCount = activeDocs.length;
     
-    // Contadores de documentos globales
-    let docsAlDia = 0;
-    let docsCaducados = 0;
-    let docsEn30Dias = 0;
-    let docsEn3060Dias = 0;
+    let docsAlDia = 0, docsCaducados = 0, docsEn30Dias = 0, docsEn3060Dias = 0;
 
-    // Mapa para trazar el estado de salud de cada colaborador
-    // Estructura: { [entity_id]: 'healthy' | 'warning' | 'critical' | 'caducado' }
     const collaboratorStatusMap = {};
     allEntities.forEach(ent => {
       collaboratorStatusMap[ent.id?.toString()] = 'healthy';
@@ -411,10 +347,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
       }
     });
 
-    // Contadores de colaboradores basados en su peor documento
-    let colabCaducados = 0;
-    let colabEn30Dias = 0;
-    let colabEn3060Dias = 0;
+    let colabCaducados = 0, colabEn30Dias = 0, colabEn3060Dias = 0;
 
     Object.values(collaboratorStatusMap).forEach((status) => {
       if (status === 'caducado') colabCaducados++;
@@ -429,18 +362,8 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     const cumplimientoDocumental = totalDocsCount > 0 ? Math.round((docsAlDia / totalDocsCount) * 100) : 100;
 
     return {
-      totalColabs,
-      cumplimientoColaboradores,
-      colabsAlDia,
-      colabCaducados,
-      colabEn30Dias,
-      colabEn3060Dias,
-      totalDocsCount,
-      cumplimientoDocumental,
-      docsAlDia,
-      docsCaducados,
-      docsEn30Dias,
-      docsEn3060Dias
+      totalColabs, cumplimientoColaboradores, colabsAlDia, colabCaducados, colabEn30Dias, colabEn3060Dias,
+      totalDocsCount, cumplimientoDocumental, docsAlDia, docsCaducados, docsEn30Dias, docsEn3060Dias
     };
   }, [allDocs, allEntities]);
 
@@ -455,12 +378,8 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
       .map((entity) => {
         const entityRut = getEntityRut(entity);
         const entityIdentifier = getEntityFieldValue(entity, ['identifier', 'document_number', 'identification', 'legal_id']);
-        const rutCandidates = [entityRut, entityIdentifier]
-          .filter(Boolean)
-          .map(normalizeIdentifier);
-        const nameText = normalizeText([
-          getEntityDisplayName(entity), entity?.full_name, entity?.name, entity?.label
-        ].filter(Boolean).join(' '));
+        const rutCandidates = [entityRut, entityIdentifier].filter(Boolean).map(normalizeIdentifier);
+        const nameText = normalizeText([getEntityDisplayName(entity), entity?.full_name, entity?.name, entity?.label].filter(Boolean).join(' '));
         const emailText = normalizeText(entity?.email);
 
         if (isIdentifierSearch) {
@@ -502,14 +421,8 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     setIsAutocompleteOpen(false);
   };
 
-  const syncSourceText = syncStats?.source === 'cache' ? 'cache' : 'API';
-  const syncStatusText = syncStats?.stopReason === 'loading'
-    ? 'cargando'
-    : syncStats?.complete === null
-      ? `recibida${syncStats.stopReason ? ` (${syncStats.stopReason})` : ''}`
-    : syncStats?.complete === false
-      ? `incompleta${syncStats.stopReason ? ` (${syncStats.stopReason})` : ''}`
-      : 'completa';
+  const syncSourceText = syncStats?.source === 'cache' ? 'celular' : 'servidor';
+  const syncStatusText = isSyncing ? 'cargando' : 'completada';
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
@@ -611,7 +524,6 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         {/* Sección de Perfil o Panel Resumen Combinado */}
         <div className="px-6 pb-4 pt-2">
           {isGlobalView ? (
-            /* NUEVO COMPONENTE DE CUMPLIMIENTO GLOBAL ASOCIADO A LA IMAGEN REQUERIDA */
             <div className="space-y-3 mt-2">
               <div className="grid grid-cols-1 gap-4">
                 {/* Tarjeta Cumplimiento Colaboradores (Naranja) */}
@@ -676,8 +588,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
               </div>
               <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-500 flex items-center justify-between gap-2">
                 <span className="min-w-0">
-                  Datos {syncStatusText} desde {syncSourceText}: {syncStats?.totalItems ?? globalMetrics.totalDocsCount} documentos
-                  {syncStats?.pagesLoaded && syncStats?.stopReason !== 'single-proxy-response' ? ` · ${syncStats.pagesLoaded} páginas` : ''}
+                  Carga {syncStatusText} desde {syncSourceText}: {syncStats?.totalItems ?? globalMetrics.totalDocsCount} documentos.
                 </span>
                 <button
                   type="button"
@@ -688,7 +599,8 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                   disabled={isSyncing}
                   className="shrink-0 text-[#921E30] font-bold disabled:opacity-50"
                 >
-                  Actualizar API
+                  {isSyncing ? <Clock className="w-3 h-3 animate-spin inline mr-1" /> : ''}
+                  Actualizar
                 </button>
               </div>
             </div>

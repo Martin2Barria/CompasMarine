@@ -65,7 +65,7 @@ const mimeTypes = {
   '.png': 'image/png', '.svg': 'image/svg+xml'
 };
 
-// --- CACHÉ DEL SERVIDOR (CON COLA DE PROMESAS) ---
+// --- CACHÉ DEL SERVIDOR ---
 const serverCache = {
   documentTypes: { data: null, expiresAt: 0, fetchPromise: null },
   entities: { data: null, expiresAt: 0, fetchPromise: null },
@@ -151,33 +151,24 @@ async function fetchWithRetry(url, headers, maxRetries = 6) {
     try {
       const response = await fetch(url, { method: 'GET', headers });
       
-      // Si nos bloquean por velocidad (429) o rechazo WAF (401 en medio de la descarga)
       const isRateLimit = response.status === 429 || (response.status === 401 && url.searchParams.get('page') !== '1') || response.status === 403;
       
       if (isRateLimit) {
         const waitTime = attempt * 3000 + Math.random() * 2000;
-        console.warn(`[ControlDoc] Bloqueo temporal (${response.status}) en pág ${url.searchParams.get('page')}. Intento ${attempt}/${maxRetries}. Esperando ${Math.round(waitTime/1000)}s...`);
         await new Promise(res => setTimeout(res, waitTime));
         continue;
       }
       
       if (!response.ok) {
         if (response.status >= 500) {
-           console.warn(`[ControlDoc] Error Servidor (${response.status}) en pág ${url.searchParams.get('page')}. Intento ${attempt}/${maxRetries}.`);
            await new Promise(res => setTimeout(res, attempt * 2000));
            continue;
-        }
-        
-        console.warn(`[ControlDoc] Fallo irrecuperable (${response.status}) en ${url.pathname} pág ${url.searchParams.get('page')}`);
-        if (response.status === 401 && url.searchParams.get('page') === '1') {
-            console.error(`--> [DEBUG 401] ¡Credenciales inválidas para ${headers['X-User-Email']}!`);
         }
         return null; 
       }
       
       return await response.json();
     } catch (err) {
-      console.error(`[ControlDoc] Network Error Pág ${url.searchParams.get('page')}: ${err.message}. Intento ${attempt}/${maxRetries}`);
       await new Promise(res => setTimeout(res, attempt * 2000));
     }
   }
@@ -204,9 +195,7 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
     if (credentials.authorization) headers['Authorization'] = credentials.authorization.trim();
 
     const MAX_PAGES = 500; 
-    const CONCURRENCY = 2; // Reducido a 2 para evitar saturar el WAF de ControlDoc
-
-    console.log(`[ControlDoc] Iniciando descarga en ${upstreamPath}...`);
+    const CONCURRENCY = 2; 
 
     while (hasMore && currentPage <= MAX_PAGES) {
       const batchPromises = [];
@@ -232,9 +221,7 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
 
       for (const json of batchResults) {
         if (!json) continue; 
-        
         const items = extractControlDocItems(json);
-        
         if (items.length === 0) {
             emptyPageDetected = true;
         } else {
@@ -245,31 +232,28 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
       if (emptyPageDetected) hasMore = false;
 
       currentPage += CONCURRENCY;
-      if (hasMore) await new Promise(r => setTimeout(r, 800)); // Pausa más larga entre lotes
+      if (hasMore) await new Promise(r => setTimeout(r, 800)); 
     }
     
-    console.log(`[ControlDoc] Finalizada descarga en ${upstreamPath}. Total items: ${allItems.length}`);
   } catch (err) { console.error("Error paginando:", err); }
   
   return Array.from(new Map(allItems.filter(i => i && i.id).map(item => [item.id, item])).values());
 }
 
-// NUEVO: Función SWR con Cola de Promesas (Previene el Race Condition)
-async function serveWithSWR(cacheKey, upstreamPath, credentials) {
+async function serveWithSWR(cacheKey, upstreamPath, credentials, extraParams = {}) {
+  if (!serverCache[cacheKey]) {
+      serverCache[cacheKey] = { data: null, expiresAt: 0, fetchPromise: null };
+  }
   const cacheStore = serverCache[cacheKey];
   
-  // 1. Si ya hay una descarga en curso, nos unimos a la fila de espera
   if (cacheStore.fetchPromise) {
-    console.log(`[Caché] Esperando a que termine la sincronización de ${cacheKey}...`);
     await cacheStore.fetchPromise;
     return cacheStore.data || [];
   }
 
-  // 2. Si hay datos listos, los devolvemos al instante
   if (cacheStore.data && cacheStore.data.length > 0) {
-    // Si están viejos, lanzamos la tarea fantasma por detrás
     if (cacheStore.expiresAt < Date.now()) {
-      cacheStore.fetchPromise = fetchAllControlDocPages(upstreamPath, credentials)
+      cacheStore.fetchPromise = fetchAllControlDocPages(upstreamPath, credentials, extraParams)
         .then(data => { 
             if(data && data.length > 0) {
                cacheStore.data = data;
@@ -282,9 +266,7 @@ async function serveWithSWR(cacheKey, upstreamPath, credentials) {
     return cacheStore.data;
   }
   
-  // 3. RAM vacía: Lanzamos la descarga y bloqueamos la ejecución hasta que termine
-  console.log(`[Caché] Descargando ${cacheKey} por primera vez...`);
-  cacheStore.fetchPromise = fetchAllControlDocPages(upstreamPath, credentials)
+  cacheStore.fetchPromise = fetchAllControlDocPages(upstreamPath, credentials, extraParams)
     .then(data => { 
         if(data && data.length > 0) {
            cacheStore.data = data;
@@ -324,23 +306,43 @@ async function proxyControlDocRequest(req, res, cleanPath) {
     const isDocsEndpoint = upstreamPath === '/api/v1/abstract/documents';
     
     if (isUsersEndpoint || isDocsEndpoint) {
-      const cacheKey = isUsersEndpoint ? 'entities' : 'documents';
-      const allData = await serveWithSWR(cacheKey, upstreamPath, credentials);
-      
-      if (isAdmin) return sendJson(res, 200, allData);
-      
+      if (isAdmin) {
+          const cacheKey = isUsersEndpoint ? 'entities' : 'documents';
+          return sendJson(res, 200, await serveWithSWR(cacheKey, upstreamPath, credentials));
+      }
+
+      // --- BYPASS DE USUARIO NORMAL (MAGIA DE VELOCIDAD) ---
       let myExternalId = null;
       try {
         const [rows] = await dbPool.execute('SELECT external_id FROM entidades_api WHERE email = ?', [userEmail]);
         if (rows.length > 0) myExternalId = rows[0].external_id?.toString();
       } catch(e) {}
 
-      const filtered = allData.filter(item => {
-        if (isUsersEndpoint) return item.id?.toString() === myExternalId;
-        const docEntityId = item.entity_id?.toString() || item.abstract_entity_id?.toString() || item.employee_id?.toString();
-        return docEntityId === myExternalId;
-      });
-      return sendJson(res, 200, filtered);
+      if (!myExternalId) return sendJson(res, 200, []);
+
+      if (isUsersEndpoint) {
+          try {
+              const [rows] = await dbPool.execute('SELECT data_json FROM entidades_api WHERE external_id = ?', [myExternalId]);
+              if (rows.length > 0) return sendJson(res, 200, [JSON.parse(rows[0].data_json)]);
+          } catch(e) {}
+          return sendJson(res, 200, await serveWithSWR(`entities_${myExternalId}`, upstreamPath, credentials, { id: myExternalId }));
+      }
+
+      if (isDocsEndpoint) {
+          // Si el caché global ya está listo, lo usamos porque es instantáneo.
+          const globalCache = serverCache['documents'];
+          if (globalCache && globalCache.data && globalCache.data.length > 0) {
+              const filtered = globalCache.data.filter(item => {
+                  const docEntityId = item.entity_id?.toString() || item.abstract_entity_id?.toString() || item.employee_id?.toString();
+                  return docEntityId === myExternalId;
+              });
+              return sendJson(res, 200, filtered);
+          }
+
+          // Si el caché global está ocupado o vacío, hacemos un mini-fetch solo para este usuario.
+          const userDocs = await serveWithSWR(`docs_${myExternalId}`, upstreamPath, credentials, { abstract_entity_id: myExternalId });
+          return sendJson(res, 200, userDocs);
+      }
     }
     return sendJson(res, 200, []);
   } catch (err) {
@@ -349,7 +351,7 @@ async function proxyControlDocRequest(req, res, cleanPath) {
   }
 }
 
-// --- SERVICIOS DE AUTENTICACIÓN ---
+// --- SERVICIOS DE AUTENTICACIÓN Y ADMIN (OCULTOS POR BREVEDAD) ---
 async function handleLogin(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
   let payload;
@@ -397,7 +399,6 @@ async function handleAuthMe(req, res) {
   } catch (e) { sendJson(res, 500, { error: 'Error interno' }); }
 }
 
-// --- SERVICIOS ADMIN ---
 async function handleSetupDB(req, res) {
   try {
     await dbPool.query(`CREATE TABLE IF NOT EXISTS usuarios (id INT AUTO_INCREMENT PRIMARY KEY, nombre VARCHAR(100) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, activo BOOLEAN NOT NULL DEFAULT TRUE)`);
@@ -448,7 +449,6 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/admin/setup-db') return await handleSetupDB(req, res);
     if (cleanPath === '/api/admin/sync-users') return await handleSyncUsersToDB(req, res);
     
-    // Al pedir refrescar, limpiamos el caché y lanzamos la precarga
     if (cleanPath === '/api/controldoc/documents/sync') { 
         serverCache.documents.data = null; 
         serverCache.entities.data = null; 
@@ -472,23 +472,16 @@ const server = createServer(async (req, res) => {
 
 server.listen(port, host, () => {
   console.log(`✅ Servidor Compas Marine encendido en http://${host}:${port}`);
-  
-  // Iniciar la carga fantasma a los 5 segundos de encender el servidor
   setTimeout(runBackgroundCachePreload, 5000);
 });
 
 // --- TAREA FANTASMA (BACKGROUND WORKER) ---
 async function runBackgroundCachePreload() {
   console.log("⏱️ [Background Task] Iniciando sincronización fantasma...");
-  
   const creds = resolveControlDocCredentials(null);
-  if (!creds.email || !creds.token) {
-    console.warn("[Background Task] Faltan credenciales en Railway.");
-    return;
-  }
+  if (!creds.email || !creds.token) return;
 
   try {
-    // Usamos el mismo SWR para que las peticiones se encolen y compartan los datos
     await serveWithSWR('documentTypes', '/api/v1/abstract/document_types', creds);
     await serveWithSWR('entities', '/api/v1/abstract/entities', creds);
     await serveWithSWR('documents', '/api/v1/abstract/documents', creds);
