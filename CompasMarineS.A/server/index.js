@@ -146,18 +146,52 @@ function resolveControlDocCredentials(req) {
   };
 }
 
+async function fetchWithRetry(url, headers, maxRetries = 5) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, { method: 'GET', headers });
+      
+      // Si nos bloquean por velocidad (429), esperamos y reintentamos
+      if (response.status === 429) {
+        const waitTime = attempt * 2000 + Math.random() * 1000;
+        console.warn(`[ControlDoc] 429 Rate Limit en pág ${url.searchParams.get('page')}. Intento ${attempt}/${maxRetries}. Esperando ${Math.round(waitTime/1000)}s...`);
+        await new Promise(res => setTimeout(res, waitTime));
+        continue;
+      }
+      
+      if (!response.ok) {
+        // Si el servidor de ControlDoc colapsa (500), esperamos y reintentamos
+        if (response.status >= 500) {
+           console.warn(`[ControlDoc] Error ${response.status} en pág ${url.searchParams.get('page')}. Intento ${attempt}/${maxRetries}.`);
+           await new Promise(res => setTimeout(res, attempt * 2000));
+           continue;
+        }
+        
+        console.warn(`[ControlDoc] Fallo (${response.status}) en ${url.pathname} pág ${url.searchParams.get('page')}`);
+        if (response.status === 401 && url.searchParams.get('page') === '1') {
+            console.error(`--> [DEBUG 401] ¡Credenciales rechazadas para ${headers['X-User-Email']}!`);
+        }
+        return null; // Errores 400, 401, 403, 404 no se reintentan
+      }
+      
+      return await response.json();
+    } catch (err) {
+      console.error(`[ControlDoc] Network Error Pág ${url.searchParams.get('page')}: ${err.message}. Intento ${attempt}/${maxRetries}`);
+      await new Promise(res => setTimeout(res, attempt * 2000));
+    }
+  }
+  return null;
+}
+
 async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = {}) {
   let allItems = [];
   try {
     let currentPage = 1, hasMore = true;
     
-    // 🔥 EL DISFRAZ DE POSTMAN EXACTO 🔥
     const headers = { 
-      'Accept': '*/*',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Connection': 'keep-alive',
+      'Accept': 'application/json',
       'Content-Type': 'application/json',
-      'User-Agent': 'PostmanRuntime/7.36.3' // Simulamos ser Postman
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     };
 
     if (credentials.email) headers['X-User-Email'] = credentials.email.trim();
@@ -166,10 +200,10 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
     if (credentials.entityTypeId) headers['Entity-Type-Id'] = credentials.entityTypeId.trim();
     if (credentials.authorization) headers['Authorization'] = credentials.authorization.trim();
 
-    const MAX_PAGES = 400; // Soporta hasta 40,000 items (100 por página)
-    const CONCURRENCY = 4; // 4 peticiones simultáneas
+    const MAX_PAGES = 500; 
+    const CONCURRENCY = 3; // Ligeramente reducido para no asustar al Firewall
 
-    console.log(`[ControlDoc] Iniciando descarga en ${upstreamPath}...`);
+    console.log(`[ControlDoc] Iniciando descarga masiva en ${upstreamPath}...`);
 
     while (hasMore && currentPage <= MAX_PAGES) {
       const batchPromises = [];
@@ -182,48 +216,24 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
 
         const url = new URL(upstreamPath, controlDocBaseUrl);
         url.searchParams.append('page', page);
-        url.searchParams.append('per_page', '100');
+        url.searchParams.append('per_page', '150'); // Extraemos más documentos por viaje
         for (const [key, value] of Object.entries(extraParams)) {
           url.searchParams.append(key, value);
         }
         
-        batchPromises.push(
-          fetch(url, { method: 'GET', headers })
-          .then(async r => {
-              if (r.status === 429) { 
-                console.warn(`[ControlDoc API] Límite de peticiones (429) en página ${page}. Esperando 3 segundos...`);
-                await new Promise(res => setTimeout(res, 3000)); 
-                return fetch(url, { method: 'GET', headers }).then(r2 => r2.ok ? r2.json() : null).catch(()=>null); 
-              }
-              if (!r.ok) {
-                console.warn(`[ControlDoc API] Fallo (${r.status}) en ${url.pathname} página ${page}`);
-                
-                // MODO DEBUG PARA REVISAR CREDENCIALES
-                if (r.status === 401 && page === 1) {
-                  const safeToken = credentials.token ? `${credentials.token.substring(0, 3)}...${credentials.token.substring(credentials.token.length - 3)}` : 'VACÍO';
-                  console.error(`--> [DEBUG 401] ¡Tus credenciales fueron rechazadas! Revisa Railway.`);
-                  console.error(`    Email enviado: "${credentials.email}"`);
-                  console.error(`    Token enviado: "${safeToken}"`);
-                  console.error(`    Customer-Id enviado: "${credentials.customerId}"`);
-                }
-                
-                return null;
-              }
-              return r.json();
-          }).catch((err) => {
-              console.error("[ControlDoc Network Error]:", err.message);
-              return null;
-          })
-        );
+        batchPromises.push(fetchWithRetry(url, headers));
       }
 
       const batchResults = await Promise.all(batchPromises);
       let emptyPageDetected = false;
+      let allNulls = true;
 
       for (const json of batchResults) {
-        if (!json) { emptyPageDetected = true; continue; }
+        if (!json) continue; // Si falla una sola página tras 5 reintentos, la ignoramos y seguimos
         
+        allNulls = false;
         const items = extractControlDocItems(json);
+        
         if (items.length === 0) {
             emptyPageDetected = true;
         } else {
@@ -232,18 +242,21 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
       }
 
       if (emptyPageDetected) hasMore = false;
+      if (batchResults.length > 0 && allNulls) {
+         console.error(`[ControlDoc] Lote crítico fallido (págs ${currentPage} a ${currentPage + CONCURRENCY - 1}). Abortando.`);
+         hasMore = false;
+      }
 
       currentPage += CONCURRENCY;
-      if (hasMore) await new Promise(r => setTimeout(r, 400)); // Pausa de respeto para no ahogar la API
+      if (hasMore) await new Promise(r => setTimeout(r, 600)); // Pausa saludable entre lotes
     }
     
     console.log(`[ControlDoc] Finalizada descarga en ${upstreamPath}. Total items: ${allItems.length}`);
   } catch (err) { console.error("Error paginando:", err); }
   
-  // Eliminar duplicados si es que la concurrencia pisó alguna página
+  // Eliminar duplicados generados por la concurrencia
   return Array.from(new Map(allItems.filter(i => i && i.id).map(item => [item.id, item])).values());
 }
-
 async function proxyControlDocRequest(req, res, cleanPath) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'No permitido' });
   const cookieUserId = getCookie(req, 'compas_user_id');
