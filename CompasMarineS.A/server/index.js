@@ -151,11 +151,13 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
   try {
     let currentPage = 1, hasMore = true;
     
-    // Headers súper limpios y con disfraz de navegador
+    // 🔥 EL DISFRAZ DE POSTMAN EXACTO 🔥
     const headers = { 
-      'Accept': 'application/json',
+      'Accept': '*/*',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
       'Content-Type': 'application/json',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      'User-Agent': 'PostmanRuntime/7.36.3' // Simulamos ser Postman
     };
 
     if (credentials.email) headers['X-User-Email'] = credentials.email.trim();
@@ -194,7 +196,17 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
                 return fetch(url, { method: 'GET', headers }).then(r2 => r2.ok ? r2.json() : null).catch(()=>null); 
               }
               if (!r.ok) {
-                console.warn(`[ControlDoc API] Fallo (${r.status}) en ${upstreamPath} página ${page}`);
+                console.warn(`[ControlDoc API] Fallo (${r.status}) en ${url.pathname} página ${page}`);
+                
+                // MODO DEBUG PARA REVISAR CREDENCIALES
+                if (r.status === 401 && page === 1) {
+                  const safeToken = credentials.token ? `${credentials.token.substring(0, 3)}...${credentials.token.substring(credentials.token.length - 3)}` : 'VACÍO';
+                  console.error(`--> [DEBUG 401] ¡Tus credenciales fueron rechazadas! Revisa Railway.`);
+                  console.error(`    Email enviado: "${credentials.email}"`);
+                  console.error(`    Token enviado: "${safeToken}"`);
+                  console.error(`    Customer-Id enviado: "${credentials.customerId}"`);
+                }
+                
                 return null;
               }
               return r.json();
