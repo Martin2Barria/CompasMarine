@@ -133,8 +133,20 @@ async function fetchAllControlDocPages(upstreamPath, credentials) {
   let allItems = [];
   try {
     let currentPage = 1, hasMore = true;
-    const headers = { 'Content-Type': 'application/json', 'X-User-Email': credentials.email, 'X-User-Token': credentials.token, 'Customer-Id': credentials.customerId, 'Entity-Type-Id': credentials.entityTypeId };
-    if (credentials.authorization) headers.AUTHORIZATION = credentials.authorization;
+    
+    // MEJORA CLAVE: Headers súper limpios y con disfraz de navegador (User-Agent) para evitar bloqueos por Firewalls
+    const headers = { 
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    };
+
+    // Solo inyectar headers si realmente tienen contenido
+    if (credentials.email) headers['X-User-Email'] = credentials.email;
+    if (credentials.token) headers['X-User-Token'] = credentials.token;
+    if (credentials.customerId) headers['Customer-Id'] = credentials.customerId;
+    if (credentials.entityTypeId) headers['Entity-Type-Id'] = credentials.entityTypeId;
+    if (credentials.authorization) headers['Authorization'] = credentials.authorization;
 
     while (hasMore && currentPage <= 40) {
       const batchPromises = [];
@@ -143,6 +155,7 @@ async function fetchAllControlDocPages(upstreamPath, credentials) {
         const url = new URL(upstreamPath, controlDocBaseUrl);
         url.searchParams.append('page', page);
         url.searchParams.append('per_page', '100');
+        
         batchPromises.push(
           fetch(url, { method: 'GET', headers })
           .then(async r => {
@@ -151,8 +164,7 @@ async function fetchAllControlDocPages(upstreamPath, credentials) {
                 return fetch(url, { method: 'GET', headers }).then(r2 => r2.ok ? r2.json() : null).catch(()=>null); 
               }
               if (!r.ok) {
-                // LOG MEJORADO PARA DEPURAR EL ERROR 401: Muestra exactamente qué correo y endpoint falló
-                console.warn(`[ControlDoc API] Acceso denegado o fallido (${r.status}) en ${upstreamPath}. Verifique las credenciales para el correo: "${credentials.email}" en las variables de entorno de Railway.`);
+                console.warn(`[ControlDoc API] Fallo (${r.status}) en ${upstreamPath}.`);
                 return null;
               }
               return r.json();
