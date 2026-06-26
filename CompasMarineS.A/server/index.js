@@ -65,11 +65,11 @@ const mimeTypes = {
   '.png': 'image/png', '.svg': 'image/svg+xml'
 };
 
-// --- CACHÉ DEL SERVIDOR (12 HORAS) ---
+// --- CACHÉ DEL SERVIDOR (CON COLA DE PROMESAS) ---
 const serverCache = {
-  documentTypes: { data: [], expiresAt: 0, isUpdating: false },
-  entities: { data: [], expiresAt: 0, isUpdating: false },
-  documents: { data: [], expiresAt: 0, isUpdating: false } 
+  documentTypes: { data: null, expiresAt: 0, fetchPromise: null },
+  entities: { data: null, expiresAt: 0, fetchPromise: null },
+  documents: { data: null, expiresAt: 0, fetchPromise: null } 
 };
 const CACHE_TTL = 12 * 60 * 60 * 1000;
 
@@ -123,7 +123,6 @@ function extractControlDocItems(json) {
 // --- LÓGICA DE CONTROLDOC ---
 function resolveControlDocCredentials(req) {
   const byUser = parseJsonEnv('CONTROLDOC_USER_CREDENTIALS_JSON');
-  // Usamos el request de manera opcional, ya que el background worker no tiene 'req'
   const cookieUserId = req ? getCookie(req, 'compas_user_id') : null;
   const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
 
@@ -147,28 +146,31 @@ function resolveControlDocCredentials(req) {
   };
 }
 
-async function fetchWithRetry(url, headers, maxRetries = 5) {
+async function fetchWithRetry(url, headers, maxRetries = 6) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const response = await fetch(url, { method: 'GET', headers });
       
-      if (response.status === 429) {
-        const waitTime = attempt * 2000 + Math.random() * 1000;
-        console.warn(`[ControlDoc] 429 Rate Limit en pág ${url.searchParams.get('page')}. Intento ${attempt}/${maxRetries}. Esperando ${Math.round(waitTime/1000)}s...`);
+      // Si nos bloquean por velocidad (429) o rechazo WAF (401 en medio de la descarga)
+      const isRateLimit = response.status === 429 || (response.status === 401 && url.searchParams.get('page') !== '1') || response.status === 403;
+      
+      if (isRateLimit) {
+        const waitTime = attempt * 3000 + Math.random() * 2000;
+        console.warn(`[ControlDoc] Bloqueo temporal (${response.status}) en pág ${url.searchParams.get('page')}. Intento ${attempt}/${maxRetries}. Esperando ${Math.round(waitTime/1000)}s...`);
         await new Promise(res => setTimeout(res, waitTime));
         continue;
       }
       
       if (!response.ok) {
         if (response.status >= 500) {
-           console.warn(`[ControlDoc] Error ${response.status} en pág ${url.searchParams.get('page')}. Intento ${attempt}/${maxRetries}.`);
+           console.warn(`[ControlDoc] Error Servidor (${response.status}) en pág ${url.searchParams.get('page')}. Intento ${attempt}/${maxRetries}.`);
            await new Promise(res => setTimeout(res, attempt * 2000));
            continue;
         }
         
-        console.warn(`[ControlDoc] Fallo (${response.status}) en ${url.pathname} pág ${url.searchParams.get('page')}`);
+        console.warn(`[ControlDoc] Fallo irrecuperable (${response.status}) en ${url.pathname} pág ${url.searchParams.get('page')}`);
         if (response.status === 401 && url.searchParams.get('page') === '1') {
-            console.error(`--> [DEBUG 401] ¡Credenciales rechazadas para ${headers['X-User-Email']}!`);
+            console.error(`--> [DEBUG 401] ¡Credenciales inválidas para ${headers['X-User-Email']}!`);
         }
         return null; 
       }
@@ -202,9 +204,9 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
     if (credentials.authorization) headers['Authorization'] = credentials.authorization.trim();
 
     const MAX_PAGES = 500; 
-    const CONCURRENCY = 3; 
+    const CONCURRENCY = 2; // Reducido a 2 para evitar saturar el WAF de ControlDoc
 
-    console.log(`[ControlDoc] Iniciando descarga masiva en ${upstreamPath}...`);
+    console.log(`[ControlDoc] Iniciando descarga en ${upstreamPath}...`);
 
     while (hasMore && currentPage <= MAX_PAGES) {
       const batchPromises = [];
@@ -227,12 +229,10 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
 
       const batchResults = await Promise.all(batchPromises);
       let emptyPageDetected = false;
-      let allNulls = true;
 
       for (const json of batchResults) {
         if (!json) continue; 
         
-        allNulls = false;
         const items = extractControlDocItems(json);
         
         if (items.length === 0) {
@@ -243,19 +243,59 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
       }
 
       if (emptyPageDetected) hasMore = false;
-      if (batchResults.length > 0 && allNulls) {
-         console.error(`[ControlDoc] Lote crítico fallido (págs ${currentPage} a ${currentPage + CONCURRENCY - 1}). Abortando.`);
-         hasMore = false;
-      }
 
       currentPage += CONCURRENCY;
-      if (hasMore) await new Promise(r => setTimeout(r, 600)); 
+      if (hasMore) await new Promise(r => setTimeout(r, 800)); // Pausa más larga entre lotes
     }
     
     console.log(`[ControlDoc] Finalizada descarga en ${upstreamPath}. Total items: ${allItems.length}`);
   } catch (err) { console.error("Error paginando:", err); }
   
   return Array.from(new Map(allItems.filter(i => i && i.id).map(item => [item.id, item])).values());
+}
+
+// NUEVO: Función SWR con Cola de Promesas (Previene el Race Condition)
+async function serveWithSWR(cacheKey, upstreamPath, credentials) {
+  const cacheStore = serverCache[cacheKey];
+  
+  // 1. Si ya hay una descarga en curso, nos unimos a la fila de espera
+  if (cacheStore.fetchPromise) {
+    console.log(`[Caché] Esperando a que termine la sincronización de ${cacheKey}...`);
+    await cacheStore.fetchPromise;
+    return cacheStore.data || [];
+  }
+
+  // 2. Si hay datos listos, los devolvemos al instante
+  if (cacheStore.data && cacheStore.data.length > 0) {
+    // Si están viejos, lanzamos la tarea fantasma por detrás
+    if (cacheStore.expiresAt < Date.now()) {
+      cacheStore.fetchPromise = fetchAllControlDocPages(upstreamPath, credentials)
+        .then(data => { 
+            if(data && data.length > 0) {
+               cacheStore.data = data;
+               cacheStore.expiresAt = Date.now() + CACHE_TTL;
+            }
+        })
+        .catch(e => console.error(e))
+        .finally(() => { cacheStore.fetchPromise = null; });
+    }
+    return cacheStore.data;
+  }
+  
+  // 3. RAM vacía: Lanzamos la descarga y bloqueamos la ejecución hasta que termine
+  console.log(`[Caché] Descargando ${cacheKey} por primera vez...`);
+  cacheStore.fetchPromise = fetchAllControlDocPages(upstreamPath, credentials)
+    .then(data => { 
+        if(data && data.length > 0) {
+           cacheStore.data = data;
+           cacheStore.expiresAt = Date.now() + CACHE_TTL;
+        }
+    })
+    .catch(e => console.error(e))
+    .finally(() => { cacheStore.fetchPromise = null; });
+    
+  await cacheStore.fetchPromise;
+  return cacheStore.data || [];
 }
 
 async function proxyControlDocRequest(req, res, cleanPath) {
@@ -273,49 +313,19 @@ async function proxyControlDocRequest(req, res, cleanPath) {
 
   const upstreamPath = controlDocRoutes.get(cleanPath);
   const credentials = resolveControlDocCredentials(req);
-  if (!credentials.email || !credentials.token) {
-    console.warn("Credenciales de ControlDoc vacías en el servidor.");
-    return sendJson(res, 200, []);
-  }
+  if (!credentials.email || !credentials.token) return sendJson(res, 200, []);
 
   try {
-    const serveWithSWR = async (cacheKey) => {
-      const cacheStore = serverCache[cacheKey];
-      
-      // 1. Si hay datos en RAM, servimos INSTANTÁNEAMENTE
-      if (cacheStore.data && cacheStore.data.length > 0) {
-        // 2. Si vencieron y no se están actualizando ya, lanzamos la actualización FANTASMA
-        if (cacheStore.expiresAt < Date.now() && !cacheStore.isUpdating) {
-          cacheStore.isUpdating = true;
-          fetchAllControlDocPages(upstreamPath, credentials)
-            .then(data => { 
-                if(data.length > 0) serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL, isUpdating: false };
-                else cacheStore.isUpdating = false;
-            })
-            .catch(() => { cacheStore.isUpdating = false; });
-        }
-        return cacheStore.data;
-      }
-      
-      // 3. Si la RAM está 100% vacía, esperamos a que la tarea termine
-      cacheStore.isUpdating = true;
-      const data = await fetchAllControlDocPages(upstreamPath, credentials);
-      if (data && data.length > 0) {
-        serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL, isUpdating: false };
-      } else {
-        cacheStore.isUpdating = false;
-      }
-      return data || [];
-    };
-
-    if (upstreamPath === '/api/v1/abstract/document_types') return sendJson(res, 200, await serveWithSWR('documentTypes'));
+    if (upstreamPath === '/api/v1/abstract/document_types') {
+      return sendJson(res, 200, await serveWithSWR('documentTypes', upstreamPath, credentials));
+    }
 
     const isUsersEndpoint = upstreamPath === '/api/v1/abstract/entities';
     const isDocsEndpoint = upstreamPath === '/api/v1/abstract/documents';
     
     if (isUsersEndpoint || isDocsEndpoint) {
       const cacheKey = isUsersEndpoint ? 'entities' : 'documents';
-      const allData = await serveWithSWR(cacheKey);
+      const allData = await serveWithSWR(cacheKey, upstreamPath, credentials);
       
       if (isAdmin) return sendJson(res, 200, allData);
       
@@ -438,10 +448,13 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/admin/setup-db') return await handleSetupDB(req, res);
     if (cleanPath === '/api/admin/sync-users') return await handleSyncUsersToDB(req, res);
     
-    // El botón Refrescar ahora activa el Background Worker
+    // Al pedir refrescar, limpiamos el caché y lanzamos la precarga
     if (cleanPath === '/api/controldoc/documents/sync') { 
+        serverCache.documents.data = null; 
+        serverCache.entities.data = null; 
+        serverCache.documentTypes.data = null; 
         runBackgroundCachePreload(); 
-        return sendJson(res, 200, { ok: true, message: 'Descarga en segundo plano iniciada. Los datos frescos aparecerán en breve.' }); 
+        return sendJson(res, 200, { ok: true, message: 'Actualizando base de datos en segundo plano...' }); 
     }
     
     if (controlDocRoutes.has(cleanPath)) {
@@ -460,45 +473,27 @@ const server = createServer(async (req, res) => {
 server.listen(port, host, () => {
   console.log(`✅ Servidor Compas Marine encendido en http://${host}:${port}`);
   
-  // Pre-carga a los 5 segundos de iniciar el servidor
+  // Iniciar la carga fantasma a los 5 segundos de encender el servidor
   setTimeout(runBackgroundCachePreload, 5000);
-  
-  // Actualización recurrente cada 6 horas
-  setInterval(runBackgroundCachePreload, 6 * 60 * 60 * 1000);
 });
 
 // --- TAREA FANTASMA (BACKGROUND WORKER) ---
 async function runBackgroundCachePreload() {
-  console.log("⏱️ [Background Task] Iniciando pre-carga fantasma de 7,000+ documentos...");
+  console.log("⏱️ [Background Task] Iniciando sincronización fantasma...");
   
   const creds = resolveControlDocCredentials(null);
-
   if (!creds.email || !creds.token) {
-    console.warn("[Background Task] Faltan credenciales. Pre-carga cancelada.");
+    console.warn("[Background Task] Faltan credenciales en Railway.");
     return;
   }
 
   try {
-    serverCache.documentTypes.isUpdating = true;
-    const types = await fetchAllControlDocPages('/api/v1/abstract/document_types', creds);
-    if (types.length > 0) serverCache.documentTypes = { data: types, expiresAt: Date.now() + CACHE_TTL, isUpdating: false };
-    else serverCache.documentTypes.isUpdating = false;
-
-    serverCache.entities.isUpdating = true;
-    const entities = await fetchAllControlDocPages('/api/v1/abstract/entities', creds);
-    if (entities.length > 0) serverCache.entities = { data: entities, expiresAt: Date.now() + CACHE_TTL, isUpdating: false };
-    else serverCache.entities.isUpdating = false;
-
-    serverCache.documents.isUpdating = true;
-    const docs = await fetchAllControlDocPages('/api/v1/abstract/documents', creds);
-    if (docs.length > 0) serverCache.documents = { data: docs, expiresAt: Date.now() + CACHE_TTL, isUpdating: false };
-    else serverCache.documents.isUpdating = false;
-
-    console.log("✅ [Background Task] ¡Pre-carga completa en la RAM! Los usuarios navegarán a la velocidad de la luz.");
+    // Usamos el mismo SWR para que las peticiones se encolen y compartan los datos
+    await serveWithSWR('documentTypes', '/api/v1/abstract/document_types', creds);
+    await serveWithSWR('entities', '/api/v1/abstract/entities', creds);
+    await serveWithSWR('documents', '/api/v1/abstract/documents', creds);
+    console.log("✅ [Background Task] ¡RAM cargada exitosamente!");
   } catch (err) {
-    console.error("❌ [Background Task] Falló pre-carga:", err.message);
-    serverCache.documentTypes.isUpdating = false;
-    serverCache.entities.isUpdating = false;
-    serverCache.documents.isUpdating = false;
+    console.error("❌ [Background Task] Falló:", err.message);
   }
 }
