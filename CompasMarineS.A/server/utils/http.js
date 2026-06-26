@@ -1,4 +1,7 @@
-import { securityHeaders, mimeTypes } from '../config/constants.js'; // Asumiremos que crearemos este archivo luego
+const securityHeaders = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'same-origin'
+};
 
 export function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
@@ -30,10 +33,10 @@ export function getCookie(req, cookieName) {
   return match ? decodeURIComponent(match.slice(cookieName.length + 1)) : '';
 }
 
-export function requireJsonRequest(res, req) {
-    const contentType = req.headers['content-type'] || '';
-    if (contentType.toLowerCase().includes('application/json')) return true;
-  
-    sendJson(res, 415, { error: 'Content-Type must be application/json' });
-    return false;
+export function requireJsonRequest(req, res) {
+  const contentType = req.headers['content-type'] || '';
+  if (contentType.toLowerCase().includes('application/json')) return true;
+
+  sendJson(res, 415, { error: 'Se requiere Content-Type application/json' });
+  return false;
 }
