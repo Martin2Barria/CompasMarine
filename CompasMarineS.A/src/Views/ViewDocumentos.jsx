@@ -1,12 +1,81 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search } from 'lucide-react';
-import { getApiUrl } from '../config/api';
-import { readControlDocSnapshot, saveControlDocSnapshot } from '../storage/controlDocOffline';
-import { ApiDocumentCard } from './ApiDocumentCard'; 
+import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Eye } from 'lucide-react';
+
+// --- STUBS Y DEPENDENCIAS INTEGRADAS (Reemplazan las importaciones locales para este entorno) ---
+const getApiUrl = (path) => path.startsWith('http') ? path : `/api${path}`;
+
+const readControlDocSnapshot = () => {
+  try {
+    const stored = localStorage.getItem('controlDocSnapshot');
+    return stored ? JSON.parse(stored) : null;
+  } catch { return null; }
+};
+
+const saveControlDocSnapshot = (data) => {
+  try {
+    localStorage.setItem('controlDocSnapshot', JSON.stringify({ data, savedAt: new Date().toISOString() }));
+  } catch {}
+};
+
+const hasAdminRole = (user) => {
+  if (!user) return false;
+  return user.rol === 'Admin' || user.role === 'Admin';
+};
+
+const findEntityForUser = (entities, user) => {
+  if (!entities || !entities.length || !user) return null;
+  const userEmail = (user.email || '').trim().toLowerCase();
+  const userRut = (user.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
+  
+  return entities.find(e => {
+    const eEmail = (e.email || e.custom_fields?.correo_electronico_personal || '').trim().toLowerCase();
+    const eRut = (e.identifier || e.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
+    return (userEmail && eEmail === userEmail) || (userRut && eRut === userRut);
+  });
+};
+
+const getScopedDocuments = (docs, entities, user) => {
+  if (hasAdminRole(user)) return docs;
+  const myEntity = findEntityForUser(entities, user) || (entities.length === 1 ? entities[0] : null);
+  if (!myEntity) return [];
+  const myExternalId = myEntity.id?.toString();
+  
+  return docs.filter(doc => {
+    const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
+    return docEntityId === myExternalId;
+  });
+};
+
+const ApiDocumentCard = ({ doc, documentTypeById }) => {
+  const type = documentTypeById.get(doc.document_type_id?.toString());
+  const typeName = type?.name || type?.label || 'Documento';
+  const docLabel = doc.label || doc.name || '';
+  const displayName = `${typeName} ${docLabel}`.trim() || `Documento ${doc.id}`;
+  
+  return (
+    <div className="border border-gray-200 rounded-xl p-4 bg-white shadow-sm hover:shadow transition flex items-center justify-between">
+        <div className="flex items-start gap-3 overflow-hidden">
+            <FileText className="w-8 h-8 text-gray-400 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+                <h4 className="font-bold text-[#394049] text-sm truncate">{displayName}</h4>
+                <p className="text-xs text-gray-500 mt-1">ID: {doc.id} · Expira: {doc.expires_at ? new Date(doc.expires_at).toLocaleDateString() : 'N/A'}</p>
+                {doc.aasm_state && (
+                  <span className="inline-block mt-2 px-2 py-0.5 bg-gray-100 border border-gray-200 text-gray-600 text-[10px] uppercase font-bold rounded-full">
+                    {doc.aasm_state}
+                  </span>
+                )}
+            </div>
+        </div>
+        <a href={`https://compliance.controldoc.legal/documentos/${doc.id}`} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[11px] font-bold bg-[#921E30]/10 text-[#921E30] px-3 py-2 rounded-lg hover:bg-[#921E30]/20 transition shrink-0 ml-3">
+          <Eye className="w-3 h-3" /> Ver
+        </a>
+    </div>
+  );
+};
+// -------------------------------------------------------------------------------------------------
 
 const urls = {
   documents: getApiUrl('/controldoc/documents'), 
-  documentsSync: getApiUrl('/controldoc/documents/sync'), 
   entities: getApiUrl('/controldoc/entities'),
   documentTypes: getApiUrl('/controldoc/document-types')
 };
@@ -54,31 +123,16 @@ const hasPendingSignature = (doc) => {
   const matchesPendingText = (value) => {
     const lower = normalizedString(value);
     return (
-      lower === 'true' ||
-      lower === '1' ||
-      lower === 'pending' ||
-      lower === 'pendiente' ||
-      lower.includes('pendiente') ||
-      lower.includes('pending') ||
-      lower.includes('por firmar') ||
-      lower.includes('sin firmar') ||
-      lower.includes('to sign') ||
-      lower.includes('needs signature') ||
-      lower.includes('signature') && lower.includes('pending')
+      lower === 'true' || lower === '1' || lower === 'pending' || lower === 'pendiente' ||
+      lower.includes('pendiente') || lower.includes('pending') || lower.includes('por firmar') ||
+      lower.includes('sin firmar') || lower.includes('to sign') || lower.includes('needs signature') ||
+      (lower.includes('signature') && lower.includes('pending'))
     );
   };
 
   const keysToCheck = [
-    'pending_signature',
-    'signature_pending',
-    'pending_signatures',
-    'pending_signatures_count',
-    'signature_status',
-    'signature_state',
-    'aasm_state',
-    'state',
-    'status',
-    'workflow_state'
+    'pending_signature', 'signature_pending', 'pending_signatures', 'pending_signatures_count',
+    'signature_status', 'signature_state', 'aasm_state', 'state', 'status', 'workflow_state'
   ];
 
   for (const key of keysToCheck) {
@@ -98,7 +152,7 @@ const hasPendingSignature = (doc) => {
   });
 };
 
-export const ViewDocumentos = () => {
+export const ViewDocumentos = ({ currentUser }) => {
   const [apiData, setApiData] = useState({ documents: [], entities: [], documentTypes: [] });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -115,9 +169,8 @@ export const ViewDocumentos = () => {
 
   const [visibleCount, setVisibleCount] = useState(50);
 
-  // Determinar si es admin basado en la cantidad de entidades recibidas.
-  // Un tripulante recibe máximo 1.
-  const isAdmin = apiData.entities.length > 1;
+  // --- 1. EVALUACIÓN DE ROL SEGURA ---
+  const isAdmin = currentUser ? hasAdminRole(currentUser) : apiData.entities.length > 1;
 
   useEffect(() => {
     setVisibleCount(50);
@@ -197,19 +250,42 @@ export const ViewDocumentos = () => {
     fetchAllData();
   }, []);
 
-  // --- CORRECCIÓN: CONSTRUIR LISTA DE USUARIOS ROBUSTA ---
+  // --- 2. EL DOBLE CANDADO DE SEGURIDAD ---
+  // Identificamos quién es el usuario actual según la API
+  const myEntity = useMemo(() => {
+    if (isAdmin) return null;
+    return findEntityForUser(apiData.entities, currentUser) || apiData.entities[0];
+  }, [isAdmin, apiData.entities, currentUser]);
+
+  const myExternalId = myEntity?.id?.toString() || '';
+
+  // Filtramos la lista de documentos para que NUNCA tenga datos de otros si no eres admin
+  const baseDocuments = useMemo(() => {
+    if (isAdmin) return apiData.documents;
+    if (!myExternalId) return [];
+    
+    const scoped = getScopedDocuments(apiData.documents, apiData.entities, currentUser);
+    return (scoped && scoped.length > 0) 
+      ? scoped 
+      : apiData.documents.filter(doc => {
+          const entityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
+          return entityId === myExternalId;
+        });
+  }, [isAdmin, apiData.documents, apiData.entities, currentUser, myExternalId]);
+
+  // --- 3. CONSTRUIR LISTA DE USUARIOS ROBUSTA (Basada en baseDocuments) ---
   const relevantEntities = useMemo(() => {
-    // 1. Extraer todos los IDs únicos de usuarios que tienen documentos
+    if (!isAdmin) {
+      return myEntity ? [myEntity] : [];
+    }
+
     const activeEntityIds = new Set(
-      apiData.documents
-        .map(d => d.entity_id?.toString())
+      baseDocuments
+        .map(d => d.entity_id?.toString() || d.abstract_entity_id?.toString())
         .filter(id => id && id !== 'undefined' && id !== 'null')
     );
 
-    // 2. Intentar buscar su nombre en la lista de entidades
     const usersMap = new Map();
-    
-    // Primero añadimos las entidades conocidas
     apiData.entities.forEach(e => {
       if (e && e.id) {
         usersMap.set(e.id.toString(), {
@@ -219,20 +295,17 @@ export const ViewDocumentos = () => {
       }
     });
 
-    // Luego, nos aseguramos de que TODO ID de documento tenga una representación, 
-    // incluso si la API de entidades no lo trajo.
     const finalUsers = [];
     activeEntityIds.forEach(id => {
       if (usersMap.has(id)) {
         finalUsers.push(usersMap.get(id));
       } else {
-        finalUsers.push({ id: id, name: `ID ControlDoc: ${id}` });
+        finalUsers.push({ id: id, name: `Tripulante ID: ${id}` });
       }
     });
 
-    // Ordenar alfabéticamente por nombre
     return finalUsers.sort((a, b) => a.name.localeCompare(b.name));
-  }, [apiData.documents, apiData.entities]);
+  }, [isAdmin, baseDocuments, apiData.entities, myEntity]);
 
   const entityById = useMemo(
     () => new Map(apiData.entities.map(entity => [entity.id?.toString(), entity])),
@@ -251,12 +324,14 @@ export const ViewDocumentos = () => {
     return `${typeName} ${docLabel}`.trim() || `Documento ${doc.id || ''}`;
   }, [documentTypeById]);
 
+  // Las métricas ahora leen de baseDocuments
   const progressMetrics = useMemo(() => {
-    if (selectedEntityId === 'all') {
+    const targetEntityId = isAdmin ? selectedEntityId : myExternalId;
+    if (!targetEntityId || targetEntityId === 'all') {
       return { percentage: 0, count: 0, total: 0 };
     }
 
-    const userDocs = apiData.documents.filter(doc => doc.entity_id?.toString() === selectedEntityId);
+    const userDocs = baseDocuments.filter(doc => (doc.entity_id?.toString() || doc.abstract_entity_id?.toString()) === targetEntityId);
     const total = userDocs.length;
     const count = userDocs.filter((doc) => {
       const days = getDaysRemaining(doc.expires_at);
@@ -268,8 +343,9 @@ export const ViewDocumentos = () => {
       count,
       total,
     };
-  }, [apiData.documents, selectedEntityId]);
+  }, [baseDocuments, selectedEntityId, isAdmin, myExternalId]);
 
+  // El procesamiento final de filtros también lee de baseDocuments
   const processedDocuments = useMemo(() => {
     const urgencyValue = (days) => {
       if (days === null) return 10000;
@@ -280,46 +356,40 @@ export const ViewDocumentos = () => {
 
     const query = normalizeText(searchTerm);
 
-    return apiData.documents
+    return baseDocuments
       .map(doc => ({
         doc,
         daysRemaining: getDaysRemaining(doc.expires_at)
       }))
       .filter(({ doc, daysRemaining }) => {
         const docTypeId = doc.document_type_id?.toString();
-        const docEntityId = doc.entity_id?.toString();
+        const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString();
 
         const typeMatch = selectedType === 'all' || docTypeId === selectedType;
-        const entityMatch = selectedEntityId === 'all' || docEntityId === selectedEntityId;
+        const entityMatch = (!isAdmin) || selectedEntityId === 'all' || docEntityId === selectedEntityId;
         const signatureMatch = signatureFilter === 'all' || hasPendingSignature(doc);
         const isNotBlocked = doc.aasm_state !== 'blocked';
         const searchableText = [
           getDocumentDisplayName(doc),
-          doc.label,
-          doc.name,
-          doc.id,
-          doc.document_type_id
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase();
+          doc.label, doc.name, doc.id, doc.document_type_id
+        ].filter(Boolean).join(' ').toLowerCase();
+
         const searchMatch = query === '' || searchableText.includes(query);
 
         let statusMatch = true;
         if (statusFilter !== 'all') {
-          if (daysRemaining === null) {
-            statusMatch = statusFilter === 'valid';
-          } else if (statusFilter === 'expired') statusMatch = daysRemaining < 0;
+          if (daysRemaining === null) statusMatch = statusFilter === 'valid';
+          else if (statusFilter === 'expired') statusMatch = daysRemaining < 0;
           else if (statusFilter === 'critical') statusMatch = daysRemaining >= 0 && daysRemaining <= 30;
           else if (statusFilter === 'warning') statusMatch = daysRemaining > 30 && daysRemaining <= 60;
           else if (statusFilter === 'valid') statusMatch = daysRemaining > 60;
         }
 
-          return typeMatch && entityMatch && signatureMatch && statusMatch && isNotBlocked && searchMatch;
+        return typeMatch && entityMatch && signatureMatch && statusMatch && isNotBlocked && searchMatch;
       })
       .sort((a, b) => urgencyValue(a.daysRemaining) - urgencyValue(b.daysRemaining))
       .map(({ doc }) => doc);
-  }, [apiData.documents, selectedType, selectedEntityId, statusFilter, signatureFilter, searchTerm, getDocumentDisplayName]);
+  }, [baseDocuments, selectedType, selectedEntityId, statusFilter, signatureFilter, searchTerm, getDocumentDisplayName, isAdmin]);
 
   const documentsToRender = useMemo(
     () => processedDocuments.slice(0, visibleCount),
@@ -327,8 +397,8 @@ export const ViewDocumentos = () => {
   );
 
   const totalDocumentsWithoutBlocked = useMemo(
-    () => apiData.documents.filter((doc) => doc.aasm_state !== 'blocked').length,
-    [apiData.documents]
+    () => baseDocuments.filter((doc) => doc.aasm_state !== 'blocked').length,
+    [baseDocuments]
   );
 
   const searchSuggestions = useMemo(() => {
@@ -363,7 +433,8 @@ export const ViewDocumentos = () => {
               </span>
             )}
 
-            {selectedEntityId !== 'all' && (
+            {/* Muestra la barra de progreso siempre para tripulantes, o para el admin si selecciona a alguien */}
+            {(!isAdmin || selectedEntityId !== 'all') && (
               <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
                 <div className="flex justify-between items-end mb-2">
                   <div>
@@ -391,7 +462,7 @@ export const ViewDocumentos = () => {
             </div>
           )}
 
-          {apiData.documents.length > 0 && (
+          {baseDocuments.length > 0 && (
             <div className="bg-white rounded-xl p-4 mb-4 border border-gray-200 shadow-sm">
               <div className="flex items-center gap-2 mb-3 border-b pb-2">
                 <Filter className="w-4 h-4 text-[#921E30]" />
@@ -451,7 +522,7 @@ export const ViewDocumentos = () => {
                   </select>
                 </div>
                 
-                {/* Selector de Usuario - Solo visible si es Admin */}
+                {/* Selector de Usuario - Oculto mágicamente para los Tripulantes */}
                 {isAdmin && (
                   <div>
                     <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-wider">Usuario</label>
@@ -500,7 +571,7 @@ export const ViewDocumentos = () => {
             </div>
           )}
 
-          {!isLoading && apiData.documents.length === 0 && !error && (
+          {!isLoading && baseDocuments.length === 0 && !error && (
             <div className="text-center py-10 text-gray-400">
               <FileText className="w-12 h-12 mx-auto mb-2 opacity-20" />
               <p>No tienes documentos cargados.</p>

@@ -8,7 +8,6 @@ import {
 } from '../storage/controlDocOffline';
 import { findEntityForUser, getScopedDocuments, getUserSnapshotKey, isAdminUser as hasAdminRole } from '../auth/userScope';
 import { evaluateDocumentNotificationRules } from '../pwa/notificationRules';
-import { clearControlDocProxyCache, toArray } from '../controldoc/api';
 import { getDocumentEntityIds, getDocumentExpirationDate, getDocumentStatusText, hasNonCompliantDocumentStatus, hasPendingSignature, isBlockedDocument, parseControlDocDate } from '../controldoc/fields';
 
 const formatDate = (dateString) => {
@@ -103,6 +102,16 @@ const getEntityRut = (entity) => getEntityFieldValue(entity, ENTITY_RUT_KEYS);
 const getEntityEmail = (entity) => getEntityFieldValue(entity, ['email', 'correo_electronico_personal', 'correo electronico personal', 'correo_electronico_corporativo', 'correo electronico corporativo', 'correo', 'mail']);
 const SNAPSHOT_FRESH_MS = 15 * 60 * 1000;
 
+const toArray = (value, fallbackKeys = []) => {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+  for (const key of fallbackKeys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
+  return dynamicArrayKey ? value[dynamicArrayKey] : [];
+};
+
 export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const [allDocs, setAllDocs] = useState([]);
   const [allEntities, setAllEntities] = useState([]);
@@ -143,12 +152,9 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
       onLoadingProgress?.({ percent: 15 });
       try {
         const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
-        
-        // Si el usuario presionó el botón de "Actualizar", enviamos refresh=1.
-        // Si es carga normal de inicio, NO enviamos refresh para aprovechar la RAM del servidor.
         const queryParams = forceRefresh ? '?refresh=1' : '';
 
-        // 1 PETICIÓN PLANA. El Backend nos envía todo armado en JSON, sin paginar en React.
+        // 1 PETICIÓN PLANA. Sin bucles que causen Rate Limit.
         const [docsRes, entitiesRes, typesRes] = await Promise.all([
           fetch(getApiUrl(`/controldoc/documents${queryParams}`), requestOptions),
           fetch(getApiUrl(`/controldoc/entities${queryParams}`), requestOptions),
@@ -169,13 +175,13 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         if (isCancelled) return;
 
         const nextData = {
-          documents: docsData,
+          documents: toArray(docsData, ['documents', 'data', 'items']),
           entities: toArray(entitiesData, ['entities', 'data', 'items']),
           documentTypes: toArray(typesData, ['documentTypes', 'document_types', 'data', 'items']),
-          meta: { documents: { totalItems: docsData.length } }
+          meta: { documents: { totalItems: Array.isArray(docsData) ? docsData.length : 0 } }
         };
 
-        setSyncStats({ source: 'api', totalItems: docsData.length, complete: true });
+        setSyncStats({ source: 'api', totalItems: nextData.documents.length, complete: true });
         processData(nextData.documents, nextData.entities, nextData.documentTypes);
         
         if (!hasAdminRole(currentUser)) {
@@ -204,7 +210,6 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         });
       }
 
-      // Solo forzamos la actualización a la API si expira el caché o si el usuario apretó "Actualizar API"
       if (refreshToken === 0 && isControlDocSnapshotFresh(snapshot, SNAPSHOT_FRESH_MS, { requireComplete: hasAdminRole(currentUser) })) {
         setIsSyncing(false);
         return;
@@ -231,35 +236,34 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     return combinedName !== '' ? combinedName : 'Documento sin nombre';
   }, [allTypes]);
 
-  // --- LÓGICA DE ROLES E IDENTIFICACIÓN ---
+  // --- LÓGICA DE ROLES E IDENTIFICACIÓN (CANDADO DE PRIVACIDAD) ---
   const isAdminUser = hasAdminRole(currentUser);
-  const scopedDocs = useMemo(
-    () => getScopedDocuments(allDocs, allEntities, currentUser),
-    [allDocs, allEntities, currentUser]
-  );
   
-  const selectedEntity = useMemo(() => {
+  const displayEntity = useMemo(() => {
     if (isAdminUser) {
       return selectedUserId ? allEntities.find((item) => item.id?.toString() === selectedUserId.toString()) : null;
     }
-    return findEntityForUser(allEntities, currentUser);
+    
+    // Auto-detección para usuarios normales
+    const found = findEntityForUser(allEntities, currentUser);
+    if (found) return found;
+    
+    // Si el backend aplicó su propio bypass, allEntities solo tendrá 1 elemento. Ese somos nosotros.
+    if (allEntities.length === 1) return allEntities[0];
+    
+    // Fallback de emergencia
+    return {
+      id: '',
+      name: getCurrentUserDisplayName(currentUser),
+      email: currentUser?.email || '',
+      rut: currentUser?.rut || ''
+    };
   }, [allEntities, currentUser, isAdminUser, selectedUserId]);
 
-  const inferredUserEntityId = useMemo(() => {
-    if (isAdminUser || selectedEntity?.id) return '';
-    return scopedDocs.flatMap(getDocumentEntityIds)[0] || '';
-  }, [isAdminUser, scopedDocs, selectedEntity]);
-
-  const displayEntity = selectedEntity || (!isAdminUser ? {
-    id: inferredUserEntityId,
-    name: getCurrentUserDisplayName(currentUser),
-    email: currentUser?.email || '',
-    rut: currentUser?.rut || ''
-  } : null);
-  
   const activeExternalId = displayEntity?.id?.toString() || '';
-  const isGlobalView = isAdminUser && !selectedEntity;
+  const isGlobalView = isAdminUser && !displayEntity;
 
+  // --- LÓGICA DE TEXTOS DE CABECERA ---
   const appRoleText = isAdminUser ? 'Administrador' : 'Tripulante';
   const fullNameText = isAdminUser ? getCurrentUserDisplayName(currentUser) : getEntityDisplayName(displayEntity);
   const cargoHeader = isAdminUser
@@ -271,15 +275,18 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const rawContractDate = getEntityFieldValue(displayEntity, ['fecha_contrato', 'contract_date', 'hired_at', 'fecha_ingreso']);
   const detailFechaContrato = rawContractDate ? formatDate(rawContractDate) : 'No informado';
 
+  // --- CANDADO DOBLE PARA DOCUMENTOS ---
   const selectedUserDocs = useMemo(() => {
-    const docs = Array.isArray(scopedDocs) ? scopedDocs : [];
     if (isGlobalView) return [];
-    if (!isAdminUser && !activeExternalId) return docs;
+    
+    // Filtro estricto: Solo documentos que pertenezcan a tu external_id
     if (!activeExternalId) return [];
-    return docs.filter(
-      (doc) => getDocumentEntityIds(doc).includes(activeExternalId)
-    );
-  }, [isAdminUser, isGlobalView, activeExternalId, scopedDocs]);
+    
+    return allDocs.filter(doc => {
+      const entityIds = getDocumentEntityIds(doc);
+      return entityIds.includes(activeExternalId);
+    });
+  }, [isGlobalView, activeExternalId, allDocs]);
 
   const selectedPendingSignatures = useMemo(() =>
     selectedUserDocs
@@ -421,7 +428,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     setIsAutocompleteOpen(false);
   };
 
-  const syncSourceText = syncStats?.source === 'cache' ? 'celular' : 'servidor';
+  const syncSourceText = syncStats?.source === 'cache' ? 'caché instantáneo' : 'servidor';
   const syncStatusText = isSyncing ? 'cargando' : 'completada';
 
   return (
@@ -439,7 +446,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
               Bienvenido
             </span>
             <span className="text-xs font-bold text-[#e1575f] tracking-wide uppercase">
-              {appRoleText} (ROL)
+              {appRoleText}
             </span>
             <h2 className="text-white text-xl font-bold tracking-wide leading-tight">
               {fullNameText}
@@ -588,7 +595,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
               </div>
               <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-500 flex items-center justify-between gap-2">
                 <span className="min-w-0">
-                  Carga {syncStatusText} desde {syncSourceText}: {syncStats?.totalItems ?? globalMetrics.totalDocsCount} documentos.
+                  Carga {syncStatusText} desde {syncSourceText}.
                 </span>
                 <button
                   type="button"
@@ -606,7 +613,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
             </div>
           ) : (
             /* Vista de Detalle de un Colaborador Específico */
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 mt-4">
               <div className="flex items-start justify-between gap-2 mb-4">
                 <div>
                   <p className="text-xs uppercase font-semibold text-[#921E30]">
@@ -634,8 +641,8 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                     </p>
                   </div>
                 </div>
-                {isAdminUser && selectedEntity && (
-                  <button type="button" onClick={handleClearSelection} className="text-xs font-semibold text-[#921E30] shrink-0 bg-red-50 px-2 py-1 rounded-md">
+                {isAdminUser && displayEntity && (
+                  <button type="button" onClick={handleClearSelection} className="text-xs font-semibold text-[#921E30] shrink-0 bg-red-50 px-2 py-1 rounded-md hover:bg-red-100">
                     Ver General
                   </button>
                 )}

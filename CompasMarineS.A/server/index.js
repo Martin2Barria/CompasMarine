@@ -285,64 +285,86 @@ async function proxyControlDocRequest(req, res, cleanPath) {
   const cookieUserId = getCookie(req, 'compas_user_id');
   if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado' });
 
-  let userEmail = '', isAdmin = false;
+  let userEmail = '', isAdmin = false, userRut = null;
   try {
-    const [rows] = await dbPool.execute(`SELECT u.email, r.nombre as rol FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id WHERE u.id = ? AND u.activo = TRUE`, [cookieUserId]);
+    const [rows] = await dbPool.execute(`SELECT u.email, r.nombre as rol, e.rut FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id LEFT JOIN entidades_api e ON u.email = e.email WHERE u.id = ? AND u.activo = TRUE`, [cookieUserId]);
     if (rows.length === 0) return sendJson(res, 401, { error: 'Usuario inactivo.' });
     userEmail = rows[0].email;
+    userRut = rows[0].rut;
     isAdmin = (rows[0].rol || '').toLowerCase() === 'admin';
   } catch (err) { return sendJson(res, 200, []); }
 
   const upstreamPath = controlDocRoutes.get(cleanPath);
   const credentials = resolveControlDocCredentials(req);
-  if (!credentials.email || !credentials.token) return sendJson(res, 200, []);
+  if (!credentials.email || !credentials.token) {
+    console.warn("Credenciales de ControlDoc vacías en el servidor.");
+    return sendJson(res, 200, []);
+  }
 
   try {
-    if (upstreamPath === '/api/v1/abstract/document_types') {
-      return sendJson(res, 200, await serveWithSWR('documentTypes', upstreamPath, credentials));
-    }
+    const serveWithSWR = async (cacheKey) => {
+      const cacheStore = serverCache[cacheKey];
+      
+      if (cacheStore.data && cacheStore.data.length > 0) {
+        if (cacheStore.expiresAt < Date.now() && !cacheStore.isUpdating) {
+          cacheStore.isUpdating = true;
+          fetchAllControlDocPages(upstreamPath, credentials)
+            .then(data => { 
+                if(data.length > 0) serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL, isUpdating: false };
+                else cacheStore.isUpdating = false;
+            })
+            .catch(() => { cacheStore.isUpdating = false; });
+        }
+        return cacheStore.data;
+      }
+      
+      cacheStore.isUpdating = true;
+      const data = await fetchAllControlDocPages(upstreamPath, credentials);
+      if (data && data.length > 0) {
+        serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL, isUpdating: false };
+      } else {
+        cacheStore.isUpdating = false;
+      }
+      return data || [];
+    };
+
+    if (upstreamPath === '/api/v1/abstract/document_types') return sendJson(res, 200, await serveWithSWR('documentTypes'));
 
     const isUsersEndpoint = upstreamPath === '/api/v1/abstract/entities';
     const isDocsEndpoint = upstreamPath === '/api/v1/abstract/documents';
     
     if (isUsersEndpoint || isDocsEndpoint) {
-      if (isAdmin) {
-          const cacheKey = isUsersEndpoint ? 'entities' : 'documents';
-          return sendJson(res, 200, await serveWithSWR(cacheKey, upstreamPath, credentials));
-      }
-
-      // --- BYPASS DE USUARIO NORMAL (MAGIA DE VELOCIDAD) ---
+      const cacheKey = isUsersEndpoint ? 'entities' : 'documents';
+      const allData = await serveWithSWR(cacheKey);
+      
+      if (isAdmin) return sendJson(res, 200, allData);
+      
+      // --- LÓGICA DE FILTRADO PARA TRIPULANTES ---
       let myExternalId = null;
       try {
-        const [rows] = await dbPool.execute('SELECT external_id FROM entidades_api WHERE email = ?', [userEmail]);
+        // Buscar por email exacto o por rut si está disponible
+        let query = 'SELECT external_id FROM entidades_api WHERE email = ?';
+        let params = [userEmail];
+        
+        if (userRut) {
+          query += ' OR rut = ?';
+          params.push(userRut);
+        }
+        query += ' LIMIT 1';
+
+        const [rows] = await dbPool.execute(query, params);
         if (rows.length > 0) myExternalId = rows[0].external_id?.toString();
       } catch(e) {}
 
+      // Si no encontramos su ID, no le mostramos nada por seguridad
       if (!myExternalId) return sendJson(res, 200, []);
 
-      if (isUsersEndpoint) {
-          try {
-              const [rows] = await dbPool.execute('SELECT data_json FROM entidades_api WHERE external_id = ?', [myExternalId]);
-              if (rows.length > 0) return sendJson(res, 200, [JSON.parse(rows[0].data_json)]);
-          } catch(e) {}
-          return sendJson(res, 200, await serveWithSWR(`entities_${myExternalId}`, upstreamPath, credentials, { id: myExternalId }));
-      }
-
-      if (isDocsEndpoint) {
-          // Si el caché global ya está listo, lo usamos porque es instantáneo.
-          const globalCache = serverCache['documents'];
-          if (globalCache && globalCache.data && globalCache.data.length > 0) {
-              const filtered = globalCache.data.filter(item => {
-                  const docEntityId = item.entity_id?.toString() || item.abstract_entity_id?.toString() || item.employee_id?.toString();
-                  return docEntityId === myExternalId;
-              });
-              return sendJson(res, 200, filtered);
-          }
-
-          // Si el caché global está ocupado o vacío, hacemos un mini-fetch solo para este usuario.
-          const userDocs = await serveWithSWR(`docs_${myExternalId}`, upstreamPath, credentials, { abstract_entity_id: myExternalId });
-          return sendJson(res, 200, userDocs);
-      }
+      const filtered = allData.filter(item => {
+        if (isUsersEndpoint) return item.id?.toString() === myExternalId;
+        const docEntityId = item.entity_id?.toString() || item.abstract_entity_id?.toString() || item.employee_id?.toString();
+        return docEntityId === myExternalId;
+      });
+      return sendJson(res, 200, filtered);
     }
     return sendJson(res, 200, []);
   } catch (err) {
