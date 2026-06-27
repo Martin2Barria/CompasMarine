@@ -7,27 +7,29 @@ export function getControlDocBaseUrl() {
 
 export function resolveControlDocCredentials(req) {
   const byUser = parseJsonEnv('CONTROLDOC_USER_CREDENTIALS_JSON');
-  const cookieUserId = getCookie(req, 'compas_user_id');
+  const cookieUserId = req ? getCookie(req, 'compas_user_id') : null;
   const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
+
+  // 1. PRIORIDAD MÁXIMA: Leemos la variable global con las comas
+  const globalEntityTypes = process.env.API_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_IDS;
 
   if (byUser && typeof byUser === 'object') {
     const profile = byUser[requestedUserId] || byUser[process.env.CONTROLDOC_DEFAULT_USER_ID] || Object.values(byUser)[0];
-    if (profile) return normalizeCredentialProfile(profile);
+    if (profile) return normalizeCredentialProfile(profile, globalEntityTypes);
   }
 
   return normalizeCredentialProfile({
     email: process.env.CONTROLDOC_USER_EMAIL || process.env.API_USER_EMAIL,
     token: process.env.CONTROLDOC_USER_TOKEN || process.env.API_USER_TOKEN,
     customerId: process.env.CONTROLDOC_CUSTOMER_ID || process.env.API_CUSTOMER_ID,
-    // Leemos la variable que contendrá los múltiples IDs separados por coma
-    entityTypeIds: process.env.API_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_ID || '467',
+    entityTypeId: process.env.CONTROLDOC_ENTITY_TYPE_ID || '467',
     authorization: process.env.CONTROLDOC_AUTHORIZATION
-  });
+  }, globalEntityTypes);
 }
 
-function normalizeCredentialProfile(profile) {
-  // Extraemos y separamos los IDs por comas, convirtiéndolos en un Array: ['467', '468', '469']
-  const rawEntityTypes = profile.entityTypeIds || profile.entityTypeId || profile.entity_type_id || process.env.API_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_ID || '467';
+function normalizeCredentialProfile(profile, globalEntityTypes) {
+  // 2. MAGIA: Si globalEntityTypes existe (467, 468, 469), pisa y destruye lo que diga el JSON
+  const rawEntityTypes = globalEntityTypes || profile.entityTypeIds || profile.entityTypeId || profile.entity_type_id || '467';
   const entityTypeIds = String(rawEntityTypes).split(',').map(id => id.trim()).filter(Boolean);
 
   return {
@@ -49,7 +51,10 @@ export async function fetchAllControlDocPages(upstreamPath, credentials, extraPa
   const baseUrl = getControlDocBaseUrl();
 
   try {
-    // MAGIA MULTI-EMPRESA: Bucle for para iterar sobre cada ID de Entidad (467, 468, 469...)
+    // 3. Imprimimos los IDs que vamos a procesar para estar 100% seguros
+    console.log(`[ControlDoc] Iniciando Mega-Descarga. IDs a procesar: [ ${credentials.entityTypeIds.join(', ')} ]`);
+
+    // 4. Bucle por cada ID de sucursal/empresa
     for (const entityTypeId of credentials.entityTypeIds) {
       console.log(`[ControlDoc] Iniciando descarga en ${upstreamPath} para Entity Type ID: ${entityTypeId}...`);
       let allItems = [];
@@ -124,6 +129,6 @@ export async function fetchAllControlDocPages(upstreamPath, credentials, extraPa
     console.error("[ControlDoc Engine] Error durante la paginación concurrente:", err);
   }
   
-  // Limpiamos y eliminamos posibles duplicados agrupando por el ID
+  // Limpiamos duplicados y retornamos
   return Array.from(new Map(globalItems.filter(i => i && i.id).map(item => [item.id, item])).values());
 }
