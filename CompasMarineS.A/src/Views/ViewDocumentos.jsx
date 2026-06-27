@@ -1,84 +1,125 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Eye } from 'lucide-react';
+import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Eye, Tag, Download, User as UserIcon } from 'lucide-react';
+import { getApiUrl } from '../config/api';
+import { readControlDocSnapshot, saveControlDocSnapshot } from '../storage/controlDocOffline';
 
-// --- STUBS Y DEPENDENCIAS INTEGRADAS (Reemplazan las importaciones locales para este entorno) ---
-const getApiUrl = (path) => path.startsWith('http') ? path : `/api${path}`;
+// IMPORTAMOS LAS FUNCIONES DE SEGURIDAD
+import { isAdminUser as hasAdminRole, findEntityForUser, getScopedDocuments } from '../auth/userScope';
 
-const readControlDocSnapshot = () => {
-  try {
-    const stored = localStorage.getItem('controlDocSnapshot');
-    return stored ? JSON.parse(stored) : null;
-  } catch { return null; }
+const urls = {
+  documents: getApiUrl('/controldoc/documents'), 
+  documentsSync: getApiUrl('/controldoc/documents/sync'), 
+  entities: getApiUrl('/controldoc/entities'),
+  documentTypes: getApiUrl('/controldoc/document-types')
 };
 
-const saveControlDocSnapshot = (data) => {
-  try {
-    localStorage.setItem('controlDocSnapshot', JSON.stringify({ data, savedAt: new Date().toISOString() }));
-  } catch {}
-};
-
-const hasAdminRole = (user) => {
-  if (!user) return false;
-  return user.rol === 'Admin' || user.role === 'Admin';
-};
-
-const findEntityForUser = (entities, user) => {
-  if (!entities || !entities.length || !user) return null;
-  const userEmail = (user.email || '').trim().toLowerCase();
-  const userRut = (user.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
-  
-  return entities.find(e => {
-    const eEmail = (e.email || e.custom_fields?.correo_electronico_personal || '').trim().toLowerCase();
-    const eRut = (e.identifier || e.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
-    return (userEmail && eEmail === userEmail) || (userRut && eRut === userRut);
-  });
-};
-
-const getScopedDocuments = (docs, entities, user) => {
-  if (hasAdminRole(user)) return docs;
-  const myEntity = findEntityForUser(entities, user) || (entities.length === 1 ? entities[0] : null);
-  if (!myEntity) return [];
-  const myExternalId = myEntity.id?.toString();
-  
-  return docs.filter(doc => {
-    const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
-    return docEntityId === myExternalId;
-  });
-};
-
-const ApiDocumentCard = ({ doc, documentTypeById }) => {
+// --- COMPONENTE DE TARJETA ESTÉTICO ---
+const ApiDocumentCard = ({ doc, documentTypeById, entityById }) => {
   const type = documentTypeById.get(doc.document_type_id?.toString());
-  const typeName = type?.name || type?.label || 'Documento';
-  const docLabel = doc.label || doc.name || '';
-  const displayName = `${typeName} ${docLabel}`.trim() || `Documento ${doc.id}`;
+  const entity = entityById.get(doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString());
   
+  const typeName = type?.name || type?.label || doc.document_type_id || 'Documento';
+  const entityName = entity?.full_name || entity?.name || entity?.label || entity?.email || 'Sin Nombre';
+
+  let status = { text: 'Sin Fecha', days: '--', bgClass: 'bg-gray-100 text-gray-600', borderClass: 'border-gray-500', textClass: 'text-gray-600', glowClass: 'bg-gray-500' };
+  
+  let isBlocked = doc.aasm_state === 'blocked';
+
+  if (isBlocked && doc.blocked_description?.toLowerCase().includes('cargo')) {
+    isBlocked = false;
+  }
+
+  if (doc.expires_at) {
+    const expirationDate = new Date(doc.expires_at);
+    const currentDate = new Date(); 
+    currentDate.setHours(0, 0, 0, 0);
+
+    const timeDifference = expirationDate.getTime() - currentDate.getTime();
+    const daysRemaining = Math.ceil(timeDifference / (1000 * 3600 * 24));
+
+    if (isBlocked) {
+       status = { text: 'Bloqueado', days: daysRemaining > 0 ? daysRemaining : '0', bgClass: 'bg-red-50 text-[#921E30] border-red-200', borderClass: 'border-[#921E30]', textClass: 'text-[#921E30]', glowClass: 'bg-[#921E30]' };
+    } else if (daysRemaining > 30) {
+      status = { text: 'Vigente', days: daysRemaining, bgClass: 'bg-green-50 text-green-700 border-green-200', borderClass: 'border-green-500', textClass: 'text-green-600', glowClass: 'bg-green-500' };
+    } else if (daysRemaining > 0) {
+      status = { text: 'Próximo a vencer', days: daysRemaining, bgClass: 'bg-yellow-50 text-yellow-700 border-yellow-200', borderClass: 'border-yellow-400', textClass: 'text-yellow-600', glowClass: 'bg-yellow-400' };
+    } else {
+      const expired = Math.abs(daysRemaining);
+      status = { text: daysRemaining === 0 ? 'Expira hoy' : `Expirado`, days: daysRemaining === 0 ? '0' : `-${expired}`, bgClass: 'bg-red-50 text-[#921E30] border-red-200', borderClass: 'border-[#921E30]', textClass: 'text-[#921E30]', glowClass: 'bg-[#921E30]' };
+    }
+  }
+
+  const formatDate = (dateString) => {
+    if (!dateString) return 'N/A';
+    return new Date(dateString).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  };
+
   return (
-    <div className="border border-gray-200 rounded-xl p-4 bg-white shadow-sm hover:shadow transition flex items-center justify-between">
-        <div className="flex items-start gap-3 overflow-hidden">
-            <FileText className="w-8 h-8 text-gray-400 shrink-0 mt-0.5" />
-            <div className="min-w-0">
-                <h4 className="font-bold text-[#394049] text-sm truncate">{displayName}</h4>
-                <p className="text-xs text-gray-500 mt-1">ID: {doc.id} · Expira: {doc.expires_at ? new Date(doc.expires_at).toLocaleDateString() : 'N/A'}</p>
-                {doc.aasm_state && (
-                  <span className="inline-block mt-2 px-2 py-0.5 bg-gray-100 border border-gray-200 text-gray-600 text-[10px] uppercase font-bold rounded-full">
-                    {doc.aasm_state}
-                  </span>
-                )}
+    <div className="bg-white rounded-2xl p-5 relative overflow-hidden shadow-sm border border-gray-100 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 mb-4">
+      <div className="absolute top-0 right-0 w-32 h-32 bg-gray-50 rounded-bl-full z-0"></div>
+      
+      <div className="flex justify-between items-start relative z-10">
+        <div className="flex-1 pr-4">
+          <div className="flex items-center gap-2 mb-2">
+            <FileText className="w-5 h-5 text-[#394049] flex-shrink-0" />
+            <h3 className="font-bold text-[#394049] text-sm leading-tight uppercase">{doc.label || doc.name || 'Documento'}</h3>
+          </div>
+          
+          <div className="space-y-1.5 mb-3 bg-gray-50 p-2 rounded-lg border border-gray-100">
+            <p className="text-xs text-gray-600 flex items-center">
+              <UserIcon className="w-3 h-3 mr-1.5 text-gray-400" />
+              <span className="font-semibold text-gray-800 truncate">{entityName}</span>
+            </p>
+            <p className="text-xs text-gray-600 flex items-center">
+              <Tag className="w-3 h-3 mr-1.5 text-gray-400" />
+              <span className="truncate">{typeName}</span>
+            </p>
+          </div>
+          
+          <div className="space-y-1 mb-3 text-xs">
+            <p className="text-gray-500 flex justify-between pr-4">
+              <span>Emisión:</span> <span className="font-medium text-gray-700">{formatDate(doc.created_at || doc.issued_at)}</span>
+            </p>
+            <p className="text-gray-500 flex justify-between pr-4">
+              <span>Expiración:</span> <span className="font-medium text-gray-700">{formatDate(doc.expires_at)}</span>
+            </p>
+          </div>
+
+          <div className="flex gap-2 items-center flex-wrap">
+            <p className={`text-[10px] font-bold inline-block px-2 py-1 rounded border ${status.bgClass} uppercase`}>
+              {status.text}
+            </p>
+            <a href={`https://compliance.controldoc.legal/documentos/${doc.id}`} target="_blank" rel="noreferrer" className="text-[10px] font-bold bg-[#394049] text-white px-2 py-1 rounded flex items-center hover:bg-gray-700 transition">
+                <Eye className="w-3 h-3 mr-1" /> Ver API
+            </a>
+            {doc.download_base64_url && (
+              <a href={doc.download_base64_url} target="_blank" rel="noreferrer" className="text-[10px] font-bold bg-[#921E30] text-white px-2 py-1 rounded flex items-center hover:bg-red-800 transition">
+                <Download className="w-3 h-3 mr-1" /> Archivo
+              </a>
+            )}
+          </div>
+
+          {isBlocked && doc.blocked_description && (
+            <div className="mt-3 bg-red-50 border border-red-200 p-2 rounded flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+              <p className="text-[10px] text-red-700 font-medium leading-tight">{doc.blocked_description}</p>
             </div>
+          )}
         </div>
-        <a href={`https://compliance.controldoc.legal/documentos/${doc.id}`} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[11px] font-bold bg-[#921E30]/10 text-[#921E30] px-3 py-2 rounded-lg hover:bg-[#921E30]/20 transition shrink-0 ml-3">
-          <Eye className="w-3 h-3" /> Ver
-        </a>
+
+        <div className="relative flex-shrink-0 mt-1">
+          <div className={`absolute inset-0 rounded-full blur-md opacity-20 ${status.glowClass}`}></div>
+          <div className={`w-16 h-16 rounded-full border-4 bg-white flex flex-col items-center justify-center text-center p-1 relative z-10 shadow-inner ${status.borderClass}`}>
+            <span className={`font-black text-xl leading-none tracking-tight ${status.textClass}`}>{status.days}</span>
+            <span className="text-[7px] font-semibold uppercase tracking-wider text-gray-500 mt-1 leading-tight text-center">Días<br/>Restantes</span>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };
 // -------------------------------------------------------------------------------------------------
 
-const urls = {
-  documents: getApiUrl('/controldoc/documents'), 
-  entities: getApiUrl('/controldoc/entities'),
-  documentTypes: getApiUrl('/controldoc/document-types')
-};
 
 const getDaysRemaining = (dateString) => {
   if (!dateString) return null;
@@ -204,6 +245,9 @@ export const ViewDocumentos = ({ currentUser }) => {
           if (response.status === 401) {
             throw new Error("Acceso denegado. Por favor, inicia sesión.");
           }
+          if (response.status === 502) {
+            throw new Error("El servidor está procesando datos masivos. Por favor, espera 1 minuto.");
+          }
           if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
           return await response.json();
         } catch (e) {
@@ -251,7 +295,6 @@ export const ViewDocumentos = ({ currentUser }) => {
   }, []);
 
   // --- 2. EL DOBLE CANDADO DE SEGURIDAD ---
-  // Identificamos quién es el usuario actual según la API
   const myEntity = useMemo(() => {
     if (isAdmin) return null;
     return findEntityForUser(apiData.entities, currentUser) || apiData.entities[0];
@@ -259,7 +302,6 @@ export const ViewDocumentos = ({ currentUser }) => {
 
   const myExternalId = myEntity?.id?.toString() || '';
 
-  // Filtramos la lista de documentos para que NUNCA tenga datos de otros si no eres admin
   const baseDocuments = useMemo(() => {
     if (isAdmin) return apiData.documents;
     if (!myExternalId) return [];
@@ -273,7 +315,7 @@ export const ViewDocumentos = ({ currentUser }) => {
         });
   }, [isAdmin, apiData.documents, apiData.entities, currentUser, myExternalId]);
 
-  // --- 3. CONSTRUIR LISTA DE USUARIOS ROBUSTA (Basada en baseDocuments) ---
+  // --- 3. CONSTRUIR LISTA DE USUARIOS ---
   const relevantEntities = useMemo(() => {
     if (!isAdmin) {
       return myEntity ? [myEntity] : [];
@@ -324,7 +366,6 @@ export const ViewDocumentos = ({ currentUser }) => {
     return `${typeName} ${docLabel}`.trim() || `Documento ${doc.id || ''}`;
   }, [documentTypeById]);
 
-  // Las métricas ahora leen de baseDocuments
   const progressMetrics = useMemo(() => {
     const targetEntityId = isAdmin ? selectedEntityId : myExternalId;
     if (!targetEntityId || targetEntityId === 'all') {
@@ -345,7 +386,6 @@ export const ViewDocumentos = ({ currentUser }) => {
     };
   }, [baseDocuments, selectedEntityId, isAdmin, myExternalId]);
 
-  // El procesamiento final de filtros también lee de baseDocuments
   const processedDocuments = useMemo(() => {
     const urgencyValue = (days) => {
       if (days === null) return 10000;
@@ -433,7 +473,6 @@ export const ViewDocumentos = ({ currentUser }) => {
               </span>
             )}
 
-            {/* Muestra la barra de progreso siempre para tripulantes, o para el admin si selecciona a alguien */}
             {(!isAdmin || selectedEntityId !== 'all') && (
               <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
                 <div className="flex justify-between items-end mb-2">
@@ -522,7 +561,6 @@ export const ViewDocumentos = ({ currentUser }) => {
                   </select>
                 </div>
                 
-                {/* Selector de Usuario - Oculto mágicamente para los Tripulantes */}
                 {isAdmin && (
                   <div>
                     <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-wider">Usuario</label>
@@ -584,8 +622,6 @@ export const ViewDocumentos = ({ currentUser }) => {
                 <ApiDocumentCard
                   key={doc.id}
                   doc={doc}
-                  entities={apiData.entities}
-                  documentTypes={apiData.documentTypes}
                   entityById={entityById}
                   documentTypeById={documentTypeById}
                 />
