@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Header } from './Components/Header';
 import { BottomNav } from './Components/BottomNav';
 import { Login } from './Components/login';
-import { OlvidastePassword } from './Components/olvidastePassword'; // ← Nueva importación
+import { OlvidastePassword } from './Components/olvidastePassword'; 
 import { PwaInstallPrompt } from './Components/PwaInstallPrompt';
 import { SyncProgressOverlay } from './Components/SyncProgressOverlay';
 
@@ -22,7 +22,6 @@ export default function App() {
   const [syncProgress, setSyncProgress] = useState({ active: false, percent: 0 });
   const hideProgressTimer = useRef(null);
   
-  // Estado para controlar qué pantalla de autenticación se muestra ('login', 'forgot')
   const [authScreen, setAuthScreen] = useState('login');
 
   const reportLoadingProgress = useCallback((next = {}) => {
@@ -73,7 +72,7 @@ export default function App() {
     setCurrentView(nextView);
   };
 
-  // SI NO ESTÁ AUTENTICADO: Evaluamos cuál pantalla mostrar
+  // --- 1. FLUJO NO AUTENTICADO: Se mantiene fijo tipo "móvil" por estética de formulario ---
   if (!isAuthenticated) {
     return (
       <div className="bg-[#333] flex justify-center min-h-screen m-0 font-sans">
@@ -98,41 +97,50 @@ export default function App() {
     );
   }
 
-  // SI ESTÁ AUTENTICADO: Flujo principal de la aplicación
+  // --- 2. FLUJO AUTENTICADO: Se libera el max-width para volverse 100% responsivo ---
   return (
-    <div className="bg-[#333] flex justify-center min-h-screen m-0 font-sans">
-      <div className="w-full max-w-[414px] bg-white min-h-screen shadow-[0_0_20px_rgba(0,0,0,0.5)] flex flex-col relative overflow-hidden pb-20">
+    <div className="bg-[#f3f4f6] md:bg-[#333] flex justify-center min-h-screen m-0 font-sans">
+      {/* CAMBIO CLAVE: Cambiamos max-w-[414px] por max-w-none en pantallas grandes y agregamos un layout centralizado */}
+      <div className="w-full max-w-none md:max-w-6xl lg:max-w-7xl bg-white min-h-screen shadow-[0_0_30px_rgba(0,0,0,0.15)] flex flex-col relative overflow-hidden pb-20">
         <SyncProgressOverlay active={syncProgress.active} percent={syncProgress.percent} />
         
         <Header />
 
-        {visitedViews.has('inicio') && (
-          <div className={currentView === 'inicio' ? 'flex flex-col flex-1 min-h-0' : 'hidden'}>
-            <ViewInicio setView={handleViewChange} currentUser={currentUser} onLoadingProgress={reportLoadingProgress} />
+        {/* Contenedor wrapper para las vistas internas */}
+        <div className="flex-1 flex flex-col min-h-0 w-full mx-auto">
+          {visitedViews.has('inicio') && (
+            <div className={currentView === 'inicio' ? 'flex flex-col flex-1 min-h-0 w-full' : 'hidden'}>
+              <ViewInicio setView={handleViewChange} currentUser={currentUser} onLoadingProgress={reportLoadingProgress} />
+            </div>
+          )}
+
+          {visitedViews.has('documentos') && (
+            <div className={currentView === 'documentos' ? 'flex flex-col flex-1 min-h-0 w-full' : 'hidden'}>
+              <ViewDocumentos currentUser={currentUser} onLoadingProgress={reportLoadingProgress} />
+            </div>
+          )}
+
+          {visitedViews.has('notificaciones') && (
+            <div className={currentView === 'notificaciones' ? 'flex flex-col flex-1 min-h-0 w-full' : 'hidden'}>
+              <ViewNotificaciones setView={handleViewChange} currentUser={currentUser} onLoadingProgress={reportLoadingProgress} />
+            </div>
+          )}
+
+          {visitedViews.has('admin') && (
+            <div className={currentView === 'admin' ? 'flex flex-col flex-1 min-h-0 w-full' : 'hidden'}>
+              <ViewAdmin onLoadingProgress={reportLoadingProgress} />
+            </div>
+          )}
+        </div>
+
+        {/* Navegación y Prompts */}
+        <div className="w-full fixed bottom-0 left-0 right-0 md:absolute z-30 bg-white border-t border-gray-150">
+          <div className="max-w-none md:max-w-6xl lg:max-w-7xl mx-auto">
+            <BottomNav currentView={currentView} setCurrentView={handleViewChange} />
           </div>
-        )}
+        </div>
 
-        {visitedViews.has('documentos') && (
-          <div className={currentView === 'documentos' ? 'flex flex-col flex-1 min-h-0' : 'hidden'}>
-            <ViewDocumentos currentUser={currentUser} onLoadingProgress={reportLoadingProgress} />
-          </div>
-        )}
-
-        {visitedViews.has('notificaciones') && (
-          <div className={currentView === 'notificaciones' ? 'flex flex-col flex-1 min-h-0' : 'hidden'}>
-            <ViewNotificaciones setView={handleViewChange} currentUser={currentUser} onLoadingProgress={reportLoadingProgress} />
-          </div>
-        )}
-
-        {visitedViews.has('admin') && (
-          <div className={currentView === 'admin' ? 'flex flex-col flex-1 min-h-0' : 'hidden'}>
-            <ViewAdmin onLoadingProgress={reportLoadingProgress} />
-          </div>
-        )}
-
-        <BottomNav currentView={currentView} setCurrentView={handleViewChange} />
-        <PwaInstallPrompt className="absolute left-4 right-4 bottom-24" />
-
+        <PwaInstallPrompt className="absolute left-4 right-4 bottom-24 z-40" />
       </div>
     </div>
   );
