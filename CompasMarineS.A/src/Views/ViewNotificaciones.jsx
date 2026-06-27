@@ -69,7 +69,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
       await sendTestPushNotification();
       onLoadingProgress?.({ percent: 100, done: true });
       setTestStatus('sent');
-      setNotificationMessage('Notificacion push de prueba enviada.');
+      setNotificationMessage('Notificación push de prueba enviada.');
     } catch (error) {
       onLoadingProgress?.({ active: false });
       setTestStatus('error');
@@ -78,95 +78,105 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
   };
 
   return (
-    <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
-      <div className="bg-[#394049] p-5 flex justify-between items-center shadow-md relative z-10 flex-shrink-0">
-        <h2 className="text-white text-xl font-semibold tracking-wide">Notificaciones</h2>
+    <div className="flex flex-col flex-1 overflow-hidden animate-fade-in w-full">
+      {/* Navbar de Notificaciones */}
+      <div className="bg-[#394049] p-4 md:p-5 flex justify-between items-center shadow-md relative z-10 flex-shrink-0">
+        <h2 className="text-white text-lg md:text-xl font-semibold tracking-wide">Notificaciones</h2>
         <button 
           onClick={() => setView('inicio')}
-          className="bg-white text-[#394049] rounded-full w-7 h-7 flex items-center justify-center font-bold hover:bg-gray-200 transition-colors"
+          className="bg-white text-[#394049] rounded-full w-8 h-8 flex items-center justify-center font-bold hover:bg-gray-100 active:bg-gray-200 transition-colors shadow-sm"
+          aria-label="Cerrar notificaciones"
         >
           <X className="w-4 h-4" />
         </button>
       </div>
       
-      <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-200 p-4 space-y-4">
-        <div className="bg-white rounded-2xl p-5 shadow-sm relative overflow-hidden">
-          <div className="absolute left-0 top-0 bottom-0 w-2 bg-[#394049]"></div>
-          <div className="flex gap-4 items-start">
-                  {/* arreglo visual al entrar en modo oscuro */}
-            <div className="notification-badge-icon flex items-center justify-center flex-shrink-0 mt-1">
-              <BellRing className="icon-element" />
+      {/* Contenedor Principal */}
+      <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50 p-4 max-w-4xl mx-auto w-full space-y-4">
+        
+        {/* Card: Configuración de Alertas PWA */}
+        <div className="bg-white rounded-2xl p-4 md:p-5 shadow-sm relative overflow-hidden border border-gray-100">
+          <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-[#394049]"></div>
+          <div className="flex flex-col sm:flex-row gap-4 items-start">
+            <div className="bg-gray-100 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 text-[#394049]">
+              <BellRing className="w-5 h-5" />
             </div>
-            <div className="flex-1">
-              <h4 className="font-bold text-gray-800 bg-white inline-block mb-2">Avisos de documentos</h4>
-              <div className="flex flex-wrap gap-2">
+            <div className="flex-1 w-full">
+              <h4 className="font-bold text-gray-800 text-sm md:text-base mb-1">Avisos de documentos</h4>
+              <p className="text-xs text-gray-400 mb-3.5 leading-normal">Mantente al día con los vencimientos importantes activando las alertas push en tu dispositivo.</p>
+              
+              <div className="flex flex-col sm:flex-row gap-2 w-full">
                 <button
                   onClick={handleEnableNotifications}
                   disabled={notificationStatus === 'loading'}
-                  className="bg-[#394049] text-white text-xs px-4 py-2 rounded-full font-medium shadow hover:bg-gray-700 transition disabled:opacity-70 flex items-center"
+                  className="bg-[#394049] text-white text-xs px-5 py-2.5 rounded-xl font-bold shadow-sm hover:bg-gray-700 active:bg-gray-800 transition disabled:opacity-70 flex items-center justify-center min-h-[40px] sm:min-h-0"
                 >
-                  {notificationStatus === 'loading' && <Loader2 className="w-3 h-3 mr-2 animate-spin" />}
+                  {notificationStatus === 'loading' && <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />}
                   Activar avisos
                 </button>
                 <button
                   onClick={handleSendTestNotification}
                   disabled={testStatus === 'loading'}
-                  className="bg-[#921E30] text-white text-xs px-4 py-2 rounded-full font-medium shadow hover:bg-red-800 transition disabled:opacity-70 flex items-center"
+                  className="bg-[#921E30] text-white text-xs px-5 py-2.5 rounded-xl font-bold shadow-sm hover:bg-red-800 active:bg-red-900 transition disabled:opacity-70 flex items-center justify-center min-h-[40px] sm:min-h-0"
                 >
                   {testStatus === 'loading' ? (
-                    <Loader2 className="w-3 h-3 mr-2 animate-spin" />
+                    <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
                   ) : (
-                    <Send className="w-3 h-3 mr-2" />
+                    <Send className="w-3.5 h-3.5 mr-2" />
                   )}
                   Probar push
                 </button>
               </div>
+
               {notificationMessage && (
-                <p className={`text-xs mt-3 ${notificationStatus === 'error' || testStatus === 'error' ? 'text-[#921E30]' : 'text-green-700'}`}>
+                <p className={`text-xs font-semibold mt-3 p-2.5 rounded-lg bg-opacity-10 ${notificationStatus === 'error' || testStatus === 'error' ? 'text-[#921E30] bg-[#921E30]/5' : 'text-green-700 bg-green-50'}`}>
                   {notificationMessage}
                 </p>
               )}
               {emailStatus !== 'idle' && (
-                <p className={`text-xs mt-2 flex items-center gap-1 ${emailStatus === 'sent' ? 'text-green-700' : 'text-amber-700'}`}>
-                  <Mail className="w-3 h-3" />
-                  {emailStatus === 'sent' ? 'Resumen enviado al correo del usuario.' : 'Correo pendiente: falta configurar proveedor de email.'}
+                <p className={`text-xs mt-2.5 flex items-center gap-1.5 font-medium ${emailStatus === 'sent' ? 'text-green-700' : 'text-amber-700'}`}>
+                  <Mail className="w-3.5 h-3.5 shrink-0" />
+                  <span>{emailStatus === 'sent' ? 'Resumen enviado al correo del usuario.' : 'Correo pendiente: falta configurar proveedor de email.'}</span>
                 </p>
               )}
             </div>
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl p-5 shadow-sm relative overflow-hidden">
-          <div className="absolute left-0 top-0 bottom-0 w-2 bg-[#921E30]"></div>
-          <div className="flex gap-4">
-            <div className="bg-red-100 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
+        {/* Card: Historial / Registro de Alertas */}
+        <div className="bg-white rounded-2xl p-4 md:p-5 shadow-sm relative overflow-hidden border border-gray-100">
+          <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-[#921E30]"></div>
+          <div className="flex gap-4 items-start">
+            <div className="bg-red-50 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
               <AlertTriangle className="w-5 h-5 text-[#921E30]" />
             </div>
-            <div className="min-w-0 flex-1">
-              <h4 className="font-bold text-gray-800 bg-white inline-block mb-2">Registro de alertas</h4>
+            <div className="min-w-0 flex-1 w-full">
+              <h4 className="font-bold text-gray-800 text-sm md:text-base mb-2">Registro de alertas</h4>
               {alerts.length === 0 ? (
-                <p className="text-sm text-gray-600 leading-relaxed">
+                <p className="text-xs md:text-sm text-gray-500 leading-relaxed mt-1">
                   No hay alertas documentales registradas por ahora.
                 </p>
               ) : (
-                <div className="space-y-3">
+                <div className="space-y-3 mt-3">
                   {alerts.slice(0, 20).map((alert) => (
-                    <div key={alert.id} className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
+                    <div key={alert.id} className="rounded-xl border border-gray-100 bg-gray-50/70 p-3 md:p-4 transition-all">
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
                           <p className="text-sm font-bold text-[#394049] truncate">{alert.docName}</p>
-                          <p className="text-xs text-gray-600 mt-1">{alert.body}</p>
+                          <p className="text-xs text-gray-600 mt-1.5 leading-normal">{alert.body}</p>
                         </div>
-                        <span className={`shrink-0 text-[10px] font-bold px-2 py-1 rounded-full ${getSeverityClass(alert.severity)}`}>
+                        <span className={`self-start shrink-0 text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full text-center ${getSeverityClass(alert.severity)}`}>
                           {getSeverityLabel(alert.severity)}
                         </span>
                       </div>
-                      <button
-                        onClick={() => setView('documentos')}
-                        className="mt-3 text-xs bg-[#921E30] text-white px-4 py-1.5 rounded-full font-medium shadow hover:bg-red-800 transition"
-                      >
-                        Ver Documento
-                      </button>
+                      <div className="mt-3.5 pt-1 border-t border-gray-200/40">
+                        <button
+                          onClick={() => setView('documentos')}
+                          className="w-full sm:w-auto text-center text-xs bg-[#921E30] text-white px-5 py-2 rounded-xl font-bold shadow-sm hover:bg-red-800 active:bg-red-900 transition min-h-[36px] sm:min-h-0"
+                        >
+                          Ver Documento
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -175,19 +185,20 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl p-5 shadow-sm relative overflow-hidden">
-          <div className="absolute left-0 top-0 bottom-0 w-2 bg-green-500"></div>
-          <div className="flex gap-4">
-            <div className="bg-green-100 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
+        {/* Card: Saludo Estático de Bienvenida */}
+        <div className="bg-white rounded-2xl p-4 md:p-5 shadow-sm relative overflow-hidden border border-gray-100">
+          <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-green-500"></div>
+          <div className="flex gap-4 items-start">
+            <div className="bg-green-50 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
               <Hand className="w-5 h-5 text-green-600" />
             </div>
-            <div>
-              <h4 className="font-bold text-gray-800 bg-white inline-block mb-1">Bienvenido a Compas Marine</h4>
-              <p className="text-sm text-gray-600 leading-relaxed">
-                Esperamos y disfrutes tu instancia con nuestros servicios.
+            <div className="flex-1 min-w-0">
+              <h4 className="font-bold text-gray-800 text-sm md:text-base mb-1">Bienvenido a Compas Marine</h4>
+              <p className="text-xs md:text-sm text-gray-500 leading-relaxed">
+                Esperamos que disfrutes tu instancia con nuestros servicios integrales de gestión marina.
               </p>
-              <span className="text-[10px] text-gray-400 mt-2 flex items-center">
-                <Clock className="w-3 h-3 mr-1" /> Hace 2 horas
+              <span className="text-[10px] font-semibold text-gray-400 mt-3 flex items-center gap-1">
+                <Clock className="w-3 h-3 shrink-0" /> Hace 2 horas
               </span>
             </div>
           </div>
@@ -199,12 +210,12 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
 
 function getSeverityLabel(severity) {
   if (severity === 'expired') return 'Vencido';
-  if (severity === 'critical') return '30 dias';
-  return '60 dias';
+  if (severity === 'critical') return '30 días';
+  return '60 días';
 }
 
 function getSeverityClass(severity) {
-  if (severity === 'expired') return 'bg-red-100 text-[#921E30]';
-  if (severity === 'critical') return 'bg-amber-100 text-amber-700';
-  return 'bg-blue-100 text-blue-700';
+  if (severity === 'expired') return 'bg-red-100 text-[#921E30] border border-red-200/50';
+  if (severity === 'critical') return 'bg-amber-100 text-amber-700 border border-amber-200/50';
+  return 'bg-blue-100 text-blue-700 border border-blue-200/50';
 }
