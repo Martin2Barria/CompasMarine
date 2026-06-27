@@ -9,7 +9,8 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
   const entityName = entity?.full_name || entity?.name || entity?.label || entity?.email || docEntityId || 'Sin Nombre';
   const typeName = docType?.name || docType?.label || docType?.id || doc.document_type_id || 'Documento';
 
-  let status = { label: 'Sin Fecha', bgClass: 'bg-gray-100 text-gray-600 border-gray-200' };
+  // bgClass ahora incluye también el color y grosor del borde (border-2) para el efecto "pill"
+  let status = { label: 'Sin Fecha', bgClass: 'bg-gray-100 text-gray-600 border-2 border-gray-200' };
   const expirationDateValue = getDocumentExpirationDate(doc);
 
   const isBlocked = isBlockedDocument(doc);
@@ -24,24 +25,24 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
     const daysRemaining = timeDifference === null ? null : Math.ceil(timeDifference / (1000 * 3600 * 24));
 
     if (daysRemaining === null) {
-      status = { label: 'Sin Fecha', bgClass: 'bg-gray-100 text-gray-600 border-gray-200' };
+      status = { label: 'Sin Fecha', bgClass: 'bg-gray-100 text-gray-600 border-2 border-gray-200' };
     } else if (isBlocked) {
       const blockedDays = daysRemaining > 0 ? daysRemaining : 0;
-      status = { label: `Bloqueado (${blockedDays} días)`, bgClass: 'bg-red-50 text-[#921E30] border-red-200' };
+      status = { label: `Bloqueado (${blockedDays} días)`, bgClass: 'bg-red-50 text-[#921E30] border-2 border-red-200' };
     } else if (daysRemaining > 30) {
-      status = { label: `Vigente por ${daysRemaining} días`, bgClass: 'bg-green-50 text-green-700 border-green-200' };
+      status = { label: `Vigente por ${daysRemaining} días`, bgClass: 'bg-green-50 text-green-700 border-2 border-green-200' };
     } else if (daysRemaining > 0) {
-      status = { label: `Próximo a vencer (${daysRemaining} días)`, bgClass: 'bg-yellow-50 text-yellow-700 border-yellow-200' };
+      status = { label: `Próximo a vencer (${daysRemaining} días)`, bgClass: 'bg-yellow-50 text-yellow-700 border-2 border-yellow-200' };
     } else if (daysRemaining === 0) {
-      status = { label: 'Expira hoy', bgClass: 'bg-red-50 text-[#921E30] border-red-200' };
+      status = { label: 'Expira hoy', bgClass: 'bg-red-50 text-[#921E30] border-2 border-red-200' };
     } else {
       const expired = Math.abs(daysRemaining);
-      status = { label: `Expirado hace ${expired} días`, bgClass: 'bg-red-50 text-[#921E30] border-red-200' };
+      status = { label: `Expirado hace ${expired} días`, bgClass: 'bg-red-50 text-[#921E30] border-2 border-red-200' };
     }
   }
 
   if (!expirationDateValue && hasExpiredStatus) {
-    status = { label: 'Vencido', bgClass: 'bg-red-50 text-[#921E30] border-red-200' };
+    status = { label: 'Vencido', bgClass: 'bg-red-50 text-[#921E30] border-2 border-red-200' };
   }
 
   const formatDate = (dateString) => {
@@ -96,7 +97,8 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
 
         {/* Acciones adaptables a Mobile */}
         <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center w-full">
-          <div className={`text-xs font-extrabold text-center px-4 py-2 rounded-xl border sm:inline-block flex-1 sm:flex-initial ${status.bgClass}`}>
+          {/* Badge tipo "pill": rounded-full + border-2 para que coincida con el diseño de referencia */}
+          <div className={`text-xs font-extrabold text-center px-5 py-2.5 rounded-full border sm:inline-block flex-1 sm:flex-initial ${status.bgClass}`}>
             {status.label}
           </div>
           {doc.download_base64_url && (
