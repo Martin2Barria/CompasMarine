@@ -198,6 +198,27 @@ const getDaysRemaining = (dateString) => {
   return Math.ceil(diff / (1000 * 3600 * 24));
 };
 
+const getDocumentEmissionDate = (doc) => {
+  if (!doc || typeof doc !== 'object') return null;
+  const value = doc.created_at || doc.issued_at;
+  if (!value) return null;
+  const parsed = new Date(value);
+  return isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const getDocumentExpirationDate = (doc) => {
+  if (!doc || typeof doc !== 'object' || !doc.expires_at) return null;
+  const parsed = new Date(doc.expires_at);
+  return isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const hasEmissionAfterExpiration = (doc) => {
+  const emissionDate = getDocumentEmissionDate(doc);
+  const expirationDate = getDocumentExpirationDate(doc);
+  if (!emissionDate || !expirationDate) return false;
+  return emissionDate.getTime() > expirationDate.getTime();
+};
+
 const toArray = (value, fallbackKeys = []) => {
   if (Array.isArray(value)) return value;
   if (!value || typeof value !== 'object') return [];
@@ -271,6 +292,7 @@ export const ViewDocumentos = ({ currentUser }) => {
   const [selectedType, setSelectedType] = useState('all');
   const [selectedEntityId, setSelectedEntityId] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [expiredEmissionFilter, setExpiredEmissionFilter] = useState('all');
   const [signatureFilter, setSignatureFilter] = useState('all');
   
   const [searchTerm, setSearchTerm] = useState('');
@@ -283,7 +305,7 @@ export const ViewDocumentos = ({ currentUser }) => {
 
   useEffect(() => {
     setVisibleCount(50);
-  }, [selectedType, selectedEntityId, statusFilter, signatureFilter]);
+  }, [selectedType, selectedEntityId, statusFilter, expiredEmissionFilter, signatureFilter]);
 
   useEffect(() => {
     const showCachedSnapshot = () => {
@@ -493,11 +515,14 @@ export const ViewDocumentos = ({ currentUser }) => {
           else if (statusFilter === 'valid') statusMatch = daysRemaining > 60;
         }
 
-        return typeMatch && entityMatch && signatureMatch && statusMatch && isNotBlocked && searchMatch;
+        const emissionExpiredMatch =
+          expiredEmissionFilter === 'all' || hasEmissionAfterExpiration(doc);
+
+        return typeMatch && entityMatch && signatureMatch && statusMatch && emissionExpiredMatch && isNotBlocked && searchMatch;
       })
       .sort((a, b) => urgencyValue(a.daysRemaining) - urgencyValue(b.daysRemaining))
       .map(({ doc }) => doc);
-  }, [baseDocuments, selectedType, selectedEntityId, statusFilter, signatureFilter, searchTerm, getDocumentDisplayName, isAdmin]);
+  }, [baseDocuments, selectedType, selectedEntityId, statusFilter, expiredEmissionFilter, signatureFilter, searchTerm, getDocumentDisplayName, isAdmin]);
 
   const documentsToRender = useMemo(
     () => processedDocuments.slice(0, visibleCount),
@@ -627,7 +652,7 @@ export const ViewDocumentos = ({ currentUser }) => {
               </div>
               
               {/* Selectores Adaptables (Móvil vertical, Desktop horizontal) */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 pt-1">
                 <div>
                   <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Tipo</label>
                   <select value={selectedType} onChange={(e) => setSelectedType(e.target.value)} className="w-full px-3 py-2 text-xs text-gray-600 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white truncate">
@@ -654,6 +679,13 @@ export const ViewDocumentos = ({ currentUser }) => {
                     <option value="critical">Vencen en 30 días</option>
                     <option value="warning">Vencen en 30 a 60 días</option>
                     <option value="valid">Vigentes (+60 días)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">EMISION VENCIDOS</label>
+                  <select value={expiredEmissionFilter} onChange={(e) => setExpiredEmissionFilter(e.target.value)} className="w-full px-3 py-2 text-xs text-gray-600 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white">
+                    <option value="all">Todos</option>
+                    <option value="only">Solo emisión mayor a expiración</option>
                   </select>
                 </div>
                 <div>
