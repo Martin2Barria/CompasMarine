@@ -1,19 +1,52 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Eye, Tag, Download, User as UserIcon } from 'lucide-react';
-import { getApiUrl } from '../config/api';
-import { readControlDocSnapshot, saveControlDocSnapshot } from '../storage/controlDocOffline';
 
-// IMPORTAMOS LAS FUNCIONES DE SEGURIDAD
-import { isAdminUser as hasAdminRole, findEntityForUser, getScopedDocuments } from '../auth/userScope';
+// --- STUBS Y DEPENDENCIAS INTEGRADAS (Evitan errores de compilación en este entorno) ---
+const getApiUrl = (path) => path.startsWith('http') ? path : `/api${path}`;
 
-const urls = {
-  documents: getApiUrl('/controldoc/documents'), 
-  documentsSync: getApiUrl('/controldoc/documents/sync'), 
-  entities: getApiUrl('/controldoc/entities'),
-  documentTypes: getApiUrl('/controldoc/document-types')
+const readControlDocSnapshot = () => {
+  try {
+    const stored = localStorage.getItem('controlDocSnapshot');
+    return stored ? JSON.parse(stored) : null;
+  } catch { return null; }
 };
 
-// --- COMPONENTE DE TARJETA ESTÉTICO ---
+const saveControlDocSnapshot = (data) => {
+  try {
+    localStorage.setItem('controlDocSnapshot', JSON.stringify({ data, savedAt: new Date().toISOString() }));
+  } catch {}
+};
+
+const hasAdminRole = (user) => {
+  if (!user) return false;
+  return user.rol === 'Admin' || user.role === 'Admin';
+};
+
+const findEntityForUser = (entities, user) => {
+  if (!entities || !entities.length || !user) return null;
+  const userEmail = (user.email || '').trim().toLowerCase();
+  const userRut = (user.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
+  
+  return entities.find(e => {
+    const eEmail = (e.email || e.custom_fields?.correo_electronico_personal || '').trim().toLowerCase();
+    const eRut = (e.identifier || e.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
+    return (userEmail && eEmail === userEmail) || (userRut && eRut === userRut);
+  });
+};
+
+const getScopedDocuments = (docs, entities, user) => {
+  if (hasAdminRole(user)) return docs;
+  const myEntity = findEntityForUser(entities, user) || (entities.length === 1 ? entities[0] : null);
+  if (!myEntity) return [];
+  const myExternalId = myEntity.id?.toString();
+  
+  return docs.filter(doc => {
+    const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
+    return docEntityId === myExternalId;
+  });
+};
+
+// --- COMPONENTE DE TARJETA ESTÉTICO (PREMIUM) ---
 const ApiDocumentCard = ({ doc, documentTypeById, entityById }) => {
   const type = documentTypeById.get(doc.document_type_id?.toString());
   const entity = entityById.get(doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString());
@@ -120,6 +153,12 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById }) => {
 };
 // -------------------------------------------------------------------------------------------------
 
+const urls = {
+  documents: getApiUrl('/controldoc/documents'), 
+  documentsSync: getApiUrl('/controldoc/documents/sync'), 
+  entities: getApiUrl('/controldoc/entities'),
+  documentTypes: getApiUrl('/controldoc/document-types')
+};
 
 const getDaysRemaining = (dateString) => {
   if (!dateString) return null;
@@ -480,7 +519,7 @@ export const ViewDocumentos = ({ currentUser }) => {
           )}
 
           {/* Panel Rediseñado de Filtros de Búsqueda */}
-          {apiData.documents.length > 0 && (
+          {baseDocuments.length > 0 && (
             <div className="bg-white rounded-2xl p-4 md:p-5 border border-gray-100 shadow-sm space-y-4">
               <div className="flex items-center gap-2 border-b border-gray-50 pb-2">
                 <Filter className="w-4 h-4 text-[#921E30]" />

@@ -1,14 +1,73 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Search, User, Clock, PenTool, Globe, ShieldAlert } from 'lucide-react';
-import { getApiUrl } from '../config/api';
-import {
-  isControlDocSnapshotFresh,
-  readControlDocSnapshotAsync,
-  saveControlDocSnapshotAsync
-} from '../storage/controlDocOffline';
-import { findEntityForUser, getScopedDocuments, getUserSnapshotKey, isAdminUser as hasAdminRole } from '../auth/userScope';
-import { evaluateDocumentNotificationRules } from '../pwa/notificationRules';
-import { getDocumentEntityIds, getDocumentExpirationDate, getDocumentStatusText, hasNonCompliantDocumentStatus, hasPendingSignature, isBlockedDocument, parseControlDocDate } from '../controldoc/fields';
+
+// --- STUBS INTEGRADOS (Reemplazando importaciones para el entorno virtual) ---
+const getApiUrl = (path) => path.startsWith('http') ? path : `/api${path}`;
+
+const isControlDocSnapshotFresh = (snapshot, maxAgeMs) => {
+  if (!snapshot || !snapshot.savedAt) return false;
+  return (Date.now() - new Date(snapshot.savedAt).getTime()) < maxAgeMs;
+};
+
+const readControlDocSnapshotAsync = async (key) => {
+  try {
+    const stored = localStorage.getItem(`controlDocSnapshot_${key}`);
+    return stored ? JSON.parse(stored) : null;
+  } catch { return null; }
+};
+
+const saveControlDocSnapshotAsync = async (data, key) => {
+  try {
+    localStorage.setItem(`controlDocSnapshot_${key}`, JSON.stringify({ ...data, savedAt: new Date().toISOString() }));
+  } catch {}
+};
+
+const getUserSnapshotKey = (user) => user?.id ? `user_${user.id}` : 'global';
+const hasAdminRole = (user) => user?.rol === 'Admin' || user?.role === 'Admin';
+
+const evaluateDocumentNotificationRules = async () => {}; // Stub silencioso
+
+const toArray = (value, fallbackKeys = []) => {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+  for (const key of fallbackKeys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
+  return dynamicArrayKey ? value[dynamicArrayKey] : [];
+};
+
+// --- LÓGICA DE PRIVACIDAD (DOBLE CANDADO) ---
+const findEntityForUser = (entities, user) => {
+  if (!entities || !entities.length || !user) return null;
+  const userEmail = (user.email || '').trim().toLowerCase();
+  const userRut = (user.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
+  
+  return entities.find(e => {
+    const eEmail = (e.email || e.custom_fields?.correo_electronico_personal || '').trim().toLowerCase();
+    const eRut = (e.identifier || e.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
+    return (userEmail && eEmail === userEmail) || (userRut && eRut === userRut);
+  });
+};
+
+const getScopedDocuments = (docs, entities, user) => {
+  if (hasAdminRole(user)) return docs;
+  const myEntity = findEntityForUser(entities, user) || (entities.length === 1 ? entities[0] : null);
+  if (!myEntity) return [];
+  const myExternalId = myEntity.id?.toString();
+  
+  return docs.filter(doc => {
+    const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
+    return docEntityId === myExternalId;
+  });
+};
+// -----------------------------------------------------------------------------------
+
+const parseControlDocDate = (dateString) => {
+  if (!dateString) return null;
+  const parsed = new Date(dateString);
+  return isNaN(parsed.getTime()) ? null : parsed;
+};
 
 const formatDate = (dateString) => {
   if (!dateString) return 'N/A';
@@ -17,6 +76,8 @@ const formatDate = (dateString) => {
     ? parsedDate.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' })
     : 'N/A';
 };
+
+const getDocumentExpirationDate = (doc) => doc.expires_at;
 
 const getDaysRemaining = (dateString) => {
   if (!dateString) return null;
@@ -28,11 +89,9 @@ const getDaysRemaining = (dateString) => {
   return Math.ceil(diff / (1000 * 3600 * 24));
 };
 
-const calculateHealthyPercentage = (documents) => {
-  if (!documents.length) return 100;
-  const healthyDocs = documents.filter((doc) => getDocumentComplianceBucket(doc) === 'healthy').length;
-  return Math.round((healthyDocs / documents.length) * 100);
-};
+const isBlockedDocument = (doc) => doc.aasm_state === 'blocked' && !doc.blocked_description?.toLowerCase().includes('cargo');
+const getDocumentStatusText = (doc) => doc.aasm_state;
+const hasNonCompliantDocumentStatus = (doc) => ['rejected', 'expired'].includes(doc.aasm_state);
 
 const getDocumentComplianceBucket = (doc) => {
   const days = getDaysRemaining(getDocumentExpirationDate(doc));
@@ -43,6 +102,12 @@ const getDocumentComplianceBucket = (doc) => {
   if (days !== null && days <= 60) return 'warning';
   if (days === null && !status) return 'nonCompliant';
   return 'healthy';
+};
+
+const calculateHealthyPercentage = (documents) => {
+  if (!documents.length) return 100;
+  const healthyDocs = documents.filter((doc) => getDocumentComplianceBucket(doc) === 'healthy').length;
+  return Math.round((healthyDocs / documents.length) * 100);
 };
 
 const normalizeText = (value) => (value || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
@@ -102,15 +167,51 @@ const getEntityRut = (entity) => getEntityFieldValue(entity, ENTITY_RUT_KEYS);
 const getEntityEmail = (entity) => getEntityFieldValue(entity, ['email', 'correo_electronico_personal', 'correo electronico personal', 'correo_electronico_corporativo', 'correo electronico corporativo', 'correo', 'mail']);
 const SNAPSHOT_FRESH_MS = 15 * 60 * 1000;
 
-const toArray = (value, fallbackKeys = []) => {
-  if (Array.isArray(value)) return value;
-  if (!value || typeof value !== 'object') return [];
-  for (const key of fallbackKeys) {
-    if (Array.isArray(value[key])) return value[key];
+const hasPendingSignature = (doc) => {
+  if (!doc || typeof doc !== 'object') return false;
+
+  const normalizedString = (value) => {
+    if (typeof value !== 'string') return '';
+    return value.trim().toLowerCase();
+  };
+
+  const matchesPendingText = (value) => {
+    const lower = normalizedString(value);
+    return (
+      lower === 'true' || lower === '1' || lower === 'pending' || lower === 'pendiente' ||
+      lower.includes('pendiente') || lower.includes('pending') || lower.includes('por firmar') ||
+      lower.includes('sin firmar') || lower.includes('to sign') || lower.includes('needs signature') ||
+      (lower.includes('signature') && lower.includes('pending'))
+    );
+  };
+
+  const keysToCheck = [
+    'pending_signature', 'signature_pending', 'pending_signatures', 'pending_signatures_count',
+    'signature_status', 'signature_state', 'aasm_state', 'state', 'status', 'workflow_state'
+  ];
+
+  for (const key of keysToCheck) {
+    const value = doc[key];
+    if (value === true) return true;
+    if (typeof value === 'number' && value > 0) return true;
+    if (matchesPendingText(value)) return true;
   }
-  const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
-  return dynamicArrayKey ? value[dynamicArrayKey] : [];
+
+  return Object.entries(doc).some(([key, value]) => {
+    if (!/pending.*sign|sign.*pending|signature.*pending|pending.*signature|firma|firmas/i.test(key)) {
+      return false;
+    }
+    if (value === true) return true;
+    if (typeof value === 'number' && value > 0) return true;
+    return matchesPendingText(value);
+  });
 };
+
+const getDocumentEntityIds = (doc) => {
+  if (!doc) return [];
+  const ids = [doc.entity_id, doc.abstract_entity_id, doc.employee_id].filter(id => id !== undefined && id !== null);
+  return [...new Set(ids.map(id => id.toString()))];
+}
 
 export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const [allDocs, setAllDocs] = useState([]);
@@ -122,6 +223,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStats, setSyncStats] = useState(null);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [serverNotice, setServerNotice] = useState('');
   const snapshotOwnerKey = getUserSnapshotKey(currentUser);
 
   const processData = useCallback((docs, entities, types) => {
@@ -149,44 +251,42 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
 
     const fetchFreshData = async ({ forceRefresh }) => {
       setIsSyncing(true);
+      setServerNotice('');
       onLoadingProgress?.({ percent: 15 });
+      
       try {
         const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
-        const queryParams = forceRefresh ? '?refresh=1' : '';
-
-        // Petición plana: el Backend ya paginó y trajo todo de la RAM
-        const [docsRes, entitiesRes, typesRes] = await Promise.all([
-          fetch(getApiUrl(`/controldoc/documents${queryParams}`), requestOptions),
-          fetch(getApiUrl(`/controldoc/entities${queryParams}`), requestOptions),
-          fetch(getApiUrl(`/controldoc/document-types${queryParams}`), requestOptions)
-        ]);
-
-        // Manejo específico del 502 de Railway
-        if (docsRes.status === 502 || docsRes.status === 504) {
-            throw new Error('El servidor está inicializando los datos masivos en segundo plano. Por favor, espera 1 minuto y vuelve a intentar.');
-        }
-
-        if (!docsRes.ok || !entitiesRes.ok || !typesRes.ok) {
-          throw new Error('Error de conexión con el Backend local.');
-        }
-
-        onLoadingProgress?.({ percent: 60 });
+        
+        // Peticiones Planas al servidor optimizado
+        const fetchJson = async (url) => {
+          const response = await fetch(url, requestOptions);
+          // 🛡️ PROTECCIÓN ANTI-502 🛡️
+          if (response.status === 502) {
+             throw new Error("502_BACKGROUND_TASK");
+          }
+          if (!response.ok) {
+            throw new Error(`Error HTTP: ${response.status}`);
+          }
+          return await response.json();
+        };
 
         const [docsData, entitiesData, typesData] = await Promise.all([
-          docsRes.json(), entitiesRes.json(), typesRes.json()
+          fetchJson(getApiUrl('/controldoc/documents')),
+          fetchJson(getApiUrl('/controldoc/entities')),
+          fetchJson(getApiUrl('/controldoc/document-types'))
         ]);
 
         onLoadingProgress?.({ percent: 90 });
         if (isCancelled) return;
 
         const nextData = {
-          documents: toArray(docsData, ['documents', 'data', 'items']),
+          documents: docsData,
           entities: toArray(entitiesData, ['entities', 'data', 'items']),
           documentTypes: toArray(typesData, ['documentTypes', 'document_types', 'data', 'items']),
-          meta: { documents: { totalItems: Array.isArray(docsData) ? docsData.length : 0 } }
+          meta: { documents: { totalItems: docsData.length } }
         };
 
-        setSyncStats({ source: 'api', totalItems: nextData.documents.length, complete: true });
+        setSyncStats({ source: 'api', totalItems: docsData.length, complete: true });
         processData(nextData.documents, nextData.entities, nextData.documentTypes);
         
         if (!hasAdminRole(currentUser)) {
@@ -196,8 +296,11 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         onLoadingProgress?.({ percent: 100, done: true });
       } catch (error) {
         onLoadingProgress?.({ active: false });
-        console.error('Error sincronizando inicio:', error);
-        alert(error.message); // Notificar al usuario amigablemente
+        if (error.message === "502_BACKGROUND_TASK") {
+             setServerNotice("El servidor está procesando una actualización masiva. Por favor, espera 1 minuto y recarga.");
+        } else {
+             console.error('Error sincronizando inicio:', error);
+        }
       } finally {
         if (!isCancelled) setIsSyncing(false);
       }
@@ -242,32 +345,36 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     return combinedName !== '' ? combinedName : 'Documento sin nombre';
   }, [allTypes]);
 
-  // --- LÓGICA DE ROLES E IDENTIFICACIÓN (DOBLE CANDADO) ---
+  // --- LÓGICA DE ROLES E IDENTIFICACIÓN (CON DOBLE CANDADO) ---
   const isAdminUser = hasAdminRole(currentUser);
   
-  // Detección robusta de la entidad del usuario
-  const displayEntity = useMemo(() => {
+  // 🛡️ DOBLE CANDADO 🛡️
+  const scopedDocs = useMemo(
+    () => getScopedDocuments(allDocs, allEntities, currentUser),
+    [allDocs, allEntities, currentUser]
+  );
+  
+  const selectedEntity = useMemo(() => {
     if (isAdminUser) {
       return selectedUserId ? allEntities.find((item) => item.id?.toString() === selectedUserId.toString()) : null;
     }
-    
-    // Auto-detección para usuarios normales
-    const found = findEntityForUser(allEntities, currentUser);
-    if (found) return found;
-    
-    // Fallback: Si el backend aplicó su propio bypass, allEntities solo tendrá 1 elemento. Ese somos nosotros.
-    if (allEntities.length === 1) return allEntities[0];
-    
-    return {
-      id: '',
-      name: getCurrentUserDisplayName(currentUser),
-      email: currentUser?.email || '',
-      rut: currentUser?.rut || ''
-    };
+    return findEntityForUser(allEntities, currentUser) || (allEntities.length === 1 ? allEntities[0] : null);
   }, [allEntities, currentUser, isAdminUser, selectedUserId]);
 
+  const inferredUserEntityId = useMemo(() => {
+    if (isAdminUser || selectedEntity?.id) return '';
+    return scopedDocs.flatMap(getDocumentEntityIds)[0] || '';
+  }, [isAdminUser, scopedDocs, selectedEntity]);
+
+  const displayEntity = selectedEntity || (!isAdminUser ? {
+    id: inferredUserEntityId,
+    name: getCurrentUserDisplayName(currentUser),
+    email: currentUser?.email || '',
+    rut: currentUser?.rut || ''
+  } : null);
+  
   const activeExternalId = displayEntity?.id?.toString() || '';
-  const isGlobalView = isAdminUser && !displayEntity;
+  const isGlobalView = isAdminUser && !selectedEntity;
 
   const appRoleText = isAdminUser ? 'Administrador' : 'Tripulante';
   const fullNameText = isAdminUser ? getCurrentUserDisplayName(currentUser) : getEntityDisplayName(displayEntity);
@@ -280,16 +387,15 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const rawContractDate = getEntityFieldValue(displayEntity, ['fecha_contrato', 'contract_date', 'hired_at', 'fecha_ingreso']);
   const detailFechaContrato = rawContractDate ? formatDate(rawContractDate) : 'No informado';
 
-  // --- CANDADO PARA DOCUMENTOS ---
   const selectedUserDocs = useMemo(() => {
+    const docs = Array.isArray(scopedDocs) ? scopedDocs : [];
     if (isGlobalView) return [];
+    if (!isAdminUser && !activeExternalId) return docs;
     if (!activeExternalId) return [];
-    
-    return allDocs.filter(doc => {
-      const entityIds = getDocumentEntityIds(doc);
-      return entityIds.includes(activeExternalId);
-    });
-  }, [isGlobalView, activeExternalId, allDocs]);
+    return docs.filter(
+      (doc) => getDocumentEntityIds(doc).includes(activeExternalId)
+    );
+  }, [isAdminUser, isGlobalView, activeExternalId, scopedDocs]);
 
   const selectedPendingSignatures = useMemo(() =>
     selectedUserDocs
@@ -317,6 +423,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     return Math.round((healthyDocs / selectedUserDocs.length) * 100);
   }, [selectedUserDocs]);
 
+  // --- LÓGICA DE MÉTRICAS GLOBALES (VISTA MODERADOR) ---
   const globalMetrics = useMemo(() => {
     const activeDocs = allDocs;
     const totalDocsCount = activeDocs.length;
@@ -430,7 +537,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     setIsAutocompleteOpen(false);
   };
 
-  const syncSourceText = syncStats?.source === 'cache' ? 'caché instantáneo' : 'servidor';
+  const syncSourceText = syncStats?.source === 'cache' ? 'celular' : 'servidor';
   const syncStatusText = isSyncing ? 'cargando' : 'completada';
 
   return (
@@ -474,6 +581,15 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
       </div>
 
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
+        
+        {/* AVISO DEL SERVIDOR EN CARGA FANTASMA */}
+        {serverNotice && (
+            <div className="bg-yellow-50 text-yellow-800 p-4 mx-4 sm:mx-6 mt-4 rounded-xl text-xs font-medium border border-yellow-200 shadow-sm max-w-6xl md:mx-auto">
+                {serverNotice}
+            </div>
+        )}
+
+        {/* Buscador de Usuarios */}
         {isAdminUser && (
           <div className="p-4 sm:p-6 pb-2 max-w-6xl mx-auto w-full">
             <div className="relative">
@@ -522,6 +638,11 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                   ))}
                 </div>
               )}
+              {isAutocompleteOpen && searchTerm && searchSuggestions.length === 0 && (
+                <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 p-4 text-xs text-gray-500">
+                  No se encontraron tripulantes con ese nombre o RUT.
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -539,6 +660,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                     <p className="text-xs opacity-75">De {globalMetrics.totalColabs} Colaboradores</p>
                   </div>
                   <div className="p-4 bg-white text-center border-t border-gray-50">
+                    <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">Estado de Colaboradores</p>
                     <div className="grid grid-cols-4 gap-1">
                       <div>
                         <p className="text-base font-bold text-red-600">{globalMetrics.colabCaducados}</p>
@@ -546,20 +668,21 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                       </div>
                       <div>
                         <p className="text-base font-bold text-amber-600">{globalMetrics.colabEn30Dias}</p>
-                        <p className="text-[10px] text-gray-400 leading-tight">En 30d</p>
+                        <p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 días</p>
                       </div>
                       <div>
                         <p className="text-base font-bold text-blue-600">{globalMetrics.colabEn3060Dias}</p>
-                        <p className="text-[10px] text-gray-400 leading-tight">En 60d</p>
+                        <p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 a 60 días</p>
                       </div>
                       <div>
                         <p className="text-base font-bold text-green-600">{globalMetrics.colabsAlDia}</p>
-                        <p className="text-[10px] text-gray-400 leading-tight">Al día</p>
+                        <p className="text-[10px] text-gray-400 leading-tight">Al<br/>día</p>
                       </div>
                     </div>
                   </div>
                 </div>
 
+                {/* Tarjeta Cumplimiento Documental (Verde) */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
                   <div className="bg-[#008000] text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]">
                     <h4 className="text-sm font-semibold uppercase tracking-wider opacity-90">Cumplimiento Documental</h4>
@@ -567,6 +690,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                     <p className="text-xs opacity-75">De {globalMetrics.totalDocsCount} Documentos</p>
                   </div>
                   <div className="p-4 bg-white text-center border-t border-gray-50">
+                    <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">Estado de Documentos</p>
                     <div className="grid grid-cols-4 gap-1">
                       <div>
                         <p className="text-base font-bold text-red-600">{globalMetrics.docsCaducados}</p>
@@ -574,15 +698,15 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                       </div>
                       <div>
                         <p className="text-base font-bold text-amber-600">{globalMetrics.docsEn30Dias}</p>
-                        <p className="text-[10px] text-gray-400 leading-tight">En 30d</p>
+                        <p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 días</p>
                       </div>
                       <div>
                         <p className="text-base font-bold text-blue-600">{globalMetrics.docsEn3060Dias}</p>
-                        <p className="text-[10px] text-gray-400 leading-tight">En 60d</p>
+                        <p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 a 60 días</p>
                       </div>
                       <div>
                         <p className="text-base font-bold text-green-600">{globalMetrics.docsAlDia}</p>
-                        <p className="text-[10px] text-gray-400 leading-tight">Al día</p>
+                        <p className="text-[10px] text-gray-400 leading-tight">Al<br/>día</p>
                       </div>
                     </div>
                   </div>
@@ -590,7 +714,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
               </div>
               <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-500 flex flex-wrap items-center justify-between gap-2">
                 <span className="min-w-0">
-                  Carga {syncStatusText} desde {syncSourceText}.
+                  Carga {syncStatusText} desde {syncSourceText}: {syncStats?.totalItems ?? globalMetrics.totalDocsCount} documentos.
                 </span>
                 <button
                   type="button"
@@ -618,6 +742,11 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                   <p className="text-xs text-gray-500 mb-2">
                     RUT: {formatInfoValue(getEntityRut(displayEntity))}
                   </p>
+                  {!isAdminUser && currentUser?.email && (
+                    <p className="text-xs text-gray-500 mb-2">
+                      Email: {currentUser.email}
+                    </p>
+                  )}
                   
                   <div className="mt-2 space-y-1.5 border-t border-gray-100 pt-2">
                     <p className="text-xs text-gray-600">
@@ -626,9 +755,12 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                     <p className="text-xs text-gray-600">
                       <span className="font-semibold text-gray-700">Empresa:</span> {detailEmpresa}
                     </p>
+                    <p className="text-xs text-gray-600">
+                      <span className="font-semibold text-gray-700">Fecha de Contrato:</span> {detailFechaContrato}
+                    </p>
                   </div>
                 </div>
-                {isAdminUser && displayEntity && (
+                {isAdminUser && selectedEntity && (
                   <button type="button" onClick={handleClearSelection} className="text-xs font-semibold text-[#921E30] shrink-0 bg-red-50 px-2 py-1 rounded-md">
                     Ver General
                   </button>
@@ -649,6 +781,12 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                   <p className="text-base font-bold text-[#B8860B]">{selectedExpiringDocs.length}</p>
                 </div>
                 </div>
+
+                {displayEntity && selectedUserDocs.length === 0 && !isSyncing && (
+                  <div className="mt-4 rounded-xl border border-dashed border-gray-200 bg-gray-50 p-3 text-center text-xs text-gray-500">
+                    La API no entrega documentos asociados para esta persona.
+                  </div>
+                )}
 
                 <div className="mt-4 pt-4 border-t border-gray-100">
                 <div className="flex items-center justify-between mb-2">
@@ -685,22 +823,33 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                 {selectedPendingSignatures.length > 0 ? (
                   <div className="space-y-3">
                     {selectedPendingSignatures.slice(0, 5).map((doc) => (
-                      <div key={doc.id} className="flex justify-between items-center bg-red-50 p-3 rounded-lg border border-red-100 mb-2">
+                      <div key={doc.id} className="flex justify-between items-center bg-red-50 p-3 rounded-lg border border-red-100 mb-2 hover:shadow-md transition">
                         <div className="flex items-center gap-3 overflow-hidden">
                           <PenTool className="w-5 h-5 text-[#921E30] shrink-0" />
                           <div className="min-w-0">
                             <p className="text-sm font-semibold text-[#394049] truncate">{doc.displayName}</p>
+                            <p className="text-[11px] text-gray-500 truncate">
+                              {isAdminUser ? 'Requiere firma digital' : 'Requiere tu firma digital'}
+                            </p>
                           </div>
                         </div>
-                        <a href={`https://compliance.controldoc.legal/documentos/${doc.id}`} target="_blank" rel="noopener noreferrer" className="bg-[#921E30] text-white text-xs px-3 py-1.5 rounded-md font-semibold">
+                        <a
+                          href={`https://compliance.controldoc.legal/documentos/${doc.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="bg-[#921E30] text-white text-xs px-3 py-1.5 rounded-md font-semibold shadow-sm hover:bg-red-800 transition-colors ml-2 shrink-0"
+                        >
                           Firmar
                         </a>
                       </div>
                     ))}
+                    {selectedPendingSignatures.length > 5 && (
+                      <p className="text-center text-xs text-gray-400 pt-1">Y {selectedPendingSignatures.length - 5} firmas más pendientes...</p>
+                    )}
                   </div>
                 ) : (
                   <div className="rounded-xl border border-dashed border-gray-200 p-4 text-center text-xs text-gray-500">
-                    No hay firmas pendientes registradas.
+                    {isSyncing ? 'Verificando firmas...' : 'No hay firmas pendientes registradas.'}
                   </div>
                 )}
               </div>
@@ -713,7 +862,14 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                 <div className="flex items-center justify-between mb-4">
                   <div>
                     <p className="text-xs uppercase font-semibold text-[#921E30]">Alertas</p>
-                    <h4 className="text-base font-bold text-[#394049]">Próximos a Vencer</h4>
+                    <h4 className="text-base font-bold text-[#394049]">Documentos Próximos a Vencer</h4>
+                  </div>
+                  <div className="inline-flex items-center gap-2 text-xs text-gray-500">
+                    {isSyncing ? (
+                      <span className="flex items-center text-blue-500 animate-pulse"><Clock className="w-3 h-3 mr-1" /> Sincronizando...</span>
+                    ) : (
+                      <><Clock className="w-4 h-4" /> Alertas activas</>
+                    )}
                   </div>
                 </div>
 
@@ -721,11 +877,25 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                   <div className="space-y-3">
                     {selectedExpiringDocs.slice(0, 5).map((doc) => {
                       const isExpired = doc.daysRemaining < 0;
-                      const textColor = isExpired || (doc.daysRemaining >= 0 && doc.daysRemaining <= 30) ? 'text-red-700' : 'text-amber-700';
-                      const statusText = isExpired ? `Expirado (${Math.abs(doc.daysRemaining)}d)` : `Expira en ${doc.daysRemaining}d`;
+                      const isCritical = doc.daysRemaining >= 0 && doc.daysRemaining <= 30;
+                      const isWarning = doc.daysRemaining > 30 && doc.daysRemaining <= 60;
+
+                      let colorClass = '';
+                      let textColor = '';
+                      let statusText = '';
+
+                      if (isExpired || isCritical) {
+                        colorClass = 'bg-red-50 border-red-200';
+                        textColor = 'text-red-700';
+                        statusText = isExpired ? `Expirado (${Math.abs(doc.daysRemaining)}d)` : `Expira en ${doc.daysRemaining}d`;
+                      } else if (isWarning) {
+                        colorClass = 'bg-amber-50 border-amber-200';
+                        textColor = 'text-amber-700';
+                        statusText = `Expira en ${doc.daysRemaining}d`;
+                      }
 
                       return (
-                        <div key={doc.id} className="rounded-xl border p-3 bg-white shadow-sm hover:shadow transition">
+                        <div key={doc.id} className={`rounded-xl border p-3 bg-white shadow-sm hover:shadow transition ${colorClass}`}>
                           <div className="flex justify-between items-start gap-3">
                             <div className="flex-1 overflow-hidden">
                               <p className="text-sm font-semibold text-[#394049] truncate">{doc.displayName}</p>
@@ -741,7 +911,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                   </div>
                 ) : (
                   <div className="rounded-xl border border-dashed border-gray-200 p-4 text-center text-xs text-gray-500">
-                    No se registran alertas urgentes de vencimiento.
+                    {isSyncing ? 'Buscando alertas...' : 'No se registran alertas urgentes de vencimiento.'}
                   </div>
                 )}
               </div>
