@@ -22,21 +22,21 @@ export function resolveControlDocCredentials(req) {
     email: process.env.CONTROLDOC_USER_EMAIL || process.env.API_USER_EMAIL,
     token: process.env.CONTROLDOC_USER_TOKEN || process.env.API_USER_TOKEN,
     customerId: process.env.CONTROLDOC_CUSTOMER_ID || process.env.API_CUSTOMER_ID,
-    entityTypeId: process.env.CONTROLDOC_ENTITY_TYPE_ID || '467',
+    entityTypeId: process.env.CONTROLDOC_ENTITY_TYPE_ID || '467, 468, 469',
     authorization: process.env.CONTROLDOC_AUTHORIZATION
   }, globalEntityTypes);
 }
 
 function normalizeCredentialProfile(profile, globalEntityTypes) {
-  // 2. MAGIA: Si globalEntityTypes existe (467, 468, 469), pisa y destruye lo que diga el JSON
-  const rawEntityTypes = globalEntityTypes || profile.entityTypeIds || profile.entityTypeId || profile.entity_type_id || '467';
+  // 2. MAGIA: Modificamos el fallback por defecto aquí también
+  const rawEntityTypes = globalEntityTypes || profile.entityTypeIds || profile.entityTypeId || profile.entity_type_id || '467, 468, 469';
   const entityTypeIds = String(rawEntityTypes).split(',').map(id => id.trim()).filter(Boolean);
 
   return {
     email: profile.email || profile.userEmail || '',
     token: profile.token || profile.userToken || '',
     customerId: profile.customerId || profile.customer_id || process.env.CONTROLDOC_CUSTOMER_ID || '',
-    entityTypeIds: entityTypeIds.length > 0 ? entityTypeIds : ['467'],
+    entityTypeIds: entityTypeIds.length > 0 ? entityTypeIds : ['467', '468', '469'],
     authorization: profile.authorization || process.env.CONTROLDOC_AUTHORIZATION || ''
   };
 }
