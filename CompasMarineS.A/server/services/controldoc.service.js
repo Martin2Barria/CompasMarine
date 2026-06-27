@@ -119,12 +119,15 @@ export async function handleSyncUsersToDB(req, res) {
       let emailRaw = entity.custom_fields?.correo_electronico_personal || entity.custom_fields?.correo_electronico_corporativo || entity.email || '';
       const email = emailRaw ? emailRaw.trim().toLowerCase() : null;
       const jsonString = JSON.stringify(entity);
+      
+      // Asignamos el ID de entidad que le corresponda
+      const entityTypeToSave = entity.entity_type_id || credentials.entityTypeIds[0];
 
       await dbPool.execute(`
         INSERT INTO entidades_api (external_id, identifier, nombre, sexo, rut, email, telefono, customer_id, entity_type_id, data_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE identifier=VALUES(identifier), nombre=VALUES(nombre), sexo=VALUES(sexo), rut=VALUES(rut), email=VALUES(email), telefono=VALUES(telefono), data_json=VALUES(data_json), sincronizado_en=CURRENT_TIMESTAMP
-      `, [external_id, identifier, nombre, sexo, rut, email, telefono, credentials.customerId, credentials.entityTypeId, jsonString]);
+      `, [external_id, identifier, nombre, sexo, rut, email, telefono, credentials.customerId, entityTypeToSave, jsonString]);
       insertados++;
     }
     sendJson(res, 200, { ok: true, message: `Sincronizados ${insertados} usuarios.` });
