@@ -9,7 +9,6 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
   const entityName = entity?.full_name || entity?.name || entity?.label || entity?.email || docEntityId || 'Sin Nombre';
   const typeName = docType?.name || docType?.label || docType?.id || doc.document_type_id || 'Documento';
 
-  // bgClass ahora incluye también el color y grosor del borde (border-2) para el efecto "pill"
   let status = { label: 'Sin Fecha', bgClass: 'bg-gray-100 text-gray-600 border-2 border-gray-200' };
   const expirationDateValue = getDocumentExpirationDate(doc);
 
@@ -97,8 +96,8 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
 
         {/* Acciones adaptables a Mobile */}
         <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center w-full">
-          {/* Badge tipo "pill": rounded-full + border-2 para que coincida con el diseño de referencia */}
-          <div className={`text-xs font-extrabold text-center px-5 py-2.5 rounded-full border sm:inline-block flex-1 sm:flex-initial ${status.bgClass}`}>
+          {/* CORRECCIÓN AQUÍ: Badge tipo "pill" con whitespace-nowrap y px adecuado para asegurar forma de pastilla alargada */}
+          <div className={`text-xs font-extrabold text-center px-4 py-1.5 rounded-full border whitespace-nowrap sm:inline-block flex-1 sm:flex-initial ${status.bgClass}`}>
             {status.label}
           </div>
           {doc.download_base64_url && (
