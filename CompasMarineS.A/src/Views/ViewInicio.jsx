@@ -427,45 +427,47 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
       {/* CABECERA */}
-      <div className="bg-[#394049] p-6 flex flex-row items-center justify-between relative overflow-hidden flex-shrink-0 text-left shadow-lg">
+      <div className="bg-[#394049] p-4 sm:p-6 md:px-10 relative overflow-hidden flex-shrink-0 text-left shadow-lg">
         <div className="absolute -right-10 -top-10 w-40 h-40 bg-white opacity-5 blur-2xl pointer-events-none"></div>
-        
-        <div className="flex items-center gap-4 relative z-10">
-          <div className="w-16 h-16 rounded-full bg-white border-2 border-[#921E30] flex-shrink-0 flex items-center justify-center shadow-lg overflow-hidden">
-            {isAdminUser ? <Globe className="w-8 h-8 text-gray-400" /> : <User className="w-8 h-8 text-gray-400" />}
-          </div>
-          <div className="flex flex-col gap-0.5">
-            <span className="text-white text-xs font-bold tracking-wider uppercase opacity-75">
-              Bienvenido
-            </span>
-            <span className="text-xs font-bold text-[#e1575f] tracking-wide uppercase">
-              {appRoleText} (ROL)
-            </span>
-            <h2 className="text-white text-xl font-bold tracking-wide leading-tight">
-              {fullNameText}
-            </h2>
-            <span className="text-gray-300 text-xs italic font-light">
-              {cargoHeader}
-            </span>
-          </div>
-        </div>
 
-        {isAdminUser && (
-          <button 
-            onClick={() => setView('admin')}
-            className="relative z-10 bg-white/10 hover:bg-white/20 text-white p-2 rounded-xl border border-white/20 backdrop-blur-sm transition-all shadow-sm flex flex-col items-center justify-center shrink-0 cursor-pointer"
-            title="Panel de Administración"
-          >
-            <ShieldAlert className="w-5 h-5 mb-0.5" />
-            <span className="text-[9px] font-bold uppercase tracking-wider">Admin</span>
-          </button>
-        )}
+        <div className="mx-auto w-full max-w-6xl flex flex-row flex-wrap sm:flex-nowrap items-center justify-between gap-4 relative z-10">
+          <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+            <div className="w-14 h-14 sm:w-16 sm:h-16 md:w-20 md:h-20 rounded-full bg-white border-2 border-[#921E30] flex-shrink-0 flex items-center justify-center shadow-lg overflow-hidden">
+              {isAdminUser ? <Globe className="w-7 h-7 sm:w-8 sm:h-8 md:w-10 md:h-10 text-gray-400" /> : <User className="w-7 h-7 sm:w-8 sm:h-8 md:w-10 md:h-10 text-gray-400" />}
+            </div>
+            <div className="flex flex-col gap-0.5 min-w-0">
+              <span className="text-white text-xs font-bold tracking-wider uppercase opacity-75">
+                Bienvenido
+              </span>
+              <span className="text-xs font-bold text-[#e1575f] tracking-wide uppercase">
+                {appRoleText} (ROL)
+              </span>
+              <h2 className="text-white text-lg sm:text-xl md:text-2xl font-bold tracking-wide leading-tight truncate">
+                {fullNameText}
+              </h2>
+              <span className="text-gray-300 text-xs italic font-light truncate">
+                {cargoHeader}
+              </span>
+            </div>
+          </div>
+
+          {isAdminUser && (
+            <button
+              onClick={() => setView('admin')}
+              className="relative z-10 bg-white/10 hover:bg-white/20 text-white p-2 rounded-xl border border-white/20 backdrop-blur-sm transition-all shadow-sm flex flex-col items-center justify-center shrink-0 cursor-pointer"
+              title="Panel de Administración"
+            >
+              <ShieldAlert className="w-5 h-5 mb-0.5" />
+              <span className="text-[9px] font-bold uppercase tracking-wider">Admin</span>
+            </button>
+          )}
+        </div>
       </div>
 
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
         {/* Buscador de Usuarios */}
         {isAdminUser && (
-          <div className="p-6 pb-2">
+          <div className="p-4 sm:p-6 pb-2 max-w-6xl mx-auto w-full">
             <div className="relative">
                 <div className="relative bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
                   <Search className="w-5 h-5 absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400" />
@@ -522,10 +524,10 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         )}
 
         {/* Sección de Perfil o Panel Resumen Combinado */}
-        <div className="px-6 pb-4 pt-2">
+        <div className="px-4 sm:px-6 pb-4 pt-2 max-w-6xl mx-auto w-full">
           {isGlobalView ? (
             <div className="space-y-3 mt-2">
-              <div className="grid grid-cols-1 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Tarjeta Cumplimiento Colaboradores (Naranja) */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
                   <div className="bg-[#f96302] text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]">
@@ -586,7 +588,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                   </div>
                 </div>
               </div>
-              <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-500 flex items-center justify-between gap-2">
+              <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-500 flex flex-wrap items-center justify-between gap-2">
                 <span className="min-w-0">
                   Carga {syncStatusText} desde {syncSourceText}: {syncStats?.totalItems ?? globalMetrics.totalDocsCount} documentos.
                 </span>
@@ -606,7 +608,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
             </div>
           ) : (
             /* Vista de Detalle de un Colaborador Específico */
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 md:p-6">
               <div className="flex items-start justify-between gap-2 mb-4">
                 <div>
                   <p className="text-xs uppercase font-semibold text-[#921E30]">
@@ -682,16 +684,17 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         </div>
 
         {!isGlobalView && (
-          <>
+          <div className="px-4 sm:px-6 max-w-6xl mx-auto w-full lg:grid lg:grid-cols-2 lg:gap-6 lg:items-start">
+            <div className="mb-4 mt-2 lg:mb-0 lg:mt-0">
             {/* Listado de Firmas Pendientes */}
-            <div className="px-6 pt-2 pb-2 flex justify-between items-end">
+            <div className="pt-2 pb-2 flex justify-between items-end">
               <h3 className="font-bold text-[#394049] text-base border-b-2 border-[#921E30] pb-0.5">
                 {isAdminUser ? 'Firmas Pendientes' : 'Mis Firmas Pendientes'}
               </h3>
               <button onClick={() => setView('firmas')} className="text-xs font-semibold text-[#921E30]">Ver todas</button>
             </div>
 
-            <div className="px-6 mb-4 mt-2">
+            <div className="mt-2">
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
                 {selectedPendingSignatures.length > 0 ? (
                   <div className="space-y-3">
@@ -727,9 +730,10 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                 )}
               </div>
             </div>
+            </div>
 
             {/* Listado de Alertas / Documentos por Vencer */}
-            <div className="px-6 mb-6">
+            <div className="mb-6 lg:mb-0">
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
                 <div className="flex items-center justify-between mb-4">
                   <div>
@@ -788,7 +792,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                 )}
               </div>
             </div>
-          </>
+          </div>
         )}
       </main>
     </div>
