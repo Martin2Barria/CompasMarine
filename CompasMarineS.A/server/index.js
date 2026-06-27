@@ -127,13 +127,17 @@ function resolveControlDocCredentials(req) {
   const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
 
   // MAGIA: Leer todos los IDs, separarlos por coma y limpiarlos
+   // MAGIA: Leer todos los IDs, separarlos por coma y limpiarlos
   const rawEntityTypes = process.env.API_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_ID || '467';
   const entityTypeIds = String(rawEntityTypes).split(',').map(id => id.trim()).filter(Boolean);
 
   if (byUser && typeof byUser === 'object') {
     const profile = byUser[requestedUserId] || byUser[process.env.CONTROLDOC_DEFAULT_USER_ID] || Object.values(byUser)[0];
     if (profile) {
-       const profileRawTypes = profile.entityTypeIds || profile.entity_type_ids || profile.entityTypeId || rawEntityTypes;
+       // CORRECCIÓN: Obligamos a que la variable de Railway pise al JSON si existe
+       const explicitGlobalEntityTypes = process.env.API_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_IDS;
+       const profileRawTypes = explicitGlobalEntityTypes || profile.entityTypeIds || profile.entity_type_ids || profile.entityTypeId || rawEntityTypes;
+       
        const profileTypeIds = String(profileRawTypes).split(',').map(id => id.trim()).filter(Boolean);
        return {
          email: profile.email || profile.userEmail || '',
@@ -144,7 +148,6 @@ function resolveControlDocCredentials(req) {
        };
     }
   }
-
   return {
     email: process.env.CONTROLDOC_USER_EMAIL || process.env.API_USER_EMAIL || '',
     token: process.env.CONTROLDOC_USER_TOKEN || process.env.API_USER_TOKEN || '',
