@@ -124,11 +124,11 @@ function extractControlDocItems(json) {
 function resolveControlDocCredentials(req) {
   const byUser = parseJsonEnv('CONTROLDOC_USER_CREDENTIALS_JSON');
   const cookieUserId = req ? getCookie(req, 'compas_user_id') : null;
-  const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
+const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
 
   // MAGIA: Leer todos los IDs, separarlos por coma y limpiarlos
-   // MAGIA: Leer todos los IDs, separarlos por coma y limpiarlos
-  const rawEntityTypes = process.env.API_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_ID || '467';
+  // ¡Cambiamos el valor por defecto de '467' a la lista completa!
+  const rawEntityTypes = process.env.API_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_ID || '467, 468, 469';
   const entityTypeIds = String(rawEntityTypes).split(',').map(id => id.trim()).filter(Boolean);
 
   if (byUser && typeof byUser === 'object') {
@@ -143,19 +143,22 @@ function resolveControlDocCredentials(req) {
          email: profile.email || profile.userEmail || '',
          token: profile.token || profile.userToken || '',
          customerId: profile.customerId || profile.customer_id || process.env.API_CUSTOMER_ID || process.env.CONTROLDOC_CUSTOMER_ID || '',
-         entityTypeIds: profileTypeIds.length > 0 ? profileTypeIds : ['467'],
+         entityTypeIds: profileTypeIds.length > 0 ? profileTypeIds : ['467', '468', '469'],
          authorization: profile.authorization || process.env.CONTROLDOC_AUTHORIZATION || ''
        };
     }
   }
+
   return {
     email: process.env.CONTROLDOC_USER_EMAIL || process.env.API_USER_EMAIL || '',
     token: process.env.CONTROLDOC_USER_TOKEN || process.env.API_USER_TOKEN || '',
-    customerId: process.env.API_CUSTOMER_ID || process.env.CONTROLDOC_CUSTOMER_ID || '',
-    entityTypeIds: entityTypeIds.length > 0 ? entityTypeIds : ['467'],
+    customerId: process.env.CONTROLDOC_CUSTOMER_ID || process.env.API_CUSTOMER_ID || '',
+    entityTypeIds: entityTypeIds.length > 0 ? entityTypeIds : ['467', '468', '469'],
     authorization: process.env.CONTROLDOC_AUTHORIZATION || ''
   };
 }
+
+
 
 async function fetchWithRetry(url, headers, maxRetries = 6) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
