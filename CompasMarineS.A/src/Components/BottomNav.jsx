@@ -8,8 +8,9 @@ export const BottomNav = ({ currentView, setCurrentView }) => {
   ];
 
   return (
-    // el nav className se encarga del tamaño de el nav' 
-    <nav className="bg-white pt-4 pb-5 flex justify-between items-center fixed bottom-0 w-[inherit] max-w-[inherit] rounded-t-[28px] shadow-[0_-8px_30px_rgba(0,0,0,0.06)] z-50 px-6 border-t border-gray-100">
+    // CORRECCIÓN: Se cambió fixed con "w-[inherit]" por un layout fijo con "left-0 right-0 w-full"
+    // y "justify-around" para separar proporcionalmente las opciones en PC y móvil.
+    <nav className="bg-white pt-4 pb-5 flex justify-around items-center fixed bottom-0 left-0 right-0 w-full rounded-t-[28px] shadow-[0_-8px_30px_rgba(0,0,0,0.06)] z-50 px-6 md:px-32 border-t border-gray-100">
       {navItems.map(({ id, icon: Icon, label }) => {
         const isActive = currentView === id;
         return (
