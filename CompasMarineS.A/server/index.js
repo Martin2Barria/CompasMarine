@@ -120,34 +120,35 @@ function extractControlDocItems(json) {
   return Object.values(json).find((value) => Array.isArray(value)) || [];
 }
 
-// --- LÓGICA DE CONTROLDOC ---
+// --- LÓGICA DE CONTROLDOC MULTI-EMPRESA ---
 function resolveControlDocCredentials(req) {
   const byUser = parseJsonEnv('CONTROLDOC_USER_CREDENTIALS_JSON');
   const cookieUserId = req ? getCookie(req, 'compas_user_id') : null;
   const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
 
-  const rawCustomerIds = process.env.CONTROLDOC_CUSTOMER_IDS || process.env.API_CUSTOMER_IDS || process.env.CONTROLDOC_CUSTOMER_ID || process.env.API_CUSTOMER_ID || '';
-  const customerId = rawCustomerIds.split(',').map(id => id.trim()).filter(Boolean)[0] || '';
-
-  // Leemos los Entity Type IDs separados por comas
-  const rawEntityTypeIds = process.env.CONTROLDOC_ENTITY_TYPE_IDS || process.env.API_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_ID || '467';
-  const entityTypeIds = rawEntityTypeIds.split(',').map(id => id.trim()).filter(Boolean);
+  // MAGIA: Leer todos los IDs, separarlos por coma y limpiarlos
+  const rawEntityTypes = process.env.API_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_ID || '467';
+  const entityTypeIds = String(rawEntityTypes).split(',').map(id => id.trim()).filter(Boolean);
 
   if (byUser && typeof byUser === 'object') {
     const profile = byUser[requestedUserId] || byUser[process.env.CONTROLDOC_DEFAULT_USER_ID] || Object.values(byUser)[0];
-    if (profile) return {
-      email: profile.email || profile.userEmail || '',
-      token: profile.token || profile.userToken || '',
-      customerId: profile.customerId || profile.customer_id || customerId,
-      entityTypeIds: entityTypeIds.length > 0 ? entityTypeIds : ['467'],
-      authorization: profile.authorization || process.env.CONTROLDOC_AUTHORIZATION || ''
-    };
+    if (profile) {
+       const profileRawTypes = profile.entityTypeIds || profile.entity_type_ids || profile.entityTypeId || rawEntityTypes;
+       const profileTypeIds = String(profileRawTypes).split(',').map(id => id.trim()).filter(Boolean);
+       return {
+         email: profile.email || profile.userEmail || '',
+         token: profile.token || profile.userToken || '',
+         customerId: profile.customerId || profile.customer_id || process.env.API_CUSTOMER_ID || process.env.CONTROLDOC_CUSTOMER_ID || '',
+         entityTypeIds: profileTypeIds.length > 0 ? profileTypeIds : ['467'],
+         authorization: profile.authorization || process.env.CONTROLDOC_AUTHORIZATION || ''
+       };
+    }
   }
 
   return {
     email: process.env.CONTROLDOC_USER_EMAIL || process.env.API_USER_EMAIL || '',
     token: process.env.CONTROLDOC_USER_TOKEN || process.env.API_USER_TOKEN || '',
-    customerId: customerId,
+    customerId: process.env.API_CUSTOMER_ID || process.env.CONTROLDOC_CUSTOMER_ID || '',
     entityTypeIds: entityTypeIds.length > 0 ? entityTypeIds : ['467'],
     authorization: process.env.CONTROLDOC_AUTHORIZATION || ''
   };
@@ -157,7 +158,6 @@ async function fetchWithRetry(url, headers, maxRetries = 6) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const response = await fetch(url, { method: 'GET', headers });
-      
       const isRateLimit = response.status === 429 || (response.status === 401 && url.searchParams.get('page') !== '1') || response.status === 403;
       
       if (isRateLimit) {
@@ -168,14 +168,8 @@ async function fetchWithRetry(url, headers, maxRetries = 6) {
       
       if (!response.ok) {
         if (response.status >= 500) {
-           console.warn(`[ControlDoc] Error Servidor (${response.status}) en pág ${url.searchParams.get('page')}. Intento ${attempt}/${maxRetries}.`);
            await new Promise(res => setTimeout(res, attempt * 2000));
            continue;
-        }
-        
-        console.warn(`[ControlDoc] Fallo irrecuperable (${response.status}) en ${url.pathname} pág ${url.searchParams.get('page')}`);
-        if (response.status === 401 && url.searchParams.get('page') === '1') {
-            console.error(`--> [DEBUG 401] ¡Credenciales inválidas para ${headers['X-User-Email']}!`);
         }
         return null; 
       }
@@ -189,9 +183,10 @@ async function fetchWithRetry(url, headers, maxRetries = 6) {
 }
 
 async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = {}) {
-  let allCombinedItems = [];
+  let globalItems = [];
+  
   try {
-    const headers = { 
+    const baseHeaders = { 
       'Accept': '*/*',
       'Accept-Encoding': 'gzip, deflate, br',
       'Connection': 'keep-alive',
@@ -199,20 +194,21 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
       'User-Agent': 'PostmanRuntime/7.36.3'
     };
 
-    if (credentials.email) headers['X-User-Email'] = credentials.email.trim();
-    if (credentials.token) headers['X-User-Token'] = credentials.token.trim();
-    if (credentials.customerId) headers['Customer-Id'] = credentials.customerId.trim();
-    if (credentials.authorization) headers['Authorization'] = credentials.authorization.trim();
+    if (credentials.email) baseHeaders['X-User-Email'] = credentials.email.trim();
+    if (credentials.token) baseHeaders['X-User-Token'] = credentials.token.trim();
+    if (credentials.customerId) baseHeaders['Customer-Id'] = credentials.customerId.trim();
+    if (credentials.authorization) baseHeaders['Authorization'] = credentials.authorization.trim();
 
     const MAX_PAGES = 500; 
-    const CONCURRENCY = 2;
+    const CONCURRENCY = 2; 
 
-    // Iteramos por cada Entity-Type-Id configurado
+    // BUCLE PRINCIPAL: Itera por cada ID de sucursal (Ej: 467, 468, 469)
     for (const entityTypeId of credentials.entityTypeIds) {
-      if (entityTypeId) headers['Entity-Type-Id'] = entityTypeId;
       console.log(`[ControlDoc] Iniciando descarga en ${upstreamPath} para Entity Type ID: ${entityTypeId}...`);
-      
+      let allItems = [];
       let currentPage = 1, hasMore = true;
+      
+      const headers = { ...baseHeaders, 'Entity-Type-Id': entityTypeId };
 
       while (hasMore && currentPage <= MAX_PAGES) {
         const batchPromises = [];
@@ -238,38 +234,35 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
 
         for (const json of batchResults) {
           if (!json) continue; 
-          
           const items = extractControlDocItems(json);
-          
           if (items.length === 0) {
               emptyPageDetected = true;
           } else {
-              allCombinedItems.push(...items);
+              allItems.push(...items);
           }
         }
 
         if (emptyPageDetected) hasMore = false;
-
         currentPage += CONCURRENCY;
         if (hasMore) await new Promise(r => setTimeout(r, 800)); 
       }
+      
+      console.log(`[ControlDoc] Terminó descarga ID ${entityTypeId}. Extraídos: ${allItems.length}`);
+      globalItems.push(...allItems);
     }
-    
-    console.log(`[ControlDoc] Finalizada descarga global en ${upstreamPath}. Total acumulado: ${allCombinedItems.length}`);
+
+    console.log(`[ControlDoc] Finalizada descarga global en ${upstreamPath}. Total acumulado: ${globalItems.length}`);
   } catch (err) { console.error("Error paginando:", err); }
   
-  // Limpiamos nulos y eliminamos duplicados
-  return Array.from(new Map(allCombinedItems.filter(i => i && i.id).map(item => [item.id, item])).values());
+  return Array.from(new Map(globalItems.filter(i => i && i.id).map(item => [item.id, item])).values());
 }
 
-// Función SWR con Cola de Promesas (Previene el Race Condition)
 async function serveWithSWR(cacheKey, upstreamPath, credentials, extraParams = {}) {
-  // Aseguramos que el objeto exista en la caché
   if (!serverCache[cacheKey]) {
       serverCache[cacheKey] = { data: null, expiresAt: 0, fetchPromise: null };
   }
   const cacheStore = serverCache[cacheKey];
-
+  
   if (cacheStore.fetchPromise) {
     await cacheStore.fetchPromise;
     return cacheStore.data || [];
@@ -335,7 +328,6 @@ async function proxyControlDocRequest(req, res, cleanPath) {
           return sendJson(res, 200, await serveWithSWR(cacheKey, upstreamPath, credentials));
       }
 
-      // --- BYPASS DE USUARIO NORMAL ---
       let myExternalId = null;
       try {
         const [rows] = await dbPool.execute('SELECT external_id FROM entidades_api WHERE email = ?', [userEmail]);
@@ -361,7 +353,6 @@ async function proxyControlDocRequest(req, res, cleanPath) {
               });
               return sendJson(res, 200, filtered);
           }
-
           const userDocs = await serveWithSWR(`docs_${myExternalId}`, upstreamPath, credentials, { abstract_entity_id: myExternalId });
           return sendJson(res, 200, userDocs);
       }
@@ -373,7 +364,7 @@ async function proxyControlDocRequest(req, res, cleanPath) {
   }
 }
 
-// --- SERVICIOS DE AUTENTICACIÓN Y ADMIN (OCULTOS POR BREVEDAD) ---
+// --- SERVICIOS DE AUTENTICACIÓN ---
 async function handleLogin(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
   let payload;
@@ -421,6 +412,7 @@ async function handleAuthMe(req, res) {
   } catch (e) { sendJson(res, 500, { error: 'Error interno' }); }
 }
 
+// --- SERVICIOS ADMIN ---
 async function handleSetupDB(req, res) {
   try {
     await dbPool.query(`CREATE TABLE IF NOT EXISTS usuarios (id INT AUTO_INCREMENT PRIMARY KEY, nombre VARCHAR(100) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, activo BOOLEAN NOT NULL DEFAULT TRUE)`);
@@ -476,7 +468,7 @@ const server = createServer(async (req, res) => {
         serverCache.entities.data = null; 
         serverCache.documentTypes.data = null; 
         runBackgroundCachePreload(); 
-        return sendJson(res, 200, { ok: true, message: 'Actualizando base de datos en segundo plano...' }); 
+        return sendJson(res, 200, { ok: true, message: 'Descarga en segundo plano iniciada...' }); 
     }
     
     if (controlDocRoutes.has(cleanPath)) {
@@ -494,14 +486,23 @@ const server = createServer(async (req, res) => {
 
 server.listen(port, host, () => {
   console.log(`✅ Servidor Compas Marine encendido en http://${host}:${port}`);
+  
+  // Imprimir qué IDs se van a procesar para estar 100% seguros
+  const creds = resolveControlDocCredentials(null);
+  console.log(`🔍 [Config] Múltiples Empresas Detectadas (IDs): [ ${creds.entityTypeIds.join(', ')} ]`);
+
   setTimeout(runBackgroundCachePreload, 5000);
 });
 
 // --- TAREA FANTASMA (BACKGROUND WORKER) ---
 async function runBackgroundCachePreload() {
-  console.log("⏱️ [Background Task] Iniciando sincronización fantasma...");
   const creds = resolveControlDocCredentials(null);
-  if (!creds.email || !creds.token) return;
+  console.log(`⏱️ [Background Task] Iniciando sincronización fantasma para los IDs: ${creds.entityTypeIds.join(', ')}`);
+  
+  if (!creds.email || !creds.token) {
+    console.warn("[Background Task] Faltan credenciales.");
+    return;
+  }
 
   try {
     await serveWithSWR('documentTypes', '/api/v1/abstract/document_types', creds);
