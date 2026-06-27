@@ -97,17 +97,17 @@ export default function App() {
     );
   }
 
-  // --- 2. FLUJO AUTENTICADO: Se libera el max-width para volverse 100% responsivo ---
+  // --- 2. FLUJO AUTENTICADO: 100% RESPONSIVO PARA PC Y MÓVIL ---
   return (
-    <div className="bg-[#f3f4f6] md:bg-[#333] flex justify-center min-h-screen m-0 font-sans">
-      {/* CAMBIO CLAVE: Cambiamos max-w-[414px] por max-w-none en pantallas grandes y agregamos un layout centralizado */}
-      <div className="w-full max-w-none md:max-w-6xl lg:max-w-7xl bg-white min-h-screen shadow-[0_0_30px_rgba(0,0,0,0.15)] flex flex-col relative overflow-hidden pb-20">
+    <div className="bg-gray-50 flex justify-center min-h-screen m-0 font-sans w-full">
+      {/* SOLUCIÓN AL PROBLEMA 1: Quitamos max-w-[414px] o max-w-6xl. Ahora la app toma 'w-full' (ancho completo) */}
+      <div className="w-full bg-white min-h-screen flex flex-col relative overflow-hidden pb-24">
         <SyncProgressOverlay active={syncProgress.active} percent={syncProgress.percent} />
         
         <Header />
 
-        {/* Contenedor wrapper para las vistas internas */}
-        <div className="flex-1 flex flex-col min-h-0 w-full mx-auto">
+        {/* Contenedor wrapper flexible para que los elementos internos respiren en pantallas grandes */}
+        <div className="flex-1 flex flex-col min-h-0 w-full mx-auto px-4 sm:px-6 md:px-8">
           {visitedViews.has('inicio') && (
             <div className={currentView === 'inicio' ? 'flex flex-col flex-1 min-h-0 w-full' : 'hidden'}>
               <ViewInicio setView={handleViewChange} currentUser={currentUser} onLoadingProgress={reportLoadingProgress} />
@@ -133,14 +133,13 @@ export default function App() {
           )}
         </div>
 
-        {/* Navegación y Prompts */}
-        <div className="w-full fixed bottom-0 left-0 right-0 md:absolute z-30 bg-white border-t border-gray-150">
-          <div className="max-w-none md:max-w-6xl lg:max-w-7xl mx-auto">
-            <BottomNav currentView={currentView} setCurrentView={handleViewChange} />
-          </div>
+        {/* Contenedor limpio para la barra inferior */}
+        <div className="w-full fixed bottom-0 left-0 right-0 z-30">
+          <BottomNav currentView={currentView} setCurrentView={handleViewChange} />
         </div>
 
-        <PwaInstallPrompt className="absolute left-4 right-4 bottom-24 z-40" />
+        {/* Se subió un poco el cartel de PWA para que no pise los botones en celulares */}
+        <PwaInstallPrompt className="absolute left-4 right-4 bottom-28 z-40" />
       </div>
     </div>
   );
