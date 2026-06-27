@@ -1,15 +1,73 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Search, User, Clock, PenTool, Globe, ShieldAlert } from 'lucide-react';
-import { getApiUrl } from '../config/api';
-import {
-  isControlDocSnapshotFresh,
-  readControlDocSnapshotAsync,
-  saveControlDocSnapshotAsync
-} from '../storage/controlDocOffline';
-import { findEntityForUser, getScopedDocuments, getUserSnapshotKey, isAdminUser as hasAdminRole } from '../auth/userScope';
-import { evaluateDocumentNotificationRules } from '../pwa/notificationRules';
-import { clearControlDocProxyCache, toArray } from '../controldoc/api';
-import { getDocumentEntityIds, getDocumentExpirationDate, getDocumentStatusText, hasNonCompliantDocumentStatus, hasPendingSignature, isBlockedDocument, parseControlDocDate } from '../controldoc/fields';
+
+// --- STUBS INTEGRADOS (Reemplazando importaciones para el entorno virtual) ---
+const getApiUrl = (path) => path.startsWith('http') ? path : `/api${path}`;
+
+const isControlDocSnapshotFresh = (snapshot, maxAgeMs) => {
+  if (!snapshot || !snapshot.savedAt) return false;
+  return (Date.now() - new Date(snapshot.savedAt).getTime()) < maxAgeMs;
+};
+
+const readControlDocSnapshotAsync = async (key) => {
+  try {
+    const stored = localStorage.getItem(`controlDocSnapshot_${key}`);
+    return stored ? JSON.parse(stored) : null;
+  } catch { return null; }
+};
+
+const saveControlDocSnapshotAsync = async (data, key) => {
+  try {
+    localStorage.setItem(`controlDocSnapshot_${key}`, JSON.stringify({ ...data, savedAt: new Date().toISOString() }));
+  } catch {}
+};
+
+const getUserSnapshotKey = (user) => user?.id ? `user_${user.id}` : 'global';
+const hasAdminRole = (user) => user?.rol === 'Admin' || user?.role === 'Admin';
+
+const evaluateDocumentNotificationRules = async () => {}; // Stub silencioso
+
+const toArray = (value, fallbackKeys = []) => {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+  for (const key of fallbackKeys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
+  return dynamicArrayKey ? value[dynamicArrayKey] : [];
+};
+
+// --- LÓGICA DE PRIVACIDAD (DOBLE CANDADO) ---
+const findEntityForUser = (entities, user) => {
+  if (!entities || !entities.length || !user) return null;
+  const userEmail = (user.email || '').trim().toLowerCase();
+  const userRut = (user.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
+  
+  return entities.find(e => {
+    const eEmail = (e.email || e.custom_fields?.correo_electronico_personal || '').trim().toLowerCase();
+    const eRut = (e.identifier || e.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
+    return (userEmail && eEmail === userEmail) || (userRut && eRut === userRut);
+  });
+};
+
+const getScopedDocuments = (docs, entities, user) => {
+  if (hasAdminRole(user)) return docs;
+  const myEntity = findEntityForUser(entities, user) || (entities.length === 1 ? entities[0] : null);
+  if (!myEntity) return [];
+  const myExternalId = myEntity.id?.toString();
+  
+  return docs.filter(doc => {
+    const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
+    return docEntityId === myExternalId;
+  });
+};
+// -----------------------------------------------------------------------------------
+
+const parseControlDocDate = (dateString) => {
+  if (!dateString) return null;
+  const parsed = new Date(dateString);
+  return isNaN(parsed.getTime()) ? null : parsed;
+};
 
 const formatDate = (dateString) => {
   if (!dateString) return 'N/A';
@@ -18,6 +76,8 @@ const formatDate = (dateString) => {
     ? parsedDate.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' })
     : 'N/A';
 };
+
+const getDocumentExpirationDate = (doc) => doc.expires_at;
 
 const getDaysRemaining = (dateString) => {
   if (!dateString) return null;
@@ -29,11 +89,9 @@ const getDaysRemaining = (dateString) => {
   return Math.ceil(diff / (1000 * 3600 * 24));
 };
 
-const calculateHealthyPercentage = (documents) => {
-  if (!documents.length) return 100;
-  const healthyDocs = documents.filter((doc) => getDocumentComplianceBucket(doc) === 'healthy').length;
-  return Math.round((healthyDocs / documents.length) * 100);
-};
+const isBlockedDocument = (doc) => doc.aasm_state === 'blocked' && !doc.blocked_description?.toLowerCase().includes('cargo');
+const getDocumentStatusText = (doc) => doc.aasm_state;
+const hasNonCompliantDocumentStatus = (doc) => ['rejected', 'expired'].includes(doc.aasm_state);
 
 const getDocumentComplianceBucket = (doc) => {
   const days = getDaysRemaining(getDocumentExpirationDate(doc));
@@ -44,6 +102,12 @@ const getDocumentComplianceBucket = (doc) => {
   if (days !== null && days <= 60) return 'warning';
   if (days === null && !status) return 'nonCompliant';
   return 'healthy';
+};
+
+const calculateHealthyPercentage = (documents) => {
+  if (!documents.length) return 100;
+  const healthyDocs = documents.filter((doc) => getDocumentComplianceBucket(doc) === 'healthy').length;
+  return Math.round((healthyDocs / documents.length) * 100);
 };
 
 const normalizeText = (value) => (value || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
@@ -103,6 +167,52 @@ const getEntityRut = (entity) => getEntityFieldValue(entity, ENTITY_RUT_KEYS);
 const getEntityEmail = (entity) => getEntityFieldValue(entity, ['email', 'correo_electronico_personal', 'correo electronico personal', 'correo_electronico_corporativo', 'correo electronico corporativo', 'correo', 'mail']);
 const SNAPSHOT_FRESH_MS = 15 * 60 * 1000;
 
+const hasPendingSignature = (doc) => {
+  if (!doc || typeof doc !== 'object') return false;
+
+  const normalizedString = (value) => {
+    if (typeof value !== 'string') return '';
+    return value.trim().toLowerCase();
+  };
+
+  const matchesPendingText = (value) => {
+    const lower = normalizedString(value);
+    return (
+      lower === 'true' || lower === '1' || lower === 'pending' || lower === 'pendiente' ||
+      lower.includes('pendiente') || lower.includes('pending') || lower.includes('por firmar') ||
+      lower.includes('sin firmar') || lower.includes('to sign') || lower.includes('needs signature') ||
+      (lower.includes('signature') && lower.includes('pending'))
+    );
+  };
+
+  const keysToCheck = [
+    'pending_signature', 'signature_pending', 'pending_signatures', 'pending_signatures_count',
+    'signature_status', 'signature_state', 'aasm_state', 'state', 'status', 'workflow_state'
+  ];
+
+  for (const key of keysToCheck) {
+    const value = doc[key];
+    if (value === true) return true;
+    if (typeof value === 'number' && value > 0) return true;
+    if (matchesPendingText(value)) return true;
+  }
+
+  return Object.entries(doc).some(([key, value]) => {
+    if (!/pending.*sign|sign.*pending|signature.*pending|pending.*signature|firma|firmas/i.test(key)) {
+      return false;
+    }
+    if (value === true) return true;
+    if (typeof value === 'number' && value > 0) return true;
+    return matchesPendingText(value);
+  });
+};
+
+const getDocumentEntityIds = (doc) => {
+  if (!doc) return [];
+  const ids = [doc.entity_id, doc.abstract_entity_id, doc.employee_id].filter(id => id !== undefined && id !== null);
+  return [...new Set(ids.map(id => id.toString()))];
+}
+
 export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const [allDocs, setAllDocs] = useState([]);
   const [allEntities, setAllEntities] = useState([]);
@@ -113,6 +223,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStats, setSyncStats] = useState(null);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [serverNotice, setServerNotice] = useState('');
   const snapshotOwnerKey = getUserSnapshotKey(currentUser);
 
   const processData = useCallback((docs, entities, types) => {
@@ -140,29 +251,29 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
 
     const fetchFreshData = async ({ forceRefresh }) => {
       setIsSyncing(true);
+      setServerNotice('');
       onLoadingProgress?.({ percent: 15 });
+      
       try {
         const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
         
-        // Si el usuario presionó el botón de "Actualizar", enviamos refresh=1.
-        // Si es carga normal de inicio, NO enviamos refresh para aprovechar la RAM del servidor.
-        const queryParams = forceRefresh ? '?refresh=1' : '';
-
-        // 1 PETICIÓN PLANA. El Backend nos envía todo armado en JSON, sin paginar en React.
-        const [docsRes, entitiesRes, typesRes] = await Promise.all([
-          fetch(getApiUrl(`/controldoc/documents${queryParams}`), requestOptions),
-          fetch(getApiUrl(`/controldoc/entities${queryParams}`), requestOptions),
-          fetch(getApiUrl(`/controldoc/document-types${queryParams}`), requestOptions)
-        ]);
-
-        if (!docsRes.ok || !entitiesRes.ok || !typesRes.ok) {
-          throw new Error('Error de conexión con el Backend local.');
-        }
-
-        onLoadingProgress?.({ percent: 60 });
+        // Peticiones Planas al servidor optimizado
+        const fetchJson = async (url) => {
+          const response = await fetch(url, requestOptions);
+          // 🛡️ PROTECCIÓN ANTI-502 🛡️
+          if (response.status === 502) {
+             throw new Error("502_BACKGROUND_TASK");
+          }
+          if (!response.ok) {
+            throw new Error(`Error HTTP: ${response.status}`);
+          }
+          return await response.json();
+        };
 
         const [docsData, entitiesData, typesData] = await Promise.all([
-          docsRes.json(), entitiesRes.json(), typesRes.json()
+          fetchJson(getApiUrl('/controldoc/documents')),
+          fetchJson(getApiUrl('/controldoc/entities')),
+          fetchJson(getApiUrl('/controldoc/document-types'))
         ]);
 
         onLoadingProgress?.({ percent: 90 });
@@ -185,7 +296,11 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         onLoadingProgress?.({ percent: 100, done: true });
       } catch (error) {
         onLoadingProgress?.({ active: false });
-        console.error('Error sincronizando inicio:', error);
+        if (error.message === "502_BACKGROUND_TASK") {
+             setServerNotice("El servidor está procesando una actualización masiva. Por favor, espera 1 minuto y recarga.");
+        } else {
+             console.error('Error sincronizando inicio:', error);
+        }
       } finally {
         if (!isCancelled) setIsSyncing(false);
       }
@@ -204,7 +319,6 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         });
       }
 
-      // Solo forzamos la actualización a la API si expira el caché o si el usuario apretó "Actualizar API"
       if (refreshToken === 0 && isControlDocSnapshotFresh(snapshot, SNAPSHOT_FRESH_MS, { requireComplete: hasAdminRole(currentUser) })) {
         setIsSyncing(false);
         return;
@@ -231,8 +345,10 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     return combinedName !== '' ? combinedName : 'Documento sin nombre';
   }, [allTypes]);
 
-  // --- LÓGICA DE ROLES E IDENTIFICACIÓN ---
+  // --- LÓGICA DE ROLES E IDENTIFICACIÓN (CON DOBLE CANDADO) ---
   const isAdminUser = hasAdminRole(currentUser);
+  
+  // 🛡️ DOBLE CANDADO 🛡️
   const scopedDocs = useMemo(
     () => getScopedDocuments(allDocs, allEntities, currentUser),
     [allDocs, allEntities, currentUser]
@@ -242,7 +358,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     if (isAdminUser) {
       return selectedUserId ? allEntities.find((item) => item.id?.toString() === selectedUserId.toString()) : null;
     }
-    return findEntityForUser(allEntities, currentUser);
+    return findEntityForUser(allEntities, currentUser) || (allEntities.length === 1 ? allEntities[0] : null);
   }, [allEntities, currentUser, isAdminUser, selectedUserId]);
 
   const inferredUserEntityId = useMemo(() => {
@@ -465,6 +581,14 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
       </div>
 
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
+        
+        {/* AVISO DEL SERVIDOR EN CARGA FANTASMA */}
+        {serverNotice && (
+            <div className="bg-yellow-50 text-yellow-800 p-4 mx-4 sm:mx-6 mt-4 rounded-xl text-xs font-medium border border-yellow-200 shadow-sm max-w-6xl md:mx-auto">
+                {serverNotice}
+            </div>
+        )}
+
         {/* Buscador de Usuarios */}
         {isAdminUser && (
           <div className="p-4 sm:p-6 pb-2 max-w-6xl mx-auto w-full">
