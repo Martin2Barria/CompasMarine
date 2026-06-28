@@ -65,6 +65,8 @@ export async function handleLogin(req, res) {
             res.setHeader('Set-Cookie', `compas_user_id=${user.id}; Path=/; HttpOnly; SameSite=Lax`);
             return sendJson(res, 200, { ok: true, message: 'Inicio de sesión correcto.', user: { id: user.id, nombre: user.nombre, email: user.email, rol } });
         }
+
+      return sendJson(res, 401, { error: 'Credenciales incorrectas.' });
     }
 
     // 2. Primer inicio de sesión para Tripulantes (Auto-creación)
