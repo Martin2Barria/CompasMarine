@@ -3,8 +3,8 @@ import { dbPool } from '../config/db.js';
 import { sendJson, getCookie } from '../utils/http.js';
 import { fetchAllControlDocPages, resolveControlDocCredentials } from '../utils/controldoc.js';
 
-// --- CACHÉ ULTRA RÁPIDA (CON ESTADO DE DESCARGA) ---
-const serverCache = {
+// --- CACHÉ ULTRA RÁPIDA Y GLOBAL (A prueba de reinicios de módulos) ---
+global.serverCache = global.serverCache || {
   documentTypes: { data: [], expiresAt: 0, isFetching: false },
   entities: { data: [], expiresAt: 0, isFetching: false },
   documents: { data: [], expiresAt: 0, isFetching: false } 
@@ -29,14 +29,17 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
   try {
     const [userRows] = await dbPool.execute(`SELECT u.email, r.nombre as rol FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id WHERE u.id = ? AND u.activo = TRUE`, [cookieUserId]);
     if (userRows.length === 0) return sendJson(res, 401, { error: 'Usuario inválido.' });
+    
     userEmail = userRows[0].email;
-    
-    // Blindamos la lectura del rol para evitar errores de espacios en blanco
     const rolStr = (userRows[0].rol || '').toLowerCase().trim();
-    isAdmin = ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(rolStr);
     
+    // SUPER BLINDAJE DE ROL: Reconoce Admin Supremo, Gestor y también forzamos el correo de admin
+    isAdmin = ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(rolStr) || userEmail === 'admin@compasmarine.cl';
+    
+    console.log(`[API] Solicitud de ${userEmail} | Rol BD: "${rolStr}" | ¿Es Admin?: ${isAdmin}`);
   } catch (error) {
-    return sendJson(res, 200, []); // Fallback seguro
+    console.error("[API] Error verificando rol:", error);
+    return sendJson(res, 200, []); 
   }
 
   const upstreamPath = controlDocRoutes.get(cleanPath);
@@ -46,49 +49,48 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
   const now = Date.now();
 
   try {
-    // 🚀 STALE-WHILE-REVALIDATE NO BLOQUEANTE (CARGA FANTASMA REAL)
+    // 🚀 STALE-WHILE-REVALIDATE 
     const serveWithSWR = async (cacheKey, fetchPath) => {
-      const cacheStore = serverCache[cacheKey];
+      const cacheStore = global.serverCache[cacheKey];
       
-      // 1. Si tenemos datos válidos, los devolvemos instantáneamente
       if (cacheStore.data && cacheStore.data.length > 0) {
-        // ¿Están expirados? Lanzamos actualización en fondo silenciosa
         if (cacheStore.expiresAt < now && !cacheStore.isFetching) {
           cacheStore.isFetching = true;
+          console.log(`[SWR] Revalidando caché de ${cacheKey} en 2do plano...`);
           fetchAllControlDocPages(fetchPath, credentials)
             .then(data => { 
                 if(data && data.length > 0) {
-                    serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL, isFetching: false }; 
+                    global.serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL, isFetching: false }; 
+                    console.log(`[SWR] Revalidación exitosa. ${data.length} items de ${cacheKey}.`);
                 } else {
-                    serverCache[cacheKey].isFetching = false;
+                    global.serverCache[cacheKey].isFetching = false;
                 }
             })
-            .catch(() => { serverCache[cacheKey].isFetching = false; });
+            .catch(() => { global.serverCache[cacheKey].isFetching = false; });
         }
+        console.log(`[SWR] Entregando ${cacheStore.data.length} items de ${cacheKey} directamente desde RAM.`);
         return cacheStore.data;
       }
       
-      // 2. Si NO hay datos, no bloqueamos la petición para evitar Timeout.
-      // Iniciamos el proceso y lanzamos un error que el Frontend leerá como aviso amarillo.
       if (!cacheStore.isFetching) {
          cacheStore.isFetching = true;
-         console.log(`[Caché SWR] Iniciando carga masiva en 2do plano para ${cacheKey}...`);
+         console.log(`[SWR] Caché vacía. Iniciando descarga primaria de ${cacheKey}...`);
          fetchAllControlDocPages(fetchPath, credentials)
             .then(data => { 
                 if(data && data.length > 0) {
-                   serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL, isFetching: false }; 
-                   console.log(`[Caché SWR] Carga exitosa de ${cacheKey}. Guardados: ${data.length}`);
+                   global.serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL, isFetching: false }; 
+                   console.log(`[SWR] ✅ DESCARGA PRIMARIA EXITOSA. ${cacheKey} guardó ${data.length} items en RAM.`);
                 } else {
-                   serverCache[cacheKey].isFetching = false;
+                   global.serverCache[cacheKey].isFetching = false;
                 }
             })
             .catch(err => {
-                console.error(`[Caché SWR] Error en descarga para ${cacheKey}:`, err);
-                serverCache[cacheKey].isFetching = false;
+                console.error(`[SWR] ❌ Error en descarga para ${cacheKey}:`, err);
+                global.serverCache[cacheKey].isFetching = false;
             });
       }
       
-      // Lanza la señal de que está en proceso
+      console.log(`[SWR] Avisando al cliente que espere (502) para ${cacheKey}.`);
       throw new Error('502_BACKGROUND_TASK');
     };
 
@@ -98,7 +100,10 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
 
     if (upstreamPath === '/api/v1/abstract/entities') {
       const allEntities = await serveWithSWR('entities', upstreamPath);
-      if (isAdmin) return sendJson(res, 200, allEntities);
+      if (isAdmin) {
+        console.log(`[API] Entregando TODOS los usuarios (${allEntities.length}) al Admin ${userEmail}`);
+        return sendJson(res, 200, allEntities);
+      }
       
       let myExternalId = null;
       try {
@@ -112,7 +117,10 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
 
     if (upstreamPath === '/api/v1/abstract/documents') {
       const allDocs = await serveWithSWR('documents', upstreamPath);
-      if (isAdmin) return sendJson(res, 200, allDocs);
+      if (isAdmin) {
+        console.log(`[API] Entregando TODOS los documentos (${allDocs.length}) al Admin ${userEmail}`);
+        return sendJson(res, 200, allDocs);
+      }
       
       let myExternalId = null;
       try {
@@ -126,12 +134,11 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
 
     return sendJson(res, 200, []);
   } catch (err) {
-    // Si recibe la señal de carga en segundo plano, responde con HTTP 502 al Frontend
     if (err.message === '502_BACKGROUND_TASK') {
         return sendJson(res, 502, { error: 'El servidor está procesando datos masivos en 2do plano.' });
     }
-    console.warn(`[Proxy Controlado] Error recuperando datos. Retornando lista vacía de seguridad.`, err);
-    return sendJson(res, 200, []); // ESCUDO ANTI 500
+    console.warn(`[API] Error recuperando datos:`, err.message);
+    return sendJson(res, 200, []);
   }
 }
 
@@ -198,9 +205,8 @@ export async function handleSetupDB(req, res) {
 }
 
 export async function handleDocumentsSync(req, res) {
-  // Limpiamos la caché y reseteamos el estado de isFetching
-  serverCache.documents = { data: [], expiresAt: 0, isFetching: false };
-  serverCache.entities = { data: [], expiresAt: 0, isFetching: false };
-  serverCache.documentTypes = { data: [], expiresAt: 0, isFetching: false };
+  global.serverCache.documents = { data: [], expiresAt: 0, isFetching: false };
+  global.serverCache.entities = { data: [], expiresAt: 0, isFetching: false };
+  global.serverCache.documentTypes = { data: [], expiresAt: 0, isFetching: false };
   sendJson(res, 200, { ok: true, message: 'Caché limpio.' });
 }
