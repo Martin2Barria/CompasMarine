@@ -426,8 +426,8 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
-      {/* CABECERA */}
-      <div className="bg-[#394049] p-4 sm:p-6 md:px-10 relative overflow-hidden flex-shrink-0 text-left shadow-lg">
+      {/* CABECERA border */}
+      <div className="bg-[#394049] rounded-2xl p-4 sm:p-6 md:px-10 relative overflow-hidden flex-shrink-0 text-left shadow-lg">
         <div className="absolute -right-10 -top-10 w-40 h-40 bg-white opacity-5 blur-2xl pointer-events-none"></div>
 
         <div className="mx-auto w-full max-w-6xl flex flex-row flex-wrap sm:flex-nowrap items-center justify-between gap-4 relative z-10">
