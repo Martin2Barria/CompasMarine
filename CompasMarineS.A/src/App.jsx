@@ -4,12 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Header } from './Components/Header';
 import { BottomNav } from './Components/BottomNav';
 import { Login } from './Components/login';
-<<<<<<< Updated upstream
-import { OlvidastePassword } from './Components/olvidastePassword'; 
-=======
 //unico cambio 28 Domingo
 import { OlvidastePassword } from './Components/olvidastePassword';
->>>>>>> Stashed changes
 import { PwaInstallPrompt } from './Components/PwaInstallPrompt';
 import { SyncProgressOverlay } from './Components/SyncProgressOverlay';
 
