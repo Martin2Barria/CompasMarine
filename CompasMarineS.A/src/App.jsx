@@ -20,6 +20,8 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [syncProgress, setSyncProgress] = useState({ active: false, percent: 0 });
   const hideProgressTimer = useRef(null);
+    const [authScreen, setAuthScreen] = useState('login');
+  
 
   const reportLoadingProgress = useCallback((next = {}) => {
     const payload = typeof next === 'number' ? { percent: next } : next;
