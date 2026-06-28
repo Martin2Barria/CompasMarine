@@ -27,15 +27,19 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
   let isAdmin = false;
 
   try {
+    // ACTUALIZACIÓN DE ROLES: Obtenemos el nombre del rol desde la BD
     const [userRows] = await dbPool.execute(`SELECT u.email, r.nombre as rol FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id WHERE u.id = ? AND u.activo = TRUE`, [cookieUserId]);
     if (userRows.length === 0) return sendJson(res, 401, { error: 'Usuario inválido.' });
     userEmail = userRows[0].email;
-    const rolStr = userRows[0].rol || '';
-    isAdmin = rolStr.toLowerCase() === 'admin';
+    const rolStr = (userRows[0].rol || '').toLowerCase();
+    
+    // Si el rol es uno de los tres con acceso global, isAdmin es true
+    isAdmin = ['admin supremo', 'admin gestor', 'lector global'].includes(rolStr);
   } catch (error) {
     return sendJson(res, 200, []); // Fallback seguro
   }
 
+  
   const upstreamPath = controlDocRoutes.get(cleanPath);
   if (!upstreamPath) return sendJson(res, 200, []);
 

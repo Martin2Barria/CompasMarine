@@ -19,7 +19,8 @@ const saveControlDocSnapshot = (data) => {
 
 const hasAdminRole = (user) => {
   if (!user) return false;
-  return user.rol === 'Admin' || user.role === 'Admin';
+  const roleName = (user.rol || user.role || '').toLowerCase();
+  return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName);
 };
 
 const findEntityForUser = (entities, user) => {
