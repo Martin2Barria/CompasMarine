@@ -3,7 +3,7 @@ import { Eye, EyeOff } from 'lucide-react';
 import { getApiUrl } from '../config/api';
 import logoCompasMarine1 from '../assets/images/compas-marine1.jpeg';
 
-export const Login = ({ onLoginSuccess, onNavigate, onLoadingProgress }) => {
+export const Login = ({ onLoginSuccess, onLoadingProgress }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [passVisible, setPassVisible] = useState(false);
@@ -108,16 +108,6 @@ export const Login = ({ onLoginSuccess, onNavigate, onLoadingProgress }) => {
                   {passVisible ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
-            </div>
-
-            <div className="forgot">
-              <button 
-                type="button" 
-                className="link-btn" 
-                onClick={() => onNavigate('forgot')}
-              >
-                ¿Olvidaste tu contraseña?
-              </button>
             </div>
 
             {error && <div className="error-box">{error}</div>}

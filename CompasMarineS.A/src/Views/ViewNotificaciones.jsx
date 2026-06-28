@@ -98,7 +98,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
         <div className="bg-white rounded-2xl p-4 md:p-5 shadow-sm relative overflow-hidden border border-gray-100">
           <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-[#394049]"></div>
           <div className="flex flex-col sm:flex-row gap-4 items-start">
-            <div className="bg-gray-100 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 text-[#394049]">
+            <div className="bg-gray-200 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 text-gray-800">
               <BellRing className="w-5 h-5" />
             </div>
             <div className="flex-1 w-full">

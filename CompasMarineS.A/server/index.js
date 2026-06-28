@@ -2,6 +2,7 @@ import { createReadStream, existsSync, readFileSync, statSync, writeFileSync } f
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import webPush from 'web-push';
 import mysql from 'mysql2/promise';
@@ -72,6 +73,8 @@ const serverCache = {
   documents: { data: null, expiresAt: 0, fetchPromise: null } 
 };
 const CACHE_TTL = 12 * 60 * 60 * 1000;
+const PASSWORD_RESET_TOKEN_TTL = 10 * 60 * 1000;
+const passwordResetTokens = new Map();
 
 // --- UTILIDADES ---
 function sendJson(res, statusCode, payload) {
@@ -91,6 +94,34 @@ function readRequestBody(req) {
 function getCookie(req, cookieName) {
   const match = (req.headers.cookie || '').split(';').map(c => c.trim()).find(c => c.startsWith(`${cookieName}=`));
   return match ? decodeURIComponent(match.slice(cookieName.length + 1)) : '';
+}
+
+function createPasswordResetToken(email, userId) {
+  const now = Date.now();
+  for (const [token, tokenData] of passwordResetTokens.entries()) {
+    if (tokenData.expiresAt <= now) passwordResetTokens.delete(token);
+  }
+
+  const token = randomUUID();
+  passwordResetTokens.set(token, {
+    email,
+    userId,
+    expiresAt: now + PASSWORD_RESET_TOKEN_TTL
+  });
+  return token;
+}
+
+function consumePasswordResetToken(token, email) {
+  if (!token) return null;
+  const tokenData = passwordResetTokens.get(token);
+  if (!tokenData) return null;
+
+  passwordResetTokens.delete(token);
+  const isExpired = tokenData.expiresAt <= Date.now();
+  const sameEmail = tokenData.email === email;
+  if (isExpired || !sameEmail) return null;
+
+  return tokenData;
 }
 
 function serveStaticFile(res, requestUrl) {
@@ -388,6 +419,8 @@ async function handleLogin(req, res) {
             res.setHeader('Set-Cookie', `compas_user_id=${rows[0].id}; Path=/; HttpOnly; SameSite=Lax`);
             return sendJson(res, 200, { ok: true, user: { id: rows[0].id, nombre: rows[0].nombre, email, rol: roles[0]?.rol || 'Usuario' } });
         }
+
+      return sendJson(res, 401, { error: 'Credenciales incorrectas.' });
     }
 
     const [entityRows] = await dbPool.execute(`SELECT * FROM entidades_api WHERE email = ?`, [email]);
@@ -406,6 +439,88 @@ async function handleLogin(req, res) {
     }
     sendJson(res, 401, { error: 'Credenciales incorrectas.' });
   } catch (error) { sendJson(res, 200, { error: 'Error ignorado', ok: false }); }
+}
+
+async function handleVerifyResetIdentity(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
+
+  const email = (payload.email || '').trim().toLowerCase();
+  const currentPassword = payload.password || '';
+
+  if (!email || !currentPassword) {
+    return sendJson(res, 400, { error: 'El correo electrónico y la contraseña actual son obligatorios.' });
+  }
+
+  try {
+    const [rows] = await dbPool.execute('SELECT id, password_hash FROM usuarios WHERE email = ? AND activo = TRUE LIMIT 1', [email]);
+    if (rows.length === 0) {
+      return sendJson(res, 404, { error: 'No existe un usuario activo registrado con ese correo.' });
+    }
+
+    const user = rows[0];
+    const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!isValidPassword) {
+      return sendJson(res, 401, { error: 'La contraseña actual no es válida.' });
+    }
+
+    const verificationToken = createPasswordResetToken(email, user.id);
+    return sendJson(res, 200, {
+      ok: true,
+      verificationToken,
+      message: 'Identidad validada. Ya puedes definir tu nueva contraseña.'
+    });
+  } catch (error) {
+    console.error('Error validando identidad para restablecer contraseña:', error);
+    return sendJson(res, 500, { error: 'No se pudo validar la identidad.' });
+  }
+}
+
+async function handleResetPassword(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
+
+  const email = (payload.email || '').trim().toLowerCase();
+  const nextPassword = payload.password || '';
+  const verificationToken = payload.verificationToken || '';
+
+  if (!email || !nextPassword || !verificationToken) {
+    return sendJson(res, 400, { error: 'Debes validar tu identidad antes de cambiar la contraseña.' });
+  }
+
+  if (nextPassword.length < 8) {
+    return sendJson(res, 400, { error: 'La nueva contraseña debe tener al menos 8 caracteres.' });
+  }
+
+  const verifiedSession = consumePasswordResetToken(verificationToken, email);
+  if (!verifiedSession) {
+    return sendJson(res, 401, { error: 'La validación expiró o no es válida. Vuelve a verificar tu identidad.' });
+  }
+
+  try {
+    const [userRows] = await dbPool.execute('SELECT id, password_hash FROM usuarios WHERE email = ? AND activo = TRUE LIMIT 1', [email]);
+
+    if (userRows.length === 0) {
+      return sendJson(res, 404, { error: 'El usuario ya no está disponible para actualizar contraseña.' });
+    }
+
+    const user = userRows[0];
+    const isSamePassword = await bcrypt.compare(nextPassword, user.password_hash);
+    if (isSamePassword) {
+      return sendJson(res, 400, { error: 'La nueva contraseña no puede ser igual a la actual.' });
+    }
+
+    const passwordHash = await bcrypt.hash(nextPassword, 12);
+    await dbPool.execute('UPDATE usuarios SET password_hash = ? WHERE id = ?', [passwordHash, user.id]);
+    return sendJson(res, 200, { ok: true, message: 'La contraseña fue actualizada correctamente.' });
+  } catch (error) {
+    console.error('Error restableciendo contraseña:', error);
+    return sendJson(res, 500, { error: 'No se pudo actualizar la contraseña.' });
+  }
 }
 
 async function handleAuthMe(req, res) {
@@ -465,6 +580,8 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/health') return sendJson(res, 200, { ok: true });
     if (cleanPath === '/api/auth/register') return sendJson(res, 403, { error: 'Deshabilitado' });
     if (cleanPath === '/api/auth/login') return await handleLogin(req, res);
+    if (cleanPath === '/api/auth/verify-reset-identity') return await handleVerifyResetIdentity(req, res);
+    if (cleanPath === '/api/auth/reset-password') return await handleResetPassword(req, res);
     if (cleanPath === '/api/auth/me') return await handleAuthMe(req, res);
     if (cleanPath === '/api/admin/setup-db') return await handleSetupDB(req, res);
     if (cleanPath === '/api/admin/sync-users') return await handleSyncUsersToDB(req, res);

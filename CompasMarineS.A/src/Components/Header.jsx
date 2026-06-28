@@ -1,12 +1,12 @@
 import { useEffect, useState, useRef } from 'react';
-import { Moon, Sun } from 'lucide-react';
+import { Moon, Sun, LogOut } from 'lucide-react';
 import logo50Anios from '../assets/images/compas marine 50 años.jpeg';
 import logoCompasMarine1 from '../assets/images/compas-marine1.jpeg';
 
 const POPUP_DURATION = 1500; // ← tiempo normal antes del fade (1.5s)
 const FADE_DURATION  = 900;  // ← duración del fadeOut en CSS (0.9s)
 
-export const Header = () => {
+export const Header = ({ onLogout }) => {
   const [darkMode,  setDarkMode]  = useState(false);
   const [showPopup, setShowPopup] = useState(true);
   const [isClosing, setIsClosing] = useState(false);
@@ -72,17 +72,30 @@ export const Header = () => {
         />
       </div>
 
-      <button
-        type="button"
-        className="header-theme-button"
-        onClick={toggleTheme}
-        aria-label="Cambiar modo claro/oscuro"
-      >
-        {darkMode
-          ? <Sun  className="header-theme-icon" />
-          : <Moon className="header-theme-icon" />}
-        <span>{darkMode ? 'Claro' : 'Oscuro'}</span>
-      </button>
+      <div className="header-actions">
+        <button
+          type="button"
+          className="header-theme-button"
+          onClick={toggleTheme}
+          aria-label="Cambiar modo claro/oscuro"
+        >
+          {darkMode
+            ? <Sun className="header-theme-icon" />
+            : <Moon className="header-theme-icon" />}
+          <span>{darkMode ? 'Claro' : 'Oscuro'}</span>
+        </button>
+
+        <button
+          type="button"
+          className="header-theme-button header-logout-button"
+          onClick={onLogout}
+          aria-label="Cerrar sesión"
+          title="Cerrar sesión"
+        >
+          <LogOut className="header-theme-icon" />
+          <span>Salir</span>
+        </button>
+      </div>
 
       {/* NUEVO: Al hacer clic en el overlay (fondo o imagen), se ejecuta handleSkipPopup */}
       {showPopup && (

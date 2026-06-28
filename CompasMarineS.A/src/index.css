@@ -42,6 +42,12 @@
   align-items: center;
 }
 
+.header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .header-theme-button {
   display: inline-flex;
   align-items: center;
@@ -64,6 +70,16 @@
 .header-theme-icon {
   width: 14px;
   height: 14px;
+}
+
+.header-logout-button {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.header-logout-button:hover {
+  background: #fee2e2;
 }
 
 /* Modo Oscuro Global */
@@ -127,6 +143,16 @@
 
 .dark .header-theme-icon {
   color: #f8fafc;
+}
+
+.dark .header-logout-button {
+  background: rgba(220, 38, 38, 0.22);
+  border-color: rgba(248, 113, 113, 0.5);
+  color: #fecaca;
+}
+
+.dark .header-logout-button:hover {
+  background: rgba(220, 38, 38, 0.3);
 }
 
 .dark .text-\[\#394049\] {
@@ -486,6 +512,10 @@ form {
   .header-theme-icon {
     width: 16px;
     height: 16px;
+  }
+
+  .header-actions {
+    gap: 0.6rem;
   }
 
   /* Limitación del Login en PC para evitar estiramiento horizontal */

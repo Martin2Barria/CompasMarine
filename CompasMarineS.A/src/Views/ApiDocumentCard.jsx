@@ -22,7 +22,7 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
 
     const timeDifference = expirationDate ? expirationDate.getTime() - currentDate.getTime() : null;
     const daysRemaining = timeDifference === null ? null : Math.ceil(timeDifference / (1000 * 3600 * 24));
-
+//correccion de colores a los que solicito compas en el primer pdf
     if (daysRemaining === null) {
       status = { label: 'Sin Fecha', bgClass: 'bg-gray-100 text-gray-600 border-2 border-gray-200' };
     } else if (isBlocked) {
@@ -31,17 +31,17 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
     } else if (daysRemaining > 30) {
       status = { label: `Vigente por ${daysRemaining} días`, bgClass: 'bg-green-50 text-green-700 border-2 border-green-200' };
     } else if (daysRemaining > 0) {
-      status = { label: `Próximo a vencer (${daysRemaining} días)`, bgClass: 'bg-yellow-50 text-yellow-700 border-2 border-yellow-200' };
+      status = { label: `Próximo a vencer (${daysRemaining} días)`, bgClass: 'bg-yellow-50 text-[#B8860B] border-2 border-yellow-200' };
     } else if (daysRemaining === 0) {
-      status = { label: 'Expira hoy', bgClass: 'bg-red-50 text-[#921E30] border-2 border-red-200' };
+      status = { label: 'Expira hoy', bgClass: 'bg-red-50 text-[#FF0000] border-2 border-red-200' };
     } else {
       const expired = Math.abs(daysRemaining);
-      status = { label: `Expirado hace ${expired} días`, bgClass: 'bg-red-50 text-[#921E30] border-2 border-red-200' };
+      status = { label: `Expirado hace ${expired} días`, bgClass: 'bg-red-50 text-[#FF0000] border-2 border-red-200' };
     }
   }
 
   if (!expirationDateValue && hasExpiredStatus) {
-    status = { label: 'Vencido', bgClass: 'bg-red-50 text-[#921E30] border-2 border-red-200' };
+    status = { label: 'Vencido', bgClass: 'bg-red-50 text-[#FF0000] border-2 border-red-200' };
   }
 
   const formatDate = (dateString) => {
@@ -65,9 +65,9 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
             {doc.label || 'Documento'}
           </h3>
         </div>
-
-        {/* Metadatos principales */}
-        <div className="space-y-1.5 mb-3 bg-gray-50/70 p-2.5 rounded-xl border border-gray-100/70">
+  
+{/* Metadatos principales (CORREGIDO: Usa bg-white y border-gray-100 que están mapeados en tu CSS oscuro) */}
+        <div className="space-y-1.5 mb-3 bg-white bg-opacity-60 dark:bg-opacity-10 p-2.5 rounded-xl border border-gray-100">
           <div className="text-xs text-gray-600 flex items-center min-w-0">
             <UserIcon className="w-3.5 h-3.5 mr-2 text-gray-400 flex-shrink-0" />
             <span className="font-semibold text-gray-800 truncate max-w-[200px] xs:max-w-[280px] sm:max-w-none">
@@ -81,7 +81,7 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
             </span>
           </div>
         </div>
-
+  
         {/* Fechas de Emisión / Vencimiento */}
         <div className="space-y-1.5 mb-3.5 text-xs px-0.5">
           <div className="text-gray-400 flex justify-between gap-4">
@@ -93,10 +93,10 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
             <span className="font-semibold text-gray-600">{formatDate(expirationDateValue)}</span>
           </div>
         </div>
-
+  
         {/* Acciones adaptables a Mobile */}
         <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center w-full">
-          {/* CORRECCIÓN AQUÍ: Badge tipo "pill" con whitespace-nowrap y px adecuado para asegurar forma de pastilla alargada */}
+          {/* Badge tipo "pill" */}
           <div className={`text-xs font-extrabold text-center px-4 py-1.5 rounded-full border whitespace-nowrap sm:inline-block flex-1 sm:flex-initial ${status.bgClass}`}>
             {status.label}
           </div>
@@ -111,7 +111,7 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
             </a>
           )}
         </div>
-
+        
         {/* Bloqueo descriptivo */}
         {isBlocked && doc.blocked_description && (
           <div className="mt-3 bg-red-50 border border-red-150 p-2.5 rounded-xl flex items-start gap-2 animate-fade-in">

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Header } from './Components/Header';
 import { BottomNav } from './Components/BottomNav';
 import { Login } from './Components/login';
-import { OlvidastePassword } from './Components/olvidastePassword'; 
 import { PwaInstallPrompt } from './Components/PwaInstallPrompt';
 import { SyncProgressOverlay } from './Components/SyncProgressOverlay';
 
@@ -21,8 +20,6 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [syncProgress, setSyncProgress] = useState({ active: false, percent: 0 });
   const hideProgressTimer = useRef(null);
-  
-  const [authScreen, setAuthScreen] = useState('login');
 
   const reportLoadingProgress = useCallback((next = {}) => {
     const payload = typeof next === 'number' ? { percent: next } : next;
@@ -59,6 +56,14 @@ export default function App() {
     setIsAuthenticated(true);
   };
 
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+    setCurrentUser(null);
+    setCurrentView('inicio');
+    setVisitedViews(new Set(['inicio']));
+    setSyncProgress({ active: false, percent: 0 });
+  };
+
   const handleViewChange = (view) => {
     const nextView = view === 'firmas' ? 'documentos' : view;
 
@@ -79,17 +84,10 @@ export default function App() {
         <div className="w-full max-w-[414px] bg-white min-h-screen shadow-[0_0_20px_rgba(0,0,0,0.5)] flex flex-col justify-center relative overflow-hidden">
           <SyncProgressOverlay active={syncProgress.active} percent={syncProgress.percent} />
           
-          {authScreen === 'login' && (
-            <Login 
-              onLoginSuccess={handleLoginSuccess} 
-              onNavigate={setAuthScreen} 
-              onLoadingProgress={reportLoadingProgress}
-            />
-          )}
-
-          {authScreen === 'forgot' && (
-            <OlvidastePassword onNavigate={setAuthScreen} onLoadingProgress={reportLoadingProgress} />
-          )}
+          <Login
+            onLoginSuccess={handleLoginSuccess}
+            onLoadingProgress={reportLoadingProgress}
+          />
 
           <PwaInstallPrompt className="absolute left-4 right-4 bottom-4" />
         </div>
@@ -104,7 +102,7 @@ export default function App() {
       <div className="w-full bg-white min-h-screen flex flex-col relative overflow-hidden pb-24">
         <SyncProgressOverlay active={syncProgress.active} percent={syncProgress.percent} />
         
-        <Header />
+        <Header onLogout={handleLogout} />
 
         {/* Contenedor wrapper flexible para que los elementos internos respiren en pantallas grandes */}
         <div className="flex-1 flex flex-col min-h-0 w-full mx-auto px-4 sm:px-6 md:px-8">
