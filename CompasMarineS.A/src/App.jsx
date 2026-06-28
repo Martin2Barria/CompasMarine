@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Header } from './Components/Header';
 import { BottomNav } from './Components/BottomNav';
 import { Login } from './Components/login';
+//unico cambio 28 Domingo
+import { OlvidastePassword } from './Components/olvidastePassword';
 import { PwaInstallPrompt } from './Components/PwaInstallPrompt';
 import { SyncProgressOverlay } from './Components/SyncProgressOverlay';
 
@@ -83,7 +85,8 @@ export default function App() {
   if (!isAuthenticated) {
     return (
       <div className="bg-[#333] flex justify-center min-h-screen m-0 font-sans">
-        <div className="w-full max-w-[414px] bg-white min-h-screen shadow-[0_0_20px_rgba(0,0,0,0.5)] flex flex-col justify-center relative overflow-hidden">
+        {/*unico cambio 28 Domingo */}
+        <div className="w-full max-w-[414px] md:max-w-none bg-white min-h-screen shadow-[0_0_20px_rgba(0,0,0,0.5)] flex flex-col justify-center relative overflow-hidden">
           <SyncProgressOverlay active={syncProgress.active} percent={syncProgress.percent} />
           
           {authScreen === 'login' && (
