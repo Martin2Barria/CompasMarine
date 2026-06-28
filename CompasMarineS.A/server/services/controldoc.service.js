@@ -3,11 +3,11 @@ import { dbPool } from '../config/db.js';
 import { sendJson, getCookie } from '../utils/http.js';
 import { fetchAllControlDocPages, resolveControlDocCredentials } from '../utils/controldoc.js';
 
-// --- CACHÉ ULTRA RÁPIDA (BLINDADA) ---
+// --- CACHÉ ULTRA RÁPIDA (CON ESTADO DE DESCARGA) ---
 const serverCache = {
-  documentTypes: { data: [], expiresAt: 0 },
-  entities: { data: [], expiresAt: 0 },
-  documents: { data: [], expiresAt: 0 } 
+  documentTypes: { data: [], expiresAt: 0, isFetching: false },
+  entities: { data: [], expiresAt: 0, isFetching: false },
+  documents: { data: [], expiresAt: 0, isFetching: false } 
 };
 const CACHE_TTL = 12 * 60 * 60 * 1000; // 12 horas
 
@@ -31,8 +31,8 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
     if (userRows.length === 0) return sendJson(res, 401, { error: 'Usuario inválido.' });
     userEmail = userRows[0].email;
     
-    // AQUÍ ESTABA EL PROBLEMA: Le enseñamos al backend los nuevos roles permitidos
-    const rolStr = (userRows[0].rol || '').toLowerCase();
+    // Blindamos la lectura del rol para evitar errores de espacios en blanco
+    const rolStr = (userRows[0].rol || '').toLowerCase().trim();
     isAdmin = ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(rolStr);
     
   } catch (error) {
@@ -46,23 +46,50 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
   const now = Date.now();
 
   try {
-    // 🚀 STALE-WHILE-REVALIDATE: Retorna caché instantánea y actualiza en fondo
+    // 🚀 STALE-WHILE-REVALIDATE NO BLOQUEANTE (CARGA FANTASMA REAL)
     const serveWithSWR = async (cacheKey, fetchPath) => {
       const cacheStore = serverCache[cacheKey];
-      if (cacheStore && cacheStore.data && cacheStore.data.length > 0) {
-        if (cacheStore.expiresAt < now) {
+      
+      // 1. Si tenemos datos válidos, los devolvemos instantáneamente
+      if (cacheStore.data && cacheStore.data.length > 0) {
+        // ¿Están expirados? Lanzamos actualización en fondo silenciosa
+        if (cacheStore.expiresAt < now && !cacheStore.isFetching) {
+          cacheStore.isFetching = true;
           fetchAllControlDocPages(fetchPath, credentials)
-            .then(data => { if(data.length > 0) serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL }; })
-            .catch(() => {});
+            .then(data => { 
+                if(data && data.length > 0) {
+                    serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL, isFetching: false }; 
+                } else {
+                    serverCache[cacheKey].isFetching = false;
+                }
+            })
+            .catch(() => { serverCache[cacheKey].isFetching = false; });
         }
         return cacheStore.data;
       }
       
-      const data = await fetchAllControlDocPages(fetchPath, credentials);
-      if (data && data.length > 0) {
-        serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL };
+      // 2. Si NO hay datos, no bloqueamos la petición para evitar Timeout.
+      // Iniciamos el proceso y lanzamos un error que el Frontend leerá como aviso amarillo.
+      if (!cacheStore.isFetching) {
+         cacheStore.isFetching = true;
+         console.log(`[Caché SWR] Iniciando carga masiva en 2do plano para ${cacheKey}...`);
+         fetchAllControlDocPages(fetchPath, credentials)
+            .then(data => { 
+                if(data && data.length > 0) {
+                   serverCache[cacheKey] = { data, expiresAt: Date.now() + CACHE_TTL, isFetching: false }; 
+                   console.log(`[Caché SWR] Carga exitosa de ${cacheKey}. Guardados: ${data.length}`);
+                } else {
+                   serverCache[cacheKey].isFetching = false;
+                }
+            })
+            .catch(err => {
+                console.error(`[Caché SWR] Error en descarga para ${cacheKey}:`, err);
+                serverCache[cacheKey].isFetching = false;
+            });
       }
-      return data || [];
+      
+      // Lanza la señal de que está en proceso
+      throw new Error('502_BACKGROUND_TASK');
     };
 
     if (upstreamPath === '/api/v1/abstract/document_types') {
@@ -99,7 +126,11 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
 
     return sendJson(res, 200, []);
   } catch (err) {
-    console.warn(`[Proxy Controlado] Error recuperando datos. Retornando lista vacía de seguridad.`);
+    // Si recibe la señal de carga en segundo plano, responde con HTTP 502 al Frontend
+    if (err.message === '502_BACKGROUND_TASK') {
+        return sendJson(res, 502, { error: 'El servidor está procesando datos masivos en 2do plano.' });
+    }
+    console.warn(`[Proxy Controlado] Error recuperando datos. Retornando lista vacía de seguridad.`, err);
     return sendJson(res, 200, []); // ESCUDO ANTI 500
   }
 }
@@ -167,6 +198,9 @@ export async function handleSetupDB(req, res) {
 }
 
 export async function handleDocumentsSync(req, res) {
-  serverCache.documents.data = []; serverCache.entities.data = []; serverCache.documentTypes.data = [];
+  // Limpiamos la caché y reseteamos el estado de isFetching
+  serverCache.documents = { data: [], expiresAt: 0, isFetching: false };
+  serverCache.entities = { data: [], expiresAt: 0, isFetching: false };
+  serverCache.documentTypes = { data: [], expiresAt: 0, isFetching: false };
   sendJson(res, 200, { ok: true, message: 'Caché limpio.' });
 }
