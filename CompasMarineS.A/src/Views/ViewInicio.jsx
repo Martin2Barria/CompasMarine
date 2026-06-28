@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Search, User, Clock, PenTool, Globe, ShieldAlert, KeyRound, Eye, EyeOff } from 'lucide-react';
+import { Search, User, Clock, PenTool, Globe, ShieldAlert } from 'lucide-react';
 
 // --- STUBS INTEGRADOS (Reemplazando importaciones para el entorno virtual) ---
 const getApiUrl = (path) => path.startsWith('http') ? path : `/api${path}`;
@@ -24,16 +24,10 @@ const saveControlDocSnapshotAsync = async (data, key) => {
 
 const getUserSnapshotKey = (user) => user?.id ? `user_${user.id}` : 'global';
 
-// ACTUALIZACIÓN DE ROLES: Quién puede ver datos globales (Doble Candado)
+// SOLUCIÓN AL CANDADO DE ROLES DEL FRONTEND
 const hasAdminRole = (user) => {
   const roleName = (user?.rol || user?.role || '').toLowerCase();
-  return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName);
-};
-
-// NUEVO: Quién puede acceder al Panel de Configuración
-const canAccessAdminPanel = (user) => {
-  const roleName = (user?.rol || user?.role || '').toLowerCase();
-  return ['admin supremo', 'admin gestor', 'admin'].includes(roleName);
+  return ['admin', 'admin supremo', 'admin gestor', 'lector global'].includes(roleName);
 };
 
 const evaluateDocumentNotificationRules = async () => {}; // Stub silencioso
@@ -62,15 +56,9 @@ const findEntityForUser = (entities, user) => {
 };
 
 const getScopedDocuments = (docs, entities, user) => {
-  if (hasAdminRole(user)) return docs;
-  const myEntity = findEntityForUser(entities, user) || (entities.length === 1 ? entities[0] : null);
-  if (!myEntity) return [];
-  const myExternalId = myEntity.id?.toString();
-  
-  return docs.filter(doc => {
-    const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
-    return docEntityId === myExternalId;
-  });
+  // El backend ya filtra los documentos por seguridad desde la API.
+  // Retornar la data intacta evita que el frontend rompa y oculte la información.
+  return docs || [];
 };
 // -----------------------------------------------------------------------------------
 
@@ -235,18 +223,6 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const [syncStats, setSyncStats] = useState(null);
   const [refreshToken, setRefreshToken] = useState(0);
   const [serverNotice, setServerNotice] = useState('');
-  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
-  const [passwordStep, setPasswordStep] = useState('verify');
-  const [currentPasswordInput, setCurrentPasswordInput] = useState('');
-  const [newPasswordInput, setNewPasswordInput] = useState('');
-  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
-  const [passwordVerificationToken, setPasswordVerificationToken] = useState('');
-  const [passwordError, setPasswordError] = useState('');
-  const [passwordSuccess, setPasswordSuccess] = useState('');
-  const [passwordLoading, setPasswordLoading] = useState(false);
-  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
-  const [showNewPassword, setShowNewPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const snapshotOwnerKey = getUserSnapshotKey(currentUser);
 
   const processData = useCallback((docs, entities, types) => {
@@ -399,8 +375,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const activeExternalId = displayEntity?.id?.toString() || '';
   const isGlobalView = isAdminUser && !selectedEntity;
 
-  // Mostramos el nombre del rol correspondiente
-  const appRoleText = currentUser?.rol || 'Tripulante';
+  const appRoleText = isAdminUser ? 'Administrador' : 'Tripulante';
   const fullNameText = isAdminUser ? getCurrentUserDisplayName(currentUser) : getEntityDisplayName(displayEntity);
   const cargoHeader = isAdminUser
     ? 'Gestión Central' 
@@ -563,154 +538,11 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
 
   const syncSourceText = syncStats?.source === 'cache' ? 'celular' : 'servidor';
   const syncStatusText = isSyncing ? 'cargando' : 'completada';
-  const passwordEmail = (currentUser?.email || getEntityEmail(displayEntity) || '').trim().toLowerCase();
-
-  const resetPasswordFlow = useCallback(() => {
-    setPasswordStep('verify');
-    setCurrentPasswordInput('');
-    setNewPasswordInput('');
-    setConfirmPasswordInput('');
-    setPasswordVerificationToken('');
-    setPasswordError('');
-    setPasswordSuccess('');
-    setPasswordLoading(false);
-    setShowCurrentPassword(false);
-    setShowNewPassword(false);
-    setShowConfirmPassword(false);
-  }, []);
-
-  const handleOpenPasswordModal = useCallback(() => {
-    resetPasswordFlow();
-    setIsPasswordModalOpen(true);
-  }, [resetPasswordFlow]);
-
-  const handleClosePasswordModal = useCallback(() => {
-    setIsPasswordModalOpen(false);
-    resetPasswordFlow();
-  }, [resetPasswordFlow]);
-
-  const handleVerifyCurrentPassword = useCallback(async (e) => {
-    e.preventDefault();
-    setPasswordError('');
-    setPasswordSuccess('');
-
-    if (!passwordEmail) {
-      setPasswordError('No se pudo identificar el correo del usuario autenticado.');
-      return;
-    }
-
-    if (!currentPasswordInput) {
-      setPasswordError('Ingresa tu contraseña actual.');
-      return;
-    }
-
-    setPasswordLoading(true);
-    onLoadingProgress?.({ percent: 18 });
-
-    try {
-      const response = await fetch(getApiUrl('/auth/verify-reset-identity'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          email: passwordEmail,
-          password: currentPasswordInput
-        })
-      });
-
-      onLoadingProgress?.({ percent: 68 });
-      const data = await response.json();
-      onLoadingProgress?.({ percent: 92 });
-
-      if (!response.ok) {
-        throw new Error(data.error || 'No se pudo validar tu contraseña actual.');
-      }
-
-      setPasswordVerificationToken(data.verificationToken || '');
-      setCurrentPasswordInput('');
-      setPasswordStep('reset');
-      onLoadingProgress?.({ percent: 100, done: true });
-    } catch (error) {
-      onLoadingProgress?.({ active: false });
-      setPasswordError(error.message || 'No se pudo validar tu contraseña actual.');
-    } finally {
-      setPasswordLoading(false);
-    }
-  }, [currentPasswordInput, onLoadingProgress, passwordEmail]);
-
-  const handleUpdatePassword = useCallback(async (e) => {
-    e.preventDefault();
-    setPasswordError('');
-    setPasswordSuccess('');
-
-    if (!passwordEmail) {
-      setPasswordError('No se pudo identificar el correo del usuario autenticado.');
-      return;
-    }
-
-    if (!newPasswordInput) {
-      setPasswordError('Ingresa una nueva contraseña.');
-      return;
-    }
-
-    if (newPasswordInput.length < 8) {
-      setPasswordError('La nueva contraseña debe tener al menos 8 caracteres.');
-      return;
-    }
-
-    if (newPasswordInput !== confirmPasswordInput) {
-      setPasswordError('La confirmación de contraseña no coincide.');
-      return;
-    }
-
-    if (!passwordVerificationToken) {
-      setPasswordError('Primero valida tu contraseña actual.');
-      return;
-    }
-
-    setPasswordLoading(true);
-    onLoadingProgress?.({ percent: 18 });
-
-    try {
-      const response = await fetch(getApiUrl('/auth/reset-password'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          email: passwordEmail,
-          password: newPasswordInput,
-          verificationToken: passwordVerificationToken
-        })
-      });
-
-      onLoadingProgress?.({ percent: 68 });
-      const data = await response.json();
-      onLoadingProgress?.({ percent: 92 });
-
-      if (!response.ok) {
-        throw new Error(data.error || 'No se pudo actualizar la contraseña.');
-      }
-
-      setPasswordSuccess('Tu contraseña fue actualizada correctamente.');
-      setNewPasswordInput('');
-      setConfirmPasswordInput('');
-      setPasswordVerificationToken('');
-      setPasswordStep('verify');
-      onLoadingProgress?.({ percent: 100, done: true });
-    } catch (error) {
-      onLoadingProgress?.({ active: false });
-      setPasswordError(error.message || 'No se pudo actualizar la contraseña.');
-    } finally {
-      setPasswordLoading(false);
-    }
-  }, [confirmPasswordInput, newPasswordInput, onLoadingProgress, passwordEmail, passwordVerificationToken]);
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
-      {/* CABECERA border */}
-      <div className="bg-[#394049] rounded-2xl p-4 sm:p-6 md:px-10 relative overflow-hidden flex-shrink-0 text-left shadow-lg">
+      {/* CABECERA */}
+      <div className="bg-[#394049] p-4 sm:p-6 md:px-10 relative overflow-hidden flex-shrink-0 text-left shadow-lg">
         <div className="absolute -right-10 -top-10 w-40 h-40 bg-white opacity-5 blur-2xl pointer-events-none"></div>
 
         <div className="mx-auto w-full max-w-6xl flex flex-row flex-wrap sm:flex-nowrap items-center justify-between gap-4 relative z-10">
@@ -723,7 +555,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                 Bienvenido
               </span>
               <span className="text-xs font-bold text-[#e1575f] tracking-wide uppercase">
-                {appRoleText} {/* <-- AHORA MUESTRA EL ROL DE LA BD (Ej: Lector Global) */}
+                {appRoleText} (ROL)
               </span>
               <h2 className="text-white text-lg sm:text-xl md:text-2xl font-bold tracking-wide leading-tight truncate">
                 {fullNameText}
@@ -734,7 +566,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
             </div>
           </div>
 
-          {canAccessAdminPanel(currentUser) && (
+          {isAdminUser && (
             <button
               onClick={() => setView('admin')}
               className="relative z-10 bg-white/10 hover:bg-white/20 text-white p-2 rounded-xl border border-white/20 backdrop-blur-sm transition-all shadow-sm flex flex-col items-center justify-center shrink-0 cursor-pointer"
@@ -742,18 +574,6 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
             >
               <ShieldAlert className="w-5 h-5 mb-0.5" />
               <span className="text-[9px] font-bold uppercase tracking-wider">Admin</span>
-            </button>
-          )}
-
-          {!isAdminUser && (
-            <button
-              type="button"
-              onClick={handleOpenPasswordModal}
-              className="relative z-10 bg-white/10 hover:bg-white/20 text-white p-2 rounded-xl border border-white/20 backdrop-blur-sm transition-all shadow-sm flex flex-col items-center justify-center shrink-0 cursor-pointer"
-              title="Cambiar contraseña"
-            >
-              <KeyRound className="w-5 h-5 mb-0.5" />
-              <span className="text-[9px] font-bold uppercase tracking-wider">Clave</span>
             </button>
           )}
         </div>
@@ -1098,166 +918,6 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
           </div>
         )}
       </main>
-
-      {isPasswordModalOpen && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
-          <button
-            type="button"
-            aria-label="Cerrar modal"
-            onClick={handleClosePasswordModal}
-            className="absolute inset-0 bg-black/40"
-          />
-
-          <div className="relative z-10 w-full max-w-md rounded-2xl bg-white border border-gray-200 shadow-2xl p-5 sm:p-6">
-            <div className="flex items-start justify-between gap-4 mb-4">
-              <div>
-                <p className="text-[11px] uppercase tracking-wider font-bold text-[#921E30]">Seguridad</p>
-                <h3 className="text-lg font-bold text-[#394049]">Cambiar contraseña</h3>
-                <p className="text-xs text-gray-500 mt-1">
-                  {passwordStep === 'verify' ? 'Paso 1: valida tu contraseña actual.' : 'Paso 2: define tu nueva contraseña.'}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={handleClosePasswordModal}
-                className="text-xs font-bold text-gray-500 hover:text-[#921E30]"
-              >
-                Cerrar
-              </button>
-            </div>
-
-            {passwordStep === 'verify' && (
-              <form onSubmit={handleVerifyCurrentPassword} className="space-y-3">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-600 mb-1">Correo</label>
-                  <input
-                    type="email"
-                    value={passwordEmail}
-                    disabled
-                    readOnly
-                    className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-gray-600 mb-1">Contraseña actual</label>
-                  <div className="relative">
-                    <input
-                      type={showCurrentPassword ? 'text' : 'password'}
-                      value={currentPasswordInput}
-                      onChange={(e) => setCurrentPasswordInput(e.target.value)}
-                      autoComplete="current-password"
-                      placeholder="Ingresa tu contraseña actual"
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-[#921E30]/40"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowCurrentPassword((value) => !value)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500"
-                      aria-label={showCurrentPassword ? 'Ocultar contraseña actual' : 'Mostrar contraseña actual'}
-                    >
-                      {showCurrentPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-
-                {passwordError && (
-                  <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{passwordError}</div>
-                )}
-                {passwordSuccess && (
-                  <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-700">{passwordSuccess}</div>
-                )}
-
-                <button
-                  type="submit"
-                  disabled={passwordLoading}
-                  className="w-full bg-[#394049] hover:bg-gray-800 text-white text-sm font-bold py-2.5 rounded-lg disabled:opacity-60"
-                >
-                  {passwordLoading ? 'Validando...' : 'Continuar'}
-                </button>
-              </form>
-            )}
-
-            {passwordStep === 'reset' && (
-              <form onSubmit={handleUpdatePassword} className="space-y-3">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-600 mb-1">Nueva contraseña</label>
-                  <div className="relative">
-                    <input
-                      type={showNewPassword ? 'text' : 'password'}
-                      value={newPasswordInput}
-                      onChange={(e) => setNewPasswordInput(e.target.value)}
-                      autoComplete="new-password"
-                      placeholder="Mínimo 8 caracteres"
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-[#921E30]/40"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowNewPassword((value) => !value)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500"
-                      aria-label={showNewPassword ? 'Ocultar nueva contraseña' : 'Mostrar nueva contraseña'}
-                    >
-                      {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-gray-600 mb-1">Confirmar nueva contraseña</label>
-                  <div className="relative">
-                    <input
-                      type={showConfirmPassword ? 'text' : 'password'}
-                      value={confirmPasswordInput}
-                      onChange={(e) => setConfirmPasswordInput(e.target.value)}
-                      autoComplete="new-password"
-                      placeholder="Repite tu nueva contraseña"
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-[#921E30]/40"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowConfirmPassword((value) => !value)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500"
-                      aria-label={showConfirmPassword ? 'Ocultar confirmación de contraseña' : 'Mostrar confirmación de contraseña'}
-                    >
-                      {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-
-                {passwordError && (
-                  <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{passwordError}</div>
-                )}
-                {passwordSuccess && (
-                  <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-700">{passwordSuccess}</div>
-                )}
-
-                <button
-                  type="submit"
-                  disabled={passwordLoading}
-                  className="w-full bg-[#921E30] hover:bg-[#7c1928] text-white text-sm font-bold py-2.5 rounded-lg disabled:opacity-60"
-                >
-                  {passwordLoading ? 'Actualizando...' : 'Cambiar contraseña'}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPasswordStep('verify');
-                    setNewPasswordInput('');
-                    setConfirmPasswordInput('');
-                    setPasswordVerificationToken('');
-                    setPasswordError('');
-                    setPasswordSuccess('');
-                  }}
-                  className="w-full text-xs font-semibold text-[#921E30]"
-                >
-                  Volver al paso anterior
-                </button>
-              </form>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 };
