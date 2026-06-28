@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Search, User, Clock, PenTool, Globe, ShieldAlert, KeyRound, Eye, EyeOff } from 'lucide-react';
+import { Search, User, Clock, PenTool, Globe, ShieldAlert, KeyRound, Eye, EyeOff, RotateCcw } from 'lucide-react';
 
 // --- STUBS INTEGRADOS (Reemplazando importaciones para el entorno virtual) ---
 const getApiUrl = (path) => path.startsWith('http') ? path : `/api${path}`;
@@ -254,6 +254,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     const normalizedEntities = toArray(entities, ['entities', 'data', 'items']);
     const normalizedTypes = toArray(types, ['documentTypes', 'document_types', 'data', 'items']);
 
+    console.log("🧩 Procesando datos para renderizar:", { docsLen: normalizedDocs.length, entLen: normalizedEntities.length });
     setAllDocs(normalizedDocs);
     setAllEntities(normalizedEntities);
     setAllTypes(normalizedTypes);
@@ -269,6 +270,13 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     }
   }, [currentUser, snapshotOwnerKey]);
 
+  // EL BOTÓN NUCLEAR: Destruye todo el caché y recarga la página
+  const handleForceHardReset = () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    window.location.reload(true);
+  };
+
   useEffect(() => {
     let isCancelled = false;
 
@@ -280,10 +288,8 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
       try {
         const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
         
-        // Peticiones Planas al servidor optimizado
         const fetchJson = async (url) => {
           const response = await fetch(url, requestOptions);
-          // 🛡️ PROTECCIÓN ANTI-502 🛡️
           if (response.status === 502) {
              throw new Error("502_BACKGROUND_TASK");
           }
@@ -299,6 +305,11 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
           fetchJson(getApiUrl('/controldoc/document-types'))
         ]);
 
+        console.log("🌐 RESPUESTA DIRECTA DEL SERVIDOR:", {
+            documentos: docsData?.length || 0,
+            usuarios: entitiesData?.length || 0
+        });
+
         onLoadingProgress?.({ percent: 90 });
         if (isCancelled) return;
 
@@ -306,10 +317,10 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
           documents: docsData,
           entities: toArray(entitiesData, ['entities', 'data', 'items']),
           documentTypes: toArray(typesData, ['documentTypes', 'document_types', 'data', 'items']),
-          meta: { documents: { totalItems: docsData.length } }
+          meta: { documents: { totalItems: (docsData || []).length } }
         };
 
-        setSyncStats({ source: 'api', totalItems: docsData.length, complete: true });
+        setSyncStats({ source: 'api', totalItems: nextData.documents.length, complete: true });
         processData(nextData.documents, nextData.entities, nextData.documentTypes);
         
         if (!hasAdminRole(currentUser)) {
@@ -320,9 +331,9 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
       } catch (error) {
         onLoadingProgress?.({ active: false });
         if (error.message === "502_BACKGROUND_TASK") {
-             setServerNotice("El servidor está procesando una actualización masiva. Por favor, espera 1 minuto y recarga.");
+             setServerNotice("El servidor está procesando una actualización masiva. Espera 1 minuto y presiona 'Actualizar'.");
         } else {
-             console.error('Error sincronizando inicio:', error);
+             console.error('❌ Error fatal de Red/Servidor:', error);
         }
       } finally {
         if (!isCancelled) setIsSyncing(false);
@@ -333,11 +344,12 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
       const snapshot = await readControlDocSnapshotAsync(snapshotOwnerKey);
       if (isCancelled) return;
 
-      if (snapshot?.data) {
-        processData(snapshot.data.documents || [], snapshot.data.entities || [], snapshot.data.documentTypes || []);
+      if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
+        console.log("💾 Cargando datos desde LocalStorage (Caché)");
+        processData(snapshot.documents || [], snapshot.entities || [], snapshot.documentTypes || []);
         setSyncStats({
           source: 'cache',
-          totalItems: snapshot.data.documents?.length || 0,
+          totalItems: (snapshot.documents || []).length,
           complete: true
         });
       }
@@ -347,6 +359,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         return;
       }
 
+      console.log("📡 Solicitando datos frescos a la API...");
       await fetchFreshData({ forceRefresh: refreshToken > 0 });
     };
 
@@ -709,7 +722,6 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in">
-      {/* CABECERA border */}
       <div className="bg-[#394049] rounded-2xl p-4 sm:p-6 md:px-10 relative overflow-hidden flex-shrink-0 text-left shadow-lg">
         <div className="absolute -right-10 -top-10 w-40 h-40 bg-white opacity-5 blur-2xl pointer-events-none"></div>
 
@@ -723,7 +735,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                 Bienvenido
               </span>
               <span className="text-xs font-bold text-[#e1575f] tracking-wide uppercase">
-                {appRoleText} {/* <-- AHORA MUESTRA EL ROL DE LA BD (Ej: Lector Global) */}
+                {appRoleText} 
               </span>
               <h2 className="text-white text-lg sm:text-xl md:text-2xl font-bold tracking-wide leading-tight truncate">
                 {fullNameText}
@@ -734,41 +746,41 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
             </div>
           </div>
 
-          {canAccessAdminPanel(currentUser) && (
-            <button
-              onClick={() => setView('admin')}
-              className="relative z-10 bg-white/10 hover:bg-white/20 text-white p-2 rounded-xl border border-white/20 backdrop-blur-sm transition-all shadow-sm flex flex-col items-center justify-center shrink-0 cursor-pointer"
-              title="Panel de Administración"
-            >
-              <ShieldAlert className="w-5 h-5 mb-0.5" />
-              <span className="text-[9px] font-bold uppercase tracking-wider">Admin</span>
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+              {canAccessAdminPanel(currentUser) && (
+                <button
+                  onClick={() => setView('admin')}
+                  className="relative z-10 bg-white/10 hover:bg-white/20 text-white p-2 rounded-xl border border-white/20 backdrop-blur-sm transition-all shadow-sm flex flex-col items-center justify-center shrink-0 cursor-pointer"
+                  title="Panel de Administración"
+                >
+                  <ShieldAlert className="w-5 h-5 mb-0.5" />
+                  <span className="text-[9px] font-bold uppercase tracking-wider">Admin</span>
+                </button>
+              )}
 
-          {!isAdminUser && (
-            <button
-              type="button"
-              onClick={handleOpenPasswordModal}
-              className="relative z-10 bg-white/10 hover:bg-white/20 text-white p-2 rounded-xl border border-white/20 backdrop-blur-sm transition-all shadow-sm flex flex-col items-center justify-center shrink-0 cursor-pointer"
-              title="Cambiar contraseña"
-            >
-              <KeyRound className="w-5 h-5 mb-0.5" />
-              <span className="text-[9px] font-bold uppercase tracking-wider">Clave</span>
-            </button>
-          )}
+              {!isAdminUser && (
+                <button
+                  type="button"
+                  onClick={handleOpenPasswordModal}
+                  className="relative z-10 bg-white/10 hover:bg-white/20 text-white p-2 rounded-xl border border-white/20 backdrop-blur-sm transition-all shadow-sm flex flex-col items-center justify-center shrink-0 cursor-pointer"
+                  title="Cambiar contraseña"
+                >
+                  <KeyRound className="w-5 h-5 mb-0.5" />
+                  <span className="text-[9px] font-bold uppercase tracking-wider">Clave</span>
+                </button>
+              )}
+          </div>
         </div>
       </div>
 
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
         
-        {/* AVISO DEL SERVIDOR EN CARGA FANTASMA */}
         {serverNotice && (
             <div className="bg-yellow-50 text-yellow-800 p-4 mx-4 sm:mx-6 mt-4 rounded-xl text-xs font-medium border border-yellow-200 shadow-sm max-w-6xl md:mx-auto">
                 {serverNotice}
             </div>
         )}
 
-        {/* Buscador de Usuarios */}
         {isAdminUser && (
           <div className="p-4 sm:p-6 pb-2 max-w-6xl mx-auto w-full">
             <div className="relative">
@@ -826,12 +838,10 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
           </div>
         )}
 
-        {/* Sección de Perfil o Panel Resumen Combinado */}
         <div className="px-4 sm:px-6 pb-4 pt-2 max-w-6xl mx-auto w-full">
           {isGlobalView ? (
             <div className="space-y-3 mt-2">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Tarjeta Cumplimiento Colaboradores (Naranja) */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
                   <div className="bg-[#f96302] text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]">
                     <h4 className="text-sm font-semibold uppercase tracking-wider opacity-90">Cumplimiento Colaboradores</h4>
@@ -861,7 +871,6 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                   </div>
                 </div>
 
-                {/* Tarjeta Cumplimiento Documental (Verde) */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
                   <div className="bg-[#008000] text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]">
                     <h4 className="text-sm font-semibold uppercase tracking-wider opacity-90">Cumplimiento Documental</h4>
@@ -895,22 +904,36 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                 <span className="min-w-0">
                   Carga {syncStatusText} desde {syncSourceText}: {syncStats?.totalItems ?? globalMetrics.totalDocsCount} documentos.
                 </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSyncStats(null);
-                    setRefreshToken((value) => value + 1);
-                  }}
-                  disabled={isSyncing}
-                  className="shrink-0 text-[#921E30] font-bold disabled:opacity-50"
-                >
-                  {isSyncing ? <Clock className="w-3 h-3 animate-spin inline mr-1" /> : ''}
-                  Actualizar
-                </button>
+                
+                <div className="flex items-center gap-3">
+                    {/* BOTÓN MAGICO DE REPARACIÓN */}
+                    <button
+                      type="button"
+                      onClick={handleForceHardReset}
+                      className="shrink-0 text-gray-400 hover:text-red-500 font-bold flex items-center transition"
+                      title="Destruir Caché y Recargar"
+                    >
+                      <RotateCcw className="w-3 h-3 inline mr-1" />
+                      Reparar
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSyncStats(null);
+                        setRefreshToken((value) => value + 1);
+                      }}
+                      disabled={isSyncing}
+                      className="shrink-0 text-[#921E30] font-bold disabled:opacity-50 flex items-center"
+                    >
+                      {isSyncing ? <Clock className="w-3 h-3 animate-spin inline mr-1" /> : ''}
+                      Actualizar
+                    </button>
+                </div>
+
               </div>
             </div>
           ) : (
-            /* Vista de Detalle de un Colaborador Específico */
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 md:p-6">
               <div className="flex items-start justify-between gap-2 mb-4">
                 <div>
@@ -989,7 +1012,6 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         {!isGlobalView && (
           <div className="px-4 sm:px-6 max-w-6xl mx-auto w-full lg:grid lg:grid-cols-2 lg:gap-6 lg:items-start">
             <div className="mb-4 mt-2 lg:mb-0 lg:mt-0">
-            {/* Listado de Firmas Pendientes */}
             <div className="pt-2 pb-2 flex justify-between items-end">
               <h3 className="font-bold text-[#394049] text-base border-b-2 border-[#921E30] pb-0.5">
                 {isAdminUser ? 'Firmas Pendientes' : 'Mis Firmas Pendientes'}
@@ -1035,7 +1057,6 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
             </div>
             </div>
 
-            {/* Listado de Alertas / Documentos por Vencer */}
             <div className="mb-6 lg:mb-0">
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
                 <div className="flex items-center justify-between mb-4">
