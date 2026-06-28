@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Eye, Tag, Download, User as UserIcon } from 'lucide-react';
 
-// --- STUBS Y DEPENDENCIAS INTEGRADAS (Evitan errores de compilación en este entorno) ---
+// --- STUBS Y DEPENDENCIAS INTEGRADAS ---
 const getApiUrl = (path) => path.startsWith('http') ? path : `/api${path}`;
 
 const readControlDocSnapshot = () => {
@@ -19,7 +19,7 @@ const saveControlDocSnapshot = (data) => {
 
 const hasAdminRole = (user) => {
   if (!user) return false;
-  const roleName = (user.rol || user.role || '').toLowerCase();
+  const roleName = (user?.rol || user?.role || '').toLowerCase();
   return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName);
 };
 
@@ -47,7 +47,7 @@ const getScopedDocuments = (docs, entities, user) => {
   });
 };
 
-// --- NUEVO COMPONENTE DE TARJETA ESTÉTICO ---
+// --- COMPONENTE DE TARJETA ESTÉTICO ---
 const ApiDocumentCard = ({ doc, documentTypeById, entityById }) => {
   const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
   const entity = entityById ? entityById.get(docEntityId) : null;
@@ -60,9 +60,7 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById }) => {
   const expirationDateValue = doc.expires_at;
 
   let isBlocked = doc.aasm_state === 'blocked';
-  if (isBlocked && doc.blocked_description?.toLowerCase().includes('cargo')) {
-    isBlocked = false;
-  }
+  if (isBlocked && doc.blocked_description?.toLowerCase().includes('cargo')) isBlocked = false;
   const hasExpiredStatus = ['rejected', 'expired'].includes(doc.aasm_state);
 
   if (expirationDateValue) {
@@ -104,11 +102,9 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById }) => {
 
   return (
     <div className="bg-white rounded-2xl p-4 md:p-5 relative overflow-hidden shadow-sm border border-gray-100 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 mb-3 w-full">
-      {/* Fondo decorativo responsivo */}
       <div className="absolute top-0 right-0 w-20 h-20 md:w-32 md:h-32 bg-gray-50 rounded-bl-full z-0 pointer-events-none"></div>
       
       <div className="relative z-10 w-full">
-        {/* Título */}
         <div className="flex items-center gap-2 mb-2.5 pr-12">
           <FileText className="w-4 h-4 md:w-5 md:h-5 text-[#394049] flex-shrink-0" />
           <h3 className="font-bold text-[#394049] text-xs md:text-sm leading-tight uppercase truncate">
@@ -116,7 +112,6 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById }) => {
           </h3>
         </div>
 
-        {/* Metadatos principales */}
         <div className="space-y-1.5 mb-3 bg-gray-50/70 p-2.5 rounded-xl border border-gray-100/70">
           <div className="text-xs text-gray-600 flex items-center min-w-0">
             <UserIcon className="w-3.5 h-3.5 mr-2 text-gray-400 flex-shrink-0" />
@@ -132,45 +127,30 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById }) => {
           </div>
         </div>
 
-        {/* Fechas de Emisión / Vencimiento */}
         <div className="space-y-1.5 mb-3.5 text-xs px-0.5">
           <div className="text-gray-400 flex justify-between gap-4">
-            <span>Emisión:</span> 
-            <span className="font-semibold text-gray-600">{formatDate(doc.created_at || doc.issued_at)}</span>
+            <span>Emisión:</span> <span className="font-semibold text-gray-600">{formatDate(doc.created_at || doc.issued_at)}</span>
           </div>
           <div className="text-gray-400 flex justify-between gap-4">
-            <span>Expiración:</span> 
-            <span className="font-semibold text-gray-600">{formatDate(expirationDateValue)}</span>
+            <span>Expiración:</span> <span className="font-semibold text-gray-600">{formatDate(expirationDateValue)}</span>
           </div>
         </div>
 
-        {/* Acciones adaptables a Mobile */}
         <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center w-full">
           <div className={`text-xs font-extrabold text-center px-4 py-1.5 rounded-full border whitespace-nowrap sm:inline-block flex-1 sm:flex-initial ${status.bgClass}`}>
             {status.label}
           </div>
           {doc.download_base64_url ? (
-            <a 
-              href={doc.download_base64_url} 
-              target="_blank" 
-              rel="noreferrer" 
-              className="text-xs font-bold bg-[#394049] text-white px-4 py-2 rounded-xl flex items-center justify-center hover:bg-gray-700 active:bg-gray-800 transition shadow-sm text-center"
-            >
+            <a href={doc.download_base64_url} target="_blank" rel="noreferrer" className="text-xs font-bold bg-[#394049] text-white px-4 py-2 rounded-xl flex items-center justify-center hover:bg-gray-700 active:bg-gray-800 transition shadow-sm text-center">
               <Download className="w-3.5 h-3.5 mr-1.5 shrink-0" /> Ver / Bajar
             </a>
           ) : (
-             <a 
-              href={`https://compliance.controldoc.legal/documentos/${doc.id}`} 
-              target="_blank" 
-              rel="noreferrer" 
-              className="text-xs font-bold bg-[#394049]/10 text-[#394049] border border-[#394049]/20 px-4 py-2 rounded-xl flex items-center justify-center hover:bg-gray-200 active:bg-gray-300 transition shadow-sm text-center"
-            >
+             <a href={`https://compliance.controldoc.legal/documentos/${doc.id}`} target="_blank" rel="noreferrer" className="text-xs font-bold bg-[#394049]/10 text-[#394049] border border-[#394049]/20 px-4 py-2 rounded-xl flex items-center justify-center hover:bg-gray-200 active:bg-gray-300 transition shadow-sm text-center">
               <Eye className="w-3.5 h-3.5 mr-1.5 shrink-0" /> Ver API
             </a>
           )}
         </div>
 
-        {/* Bloqueo descriptivo */}
         {isBlocked && doc.blocked_description && (
           <div className="mt-3 bg-red-50 border border-red-200 p-2.5 rounded-xl flex items-start gap-2 animate-fade-in">
             <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
@@ -181,8 +161,6 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById }) => {
     </div>
   );
 };
-
-// -------------------------------------------------------------------------------------------------
 
 const urls = {
   documents: getApiUrl('/controldoc/documents'), 
@@ -199,35 +177,12 @@ const getDaysRemaining = (dateString) => {
   return Math.ceil(diff / (1000 * 3600 * 24));
 };
 
-const getDocumentEmissionDate = (doc) => {
-  if (!doc || typeof doc !== 'object') return null;
-  const value = doc.created_at || doc.issued_at;
-  if (!value) return null;
-  const parsed = new Date(value);
-  return isNaN(parsed.getTime()) ? null : parsed;
-};
-
-const getDocumentExpirationDate = (doc) => {
-  if (!doc || typeof doc !== 'object' || !doc.expires_at) return null;
-  const parsed = new Date(doc.expires_at);
-  return isNaN(parsed.getTime()) ? null : parsed;
-};
-
-const hasEmissionAfterExpiration = (doc) => {
-  const emissionDate = getDocumentEmissionDate(doc);
-  const expirationDate = getDocumentExpirationDate(doc);
-  if (!emissionDate || !expirationDate) return false;
-  return emissionDate.getTime() > expirationDate.getTime();
-};
-
 const toArray = (value, fallbackKeys = []) => {
   if (Array.isArray(value)) return value;
   if (!value || typeof value !== 'object') return [];
-
   for (const key of fallbackKeys) {
     if (Array.isArray(value[key])) return value[key];
   }
-
   const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
   return dynamicArrayKey ? value[dynamicArrayKey] : [];
 };
@@ -245,12 +200,10 @@ const normalizeText = (value) => (value || '').toString().trim().toLowerCase();
 
 const hasPendingSignature = (doc) => {
   if (!doc || typeof doc !== 'object') return false;
-
   const normalizedString = (value) => {
     if (typeof value !== 'string') return '';
     return value.trim().toLowerCase();
   };
-
   const matchesPendingText = (value) => {
     const lower = normalizedString(value);
     return (
@@ -260,23 +213,15 @@ const hasPendingSignature = (doc) => {
       (lower.includes('signature') && lower.includes('pending'))
     );
   };
-
-  const keysToCheck = [
-    'pending_signature', 'signature_pending', 'pending_signatures', 'pending_signatures_count',
-    'signature_status', 'signature_state', 'aasm_state', 'state', 'status', 'workflow_state'
-  ];
-
+  const keysToCheck = ['pending_signature', 'signature_pending', 'pending_signatures', 'pending_signatures_count', 'signature_status', 'signature_state', 'aasm_state', 'state', 'status', 'workflow_state'];
   for (const key of keysToCheck) {
     const value = doc[key];
     if (value === true) return true;
     if (typeof value === 'number' && value > 0) return true;
     if (matchesPendingText(value)) return true;
   }
-
   return Object.entries(doc).some(([key, value]) => {
-    if (!/pending.*sign|sign.*pending|signature.*pending|pending.*signature|firma|firmas/i.test(key)) {
-      return false;
-    }
+    if (!/pending.*sign|sign.*pending|signature.*pending|pending.*signature|firma|firmas/i.test(key)) return false;
     if (value === true) return true;
     if (typeof value === 'number' && value > 0) return true;
     return matchesPendingText(value);
@@ -293,7 +238,6 @@ export const ViewDocumentos = ({ currentUser }) => {
   const [selectedType, setSelectedType] = useState('all');
   const [selectedEntityId, setSelectedEntityId] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [expiredEmissionFilter, setExpiredEmissionFilter] = useState('all');
   const [signatureFilter, setSignatureFilter] = useState('all');
   
   const [searchTerm, setSearchTerm] = useState('');
@@ -301,22 +245,16 @@ export const ViewDocumentos = ({ currentUser }) => {
 
   const [visibleCount, setVisibleCount] = useState(50);
 
-  // --- 1. EVALUACIÓN DE ROL SEGURA ---
-  const isAdmin = currentUser ? hasAdminRole(currentUser) : apiData.entities.length > 1;
+  const isAdmin = currentUser ? hasAdminRole(currentUser) : false;
 
-  useEffect(() => {
-    setVisibleCount(50);
-  }, [selectedType, selectedEntityId, statusFilter, expiredEmissionFilter, signatureFilter]);
+  useEffect(() => { setVisibleCount(50); }, [selectedType, selectedEntityId, statusFilter, signatureFilter]);
 
   useEffect(() => {
     const showCachedSnapshot = () => {
       const snapshot = readControlDocSnapshot();
       if (!snapshot) return false;
-
       setApiData(normalizeApiData(snapshot.data));
-      const savedAt = new Date(snapshot.savedAt).toLocaleString('es-CL', {
-        dateStyle: 'short', timeStyle: 'short'
-      });
+      const savedAt = new Date(snapshot.savedAt).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' });
       setCacheNotice(`Modo offline: mostrando última sincronización (${savedAt}).`);
       return true;
     };
@@ -327,18 +265,19 @@ export const ViewDocumentos = ({ currentUser }) => {
       setError(null);
       setCacheNotice('');
       
-      const requestOptions = { method: 'GET', credentials: 'same-origin', redirect: 'follow' };
       let hadFetchError = false;
 
       const fetchData = async (url) => {
         try {
-          const response = await fetch(url, requestOptions);
-          if (response.status === 401) {
-            throw new Error("Acceso denegado. Por favor, inicia sesión.");
-          }
-          if (response.status === 502) {
-            throw new Error("El servidor está procesando datos masivos. Por favor, espera 1 minuto.");
-          }
+          // ANTI-CACHE PARA SERVICE WORKER
+          const separator = url.includes('?') ? '&' : '?';
+          const bypassUrl = `${url}${separator}_t=${Date.now()}`;
+          const response = await fetch(bypassUrl, { 
+             method: 'GET', credentials: 'same-origin', cache: 'no-store',
+             headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+          });
+          if (response.status === 401) throw new Error("Acceso denegado. Por favor, inicia sesión.");
+          if (response.status === 502) throw new Error("El servidor está procesando datos masivos. Por favor, espera 1 minuto.");
           if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
           return await response.json();
         } catch (e) {
@@ -360,11 +299,7 @@ export const ViewDocumentos = ({ currentUser }) => {
         const validTypeIds = validTypes.map(t => t.id?.toString());
         const validDocs = (allDocs || []).filter(doc => validTypeIds.includes(doc.document_type_id?.toString()));
         
-        const nextApiData = {
-          documents: validDocs,
-          entities: allEntities || [],
-          documentTypes: validTypes
-        };
+        const nextApiData = { documents: validDocs, entities: allEntities || [], documentTypes: validTypes };
 
         if (hadFetchError && validDocs.length === 0 && hasCachedData) {
           setProgressInfo('');
@@ -385,7 +320,6 @@ export const ViewDocumentos = ({ currentUser }) => {
     fetchAllData();
   }, []);
 
-  // --- 2. EL DOBLE CANDADO DE SEGURIDAD ---
   const myEntity = useMemo(() => {
     if (isAdmin) return null;
     return findEntityForUser(apiData.entities, currentUser) || apiData.entities[0];
@@ -406,49 +340,26 @@ export const ViewDocumentos = ({ currentUser }) => {
         });
   }, [isAdmin, apiData.documents, apiData.entities, currentUser, myExternalId]);
 
-  // --- 3. CONSTRUIR LISTA DE USUARIOS ---
   const relevantEntities = useMemo(() => {
-    if (!isAdmin) {
-      return myEntity ? [myEntity] : [];
-    }
+    if (!isAdmin) return myEntity ? [myEntity] : [];
 
-    const activeEntityIds = new Set(
-      baseDocuments
-        .map(d => d.entity_id?.toString() || d.abstract_entity_id?.toString())
-        .filter(id => id && id !== 'undefined' && id !== 'null')
-    );
-
+    const activeEntityIds = new Set(baseDocuments.map(d => d.entity_id?.toString() || d.abstract_entity_id?.toString()).filter(id => id && id !== 'undefined' && id !== 'null'));
     const usersMap = new Map();
     apiData.entities.forEach(e => {
-      if (e && e.id) {
-        usersMap.set(e.id.toString(), {
-          id: e.id.toString(),
-          name: e.full_name || e.name || e.email || `Usuario ${e.id}`
-        });
-      }
+      if (e && e.id) usersMap.set(e.id.toString(), { id: e.id.toString(), name: e.full_name || e.name || e.email || `Usuario ${e.id}` });
     });
 
     const finalUsers = [];
     activeEntityIds.forEach(id => {
-      if (usersMap.has(id)) {
-        finalUsers.push(usersMap.get(id));
-      } else {
-        finalUsers.push({ id: id, name: `Tripulante ID: ${id}` });
-      }
+      if (usersMap.has(id)) finalUsers.push(usersMap.get(id));
+      else finalUsers.push({ id: id, name: `Tripulante ID: ${id}` });
     });
 
     return finalUsers.sort((a, b) => a.name.localeCompare(b.name));
   }, [isAdmin, baseDocuments, apiData.entities, myEntity]);
 
-  const entityById = useMemo(
-    () => new Map(apiData.entities.map(entity => [entity.id?.toString(), entity])),
-    [apiData.entities]
-  );
-
-  const documentTypeById = useMemo(
-    () => new Map(apiData.documentTypes.map(type => [type.id?.toString(), type])),
-    [apiData.documentTypes]
-  );
+  const entityById = useMemo(() => new Map(apiData.entities.map(entity => [entity.id?.toString(), entity])), [apiData.entities]);
+  const documentTypeById = useMemo(() => new Map(apiData.documentTypes.map(type => [type.id?.toString(), type])), [apiData.documentTypes]);
 
   const getDocumentDisplayName = useCallback((doc) => {
     const type = documentTypeById.get(doc.document_type_id?.toString());
@@ -459,9 +370,7 @@ export const ViewDocumentos = ({ currentUser }) => {
 
   const progressMetrics = useMemo(() => {
     const targetEntityId = isAdmin ? selectedEntityId : myExternalId;
-    if (!targetEntityId || targetEntityId === 'all') {
-      return { percentage: 0, count: 0, total: 0 };
-    }
+    if (!targetEntityId || targetEntityId === 'all') return { percentage: 0, count: 0, total: 0 };
 
     const userDocs = baseDocuments.filter(doc => (doc.entity_id?.toString() || doc.abstract_entity_id?.toString()) === targetEntityId);
     const total = userDocs.length;
@@ -470,11 +379,7 @@ export const ViewDocumentos = ({ currentUser }) => {
       return days === null || days > 30;
     }).length;
 
-    return {
-      percentage: total > 0 ? Math.round((count / total) * 100) : 0,
-      count,
-      total,
-    };
+    return { percentage: total > 0 ? Math.round((count / total) * 100) : 0, count, total };
   }, [baseDocuments, selectedEntityId, isAdmin, myExternalId]);
 
   const processedDocuments = useMemo(() => {
@@ -488,10 +393,7 @@ export const ViewDocumentos = ({ currentUser }) => {
     const query = normalizeText(searchTerm);
 
     return baseDocuments
-      .map(doc => ({
-        doc,
-        daysRemaining: getDaysRemaining(doc.expires_at)
-      }))
+      .map(doc => ({ doc, daysRemaining: getDaysRemaining(doc.expires_at) }))
       .filter(({ doc, daysRemaining }) => {
         const docTypeId = doc.document_type_id?.toString();
         const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString();
@@ -500,10 +402,7 @@ export const ViewDocumentos = ({ currentUser }) => {
         const entityMatch = (!isAdmin) || selectedEntityId === 'all' || docEntityId === selectedEntityId;
         const signatureMatch = signatureFilter === 'all' || hasPendingSignature(doc);
         const isNotBlocked = doc.aasm_state !== 'blocked';
-        const searchableText = [
-          getDocumentDisplayName(doc),
-          doc.label, doc.name, doc.id, doc.document_type_id
-        ].filter(Boolean).join(' ').toLowerCase();
+        const searchableText = [getDocumentDisplayName(doc), doc.label, doc.name, doc.id, doc.document_type_id].filter(Boolean).join(' ').toLowerCase();
 
         const searchMatch = query === '' || searchableText.includes(query);
 
@@ -516,54 +415,33 @@ export const ViewDocumentos = ({ currentUser }) => {
           else if (statusFilter === 'valid') statusMatch = daysRemaining > 60;
         }
 
-        const emissionExpiredMatch =
-          expiredEmissionFilter === 'all' || hasEmissionAfterExpiration(doc);
-
-        return typeMatch && entityMatch && signatureMatch && statusMatch && emissionExpiredMatch && isNotBlocked && searchMatch;
+        return typeMatch && entityMatch && signatureMatch && statusMatch && isNotBlocked && searchMatch;
       })
       .sort((a, b) => urgencyValue(a.daysRemaining) - urgencyValue(b.daysRemaining))
       .map(({ doc }) => doc);
-  }, [baseDocuments, selectedType, selectedEntityId, statusFilter, expiredEmissionFilter, signatureFilter, searchTerm, getDocumentDisplayName, isAdmin]);
+  }, [baseDocuments, selectedType, selectedEntityId, statusFilter, signatureFilter, searchTerm, getDocumentDisplayName, isAdmin]);
 
-  const documentsToRender = useMemo(
-    () => processedDocuments.slice(0, visibleCount),
-    [processedDocuments, visibleCount]
-  );
-
-  const totalDocumentsWithoutBlocked = useMemo(
-    () => baseDocuments.filter((doc) => doc.aasm_state !== 'blocked').length,
-    [baseDocuments]
-  );
+  const documentsToRender = useMemo(() => processedDocuments.slice(0, visibleCount), [processedDocuments, visibleCount]);
+  const totalDocumentsWithoutBlocked = useMemo(() => baseDocuments.filter((doc) => doc.aasm_state !== 'blocked').length, [baseDocuments]);
 
   const searchSuggestions = useMemo(() => {
     if (!searchTerm.trim()) return [];
     return processedDocuments.slice(0, 6);
   }, [processedDocuments, searchTerm]);
 
-  const handleSelectSuggestion = (doc) => {
-    setSearchTerm(getDocumentDisplayName(doc));
-    setIsAutocompleteOpen(false);
-  };
-
-  const handleClearSelection = () => {
-    setSearchTerm('');
-    setIsAutocompleteOpen(false);
-  };
+  const handleSelectSuggestion = (doc) => { setSearchTerm(getDocumentDisplayName(doc)); setIsAutocompleteOpen(false); };
+  const handleClearSelection = () => { setSearchTerm(''); setIsAutocompleteOpen(false); };
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in w-full">
-      {/* Cabecera Responsiva */}
       <div className="bg-[#394049] p-4 md:p-5 flex items-center justify-between flex-shrink-0 shadow-md">
         <h2 className="text-white text-lg md:text-xl font-semibold flex items-center">
-          <FolderOpen className="w-5 h-5 md:w-6 md:h-6 mr-2 shrink-0 text-gray-300" /> 
-          <span>Mis Documentos</span>
+          <FolderOpen className="w-5 h-5 md:w-6 md:h-6 mr-2 shrink-0 text-gray-300" /> <span>Mis Documentos</span>
         </h2>
       </div>
 
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50 p-4 md:p-6 max-w-7xl mx-auto w-full">
         <div className="space-y-4">
-          
-          {/* Indicadores de Conteo y Avance del Trabajador */}
           <div className="flex flex-col gap-4">
             {totalDocumentsWithoutBlocked > 0 && (
               <span className="text-[11px] md:text-xs bg-gray-200 text-gray-600 px-3 py-1.5 rounded-full font-bold shadow-sm inline-flex items-center w-fit">
@@ -584,22 +462,16 @@ export const ViewDocumentos = ({ currentUser }) => {
                   </div>
                 </div>
                 <div className="w-full bg-gray-100 rounded-full h-3 mt-3 overflow-hidden">
-                  <div
-                    className="bg-[#921E30] h-3 rounded-full transition-all duration-1000 ease-out"
-                    style={{ width: `${progressMetrics.percentage}%` }}
-                  ></div>
+                  <div className="bg-[#921E30] h-3 rounded-full transition-all duration-1000 ease-out" style={{ width: `${progressMetrics.percentage}%` }}></div>
                 </div>
               </div>
             )}
           </div>
 
           {cacheNotice && (
-            <div className="bg-yellow-50 text-yellow-800 p-3 rounded-xl text-xs font-medium border border-yellow-100 shadow-sm">
-              {cacheNotice}
-            </div>
+            <div className="bg-yellow-50 text-yellow-800 p-3 rounded-xl text-xs font-medium border border-yellow-100 shadow-sm">{cacheNotice}</div>
           )}
 
-          {/* Panel Rediseñado de Filtros de Búsqueda */}
           {baseDocuments.length > 0 && (
             <div className="bg-white rounded-2xl p-4 md:p-5 border border-gray-100 shadow-sm space-y-4">
               <div className="flex items-center gap-2 border-b border-gray-50 pb-2">
@@ -607,42 +479,18 @@ export const ViewDocumentos = ({ currentUser }) => {
                 <h3 className="text-sm font-bold text-gray-800">Filtros de Búsqueda</h3>
               </div>
               
-              {/* Bloque de entrada del Buscador */}
               <div className="space-y-1">
                 <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Buscar Documento</label>
                 <div className="relative">
                   <div className="relative bg-white rounded-xl border border-gray-200 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
                     <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                    <input
-                      type="text"
-                      value={searchTerm}
-                      onChange={(e) => {
-                        setSearchTerm(e.target.value);
-                        setIsAutocompleteOpen(true);
-                      }}
-                      onFocus={() => setIsAutocompleteOpen(true)}
-                      placeholder="Busca por nombre o tipo de documento..."
-                      className="w-full bg-transparent py-2.5 pl-10 pr-10 focus:outline-none text-sm text-gray-700 placeholder-gray-400"
-                    />
-                    {searchTerm && (
-                      <button
-                        type="button"
-                        onClick={handleClearSelection}
-                        className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 font-bold text-xs"
-                      >
-                        ✕
-                      </button>
-                    )}
+                    <input type="text" value={searchTerm} onChange={(e) => { setSearchTerm(e.target.value); setIsAutocompleteOpen(true); }} onFocus={() => setIsAutocompleteOpen(true)} placeholder="Busca por nombre o tipo de documento..." className="w-full bg-transparent py-2.5 pl-10 pr-10 focus:outline-none text-sm text-gray-700 placeholder-gray-400" />
+                    {searchTerm && (<button type="button" onClick={handleClearSelection} className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 font-bold text-xs">✕</button>)}
                   </div>
                   {isAutocompleteOpen && searchSuggestions.length > 0 && (
                     <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 max-h-60 overflow-y-auto">
                       {searchSuggestions.map((doc) => (
-                        <button
-                          key={doc.id}
-                          type="button"
-                          onClick={() => handleSelectSuggestion(doc)}
-                          className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-50 last:border-b-0"
-                        >
+                        <button key={doc.id} type="button" onClick={() => handleSelectSuggestion(doc)} className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-50 last:border-b-0">
                           <p className="text-sm font-semibold text-gray-700 truncate">{getDocumentDisplayName(doc)}</p>
                           <p className="text-[11px] text-gray-400 mt-0.5">ID: {doc.id}</p>
                         </button>
@@ -652,8 +500,7 @@ export const ViewDocumentos = ({ currentUser }) => {
                 </div>
               </div>
               
-              {/* Selectores Adaptables (Móvil vertical, Desktop horizontal) */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 pt-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
                 <div>
                   <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Tipo</label>
                   <select value={selectedType} onChange={(e) => setSelectedType(e.target.value)} className="w-full px-3 py-2 text-xs text-gray-600 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white truncate">
@@ -683,13 +530,6 @@ export const ViewDocumentos = ({ currentUser }) => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">EMISION VENCIDOS</label>
-                  <select value={expiredEmissionFilter} onChange={(e) => setExpiredEmissionFilter(e.target.value)} className="w-full px-3 py-2 text-xs text-gray-600 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white">
-                    <option value="all">Todos</option>
-                    <option value="only">Solo emisión mayor a expiración</option>
-                  </select>
-                </div>
-                <div>
                   <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Firmas</label>
                   <select value={signatureFilter} onChange={(e) => setSignatureFilter(e.target.value)} className="w-full px-3 py-2 text-xs text-gray-600 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white">
                     <option value="all">Todas</option>
@@ -700,7 +540,6 @@ export const ViewDocumentos = ({ currentUser }) => {
             </div>
           )}
 
-          {/* Indicadores de Carga y Errores */}
           {isLoading && (
             <div className="flex flex-col items-center justify-center py-16 text-gray-400">
               <Loader2 className="w-8 h-8 animate-spin text-[#921E30] mb-3" />
@@ -725,21 +564,14 @@ export const ViewDocumentos = ({ currentUser }) => {
             </div>
           )}
 
-          {/* Listado de Tarjetas de Documentos */}
           {documentsToRender.length > 0 && (
             <div className="space-y-3">
               {documentsToRender.map((doc) => (
-                <ApiDocumentCard
-                  key={doc.id}
-                  doc={doc}
-                  entityById={entityById}
-                  documentTypeById={documentTypeById}
-                />
+                <ApiDocumentCard key={doc.id} doc={doc} entityById={entityById} documentTypeById={documentTypeById} />
               ))}
             </div>
           )}
           
-          {/* Botón Paginador */}
           {visibleCount < processedDocuments.length && (
             <div className="text-center py-4">
               <button 
