@@ -1,4 +1,4 @@
-import { handleRegister, handleLogin, handleAuthMe } from '../services/auth.service.js';
+import { handleRegister, handleLogin, handleVerifyResetIdentity, handleResetPassword, handleAuthMe } from '../services/auth.services.js';
 
 export async function authRouter(req, res, cleanPath) {
   if (cleanPath === '/api/auth/register') {
@@ -8,6 +8,16 @@ export async function authRouter(req, res, cleanPath) {
   
   if (cleanPath === '/api/auth/login') {
     await handleLogin(req, res);
+    return true;
+  }
+
+  if (cleanPath === '/api/auth/verify-reset-identity') {
+    await handleVerifyResetIdentity(req, res);
+    return true;
+  }
+
+  if (cleanPath === '/api/auth/reset-password') {
+    await handleResetPassword(req, res);
     return true;
   }
   

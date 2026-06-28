@@ -7,5 +7,14 @@
     "role": "user",
     "activo": true,
     "creado_en": "2026-06-17T20:06:21.572Z"
+  },
+  {
+    "id": 1782668258032,
+    "nombre": "Admin Local",
+    "email": "admin@compasmarine.cl",
+    "passwordHash": "$2b$12$DneFDzo4sR6gmuKfom7FfOH0y1lhspTdbkwY.EllFlltUyS2VyLDy",
+    "role": "admin",
+    "activo": true,
+    "creado_en": "2026-06-28T17:37:38.032Z"
   }
 ]
