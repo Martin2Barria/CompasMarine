@@ -80,17 +80,23 @@ export default function App() {
   // --- 1. FLUJO NO AUTENTICADO: Se mantiene fijo tipo "móvil" por estética de formulario ---
   if (!isAuthenticated) {
     return (
-      <div className="bg-[#333] flex justify-center min-h-screen m-0 font-sans">
-        <div className="w-full max-w-[414px] bg-white min-h-screen shadow-[0_0_20px_rgba(0,0,0,0.5)] flex flex-col justify-center relative overflow-hidden">
-          <SyncProgressOverlay active={syncProgress.active} percent={syncProgress.percent} />
-          
-          <Login
-            onLoginSuccess={handleLoginSuccess}
+      // ✨ EDITADO: Cambiamos las clases del contenedor para que ocupe todo el ancho (w-full) en la PC en lugar de simular una pantalla de celular fija
+      <div className="w-full min-h-screen relative font-sans">
+        <SyncProgressOverlay active={syncProgress.active} percent={syncProgress.percent} />
+        
+        {authScreen === 'login' && (
+          <Login 
+            onLoginSuccess={handleLoginSuccess} 
+            onNavigate={setAuthScreen} 
             onLoadingProgress={reportLoadingProgress}
           />
+        )}
 
-          <PwaInstallPrompt className="absolute left-4 right-4 bottom-4" />
-        </div>
+        {authScreen === 'forgot' && (
+          <OlvidastePassword onNavigate={setAuthScreen} onLoadingProgress={reportLoadingProgress} />
+        )}
+
+        <PwaInstallPrompt className="absolute left-4 right-4 bottom-4" />
       </div>
     );
   }

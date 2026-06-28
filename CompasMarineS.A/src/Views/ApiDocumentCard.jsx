@@ -67,7 +67,7 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
         </div>
   
 {/* Metadatos principales (CORREGIDO: Usa bg-white y border-gray-100 que están mapeados en tu CSS oscuro) */}
-        <div className="space-y-1.5 mb-3 bg-white bg-opacity-60 dark:bg-opacity-10 p-2.5 rounded-xl border border-gray-100">
+        <div className="space-y-1.5 mb-3 bg-white/60 dark:bg-white/10 p-2.5 rounded-xl border border-gray-100">
           <div className="text-xs text-gray-600 flex items-center min-w-0">
             <UserIcon className="w-3.5 h-3.5 mr-2 text-gray-400 flex-shrink-0" />
             <span className="font-semibold text-gray-800 truncate max-w-[200px] xs:max-w-[280px] sm:max-w-none">
