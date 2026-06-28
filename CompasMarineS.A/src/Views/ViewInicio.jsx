@@ -433,7 +433,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         <div className="mx-auto w-full max-w-6xl flex flex-row flex-wrap sm:flex-nowrap items-center justify-between gap-4 relative z-10">
           <div className="flex items-center gap-3 sm:gap-4 min-w-0">
             <div className="w-14 h-14 sm:w-16 sm:h-16 md:w-20 md:h-20 rounded-full bg-white border-2 border-[#921E30] flex-shrink-0 flex items-center justify-center shadow-lg overflow-hidden">
-              {isAdminUser ? <Globe className="w-7 h-7 sm:w-8 sm:h-8 md:w-10 md:h-10 text-gray-400" /> : <User className="w-7 h-7 sm:w-8 sm:h-8 md:w-10 md:h-10 text-gray-400" />}
+              {isAdminUser}
             </div>
             <div className="flex flex-col gap-0.5 min-w-0">
               <span className="text-white text-xs font-bold tracking-wider uppercase opacity-75">
