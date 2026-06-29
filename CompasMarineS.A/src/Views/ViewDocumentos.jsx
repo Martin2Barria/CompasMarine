@@ -4,17 +4,20 @@ import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Eye, Tag, D
 // --- STUBS Y DEPENDENCIAS INTEGRADAS ---
 const getApiUrl = (path) => path.startsWith('http') ? path : `/api${path}`;
 
-const readControlDocSnapshot = () => {
-  try {
-    const stored = localStorage.getItem('controlDocSnapshot');
-    return stored ? JSON.parse(stored) : null;
-  } catch { return null; }
+// 1. LLAVES CORREGIDAS PARA COMPARTIR CACHÉ CON VISTA INICIO
+const getUserSnapshotKey = (user) => user?.id ? `user_${user.id}` : 'global';
+const SNAPSHOT_FRESH_MS = 15 * 60 * 1000; // 15 minutos
+
+const isControlDocSnapshotFresh = (snapshot, maxAgeMs) => {
+  if (!snapshot || !snapshot.savedAt) return false;
+  return (Date.now() - new Date(snapshot.savedAt).getTime()) < maxAgeMs;
 };
 
-const saveControlDocSnapshot = (data) => {
+const readControlDocSnapshot = (key) => {
   try {
-    localStorage.setItem('controlDocSnapshot', JSON.stringify({ data, savedAt: new Date().toISOString() }));
-  } catch {}
+    const stored = localStorage.getItem(`controlDocSnapshot_${key}`);
+    return stored ? JSON.parse(stored) : null;
+  } catch { return null; }
 };
 
 const hasAdminRole = (user) => {
@@ -249,76 +252,83 @@ export const ViewDocumentos = ({ currentUser }) => {
 
   useEffect(() => { setVisibleCount(50); }, [selectedType, selectedEntityId, statusFilter, signatureFilter]);
 
+  // 2. EFECTO CORREGIDO PARA QUE CANCELE LA DESCARGA SI HAY CACHÉ
   useEffect(() => {
-    const showCachedSnapshot = () => {
-      const snapshot = readControlDocSnapshot();
-      if (!snapshot) return false;
-      setApiData(normalizeApiData(snapshot.data));
-      const savedAt = new Date(snapshot.savedAt).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' });
-      setCacheNotice(`Modo offline: mostrando última sincronización (${savedAt}).`);
-      return true;
-    };
+    let isCancelled = false;
+    const snapshotOwnerKey = getUserSnapshotKey(currentUser);
 
     const fetchAllData = async () => {
-      const hasCachedData = showCachedSnapshot();
-      setIsLoading(!hasCachedData); 
-      setError(null);
-      setCacheNotice('');
-      
-      let hadFetchError = false;
+      // Intentar leer de la bóveda correcta que creó ViewInicio
+      const snapshot = readControlDocSnapshot(snapshotOwnerKey);
 
-      const fetchData = async (url) => {
-        try {
-          // ANTI-CACHE PARA SERVICE WORKER
+      if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
+        setApiData(normalizeApiData({
+          documents: snapshot.documents || [],
+          entities: snapshot.entities || [],
+          documentTypes: snapshot.documentTypes || []
+        }));
+        
+        // Si la información es menor a 15 minutos, DETENEMOS LA DESCARGA. ¡Carga instantánea!
+        if (isControlDocSnapshotFresh(snapshot, SNAPSHOT_FRESH_MS)) {
+          setIsLoading(false);
+          setCacheNotice('');
+          return; 
+        } else {
+          const savedAt = new Date(snapshot.savedAt).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' });
+          setCacheNotice(`Mostrando datos de caché (${savedAt}). Actualizando en fondo...`);
+        }
+      } else {
+        setIsLoading(true);
+        setCacheNotice('');
+      }
+
+      setError(null);
+      setProgressInfo("Sincronizando documentos...");
+
+      try {
+        const requestOptions = {
+          method: 'GET', credentials: 'same-origin', cache: 'no-store',
+          headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+        };
+
+        const fetchJson = async (url) => {
           const separator = url.includes('?') ? '&' : '?';
           const bypassUrl = `${url}${separator}_t=${Date.now()}`;
-          const response = await fetch(bypassUrl, { 
-             method: 'GET', credentials: 'same-origin', cache: 'no-store',
-             headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
-          });
+          const response = await fetch(bypassUrl, requestOptions);
           if (response.status === 401) throw new Error("Acceso denegado. Por favor, inicia sesión.");
           if (response.status === 502) throw new Error("El servidor está procesando datos masivos. Por favor, espera 1 minuto.");
           if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
           return await response.json();
-        } catch (e) {
-          hadFetchError = true;
-          throw e;
-        }
-      };
+        };
 
-      try {
-        if (!hasCachedData) setProgressInfo("Conectando con Compas Marine...");
-        
         const [allTypes, allEntities, allDocs] = await Promise.all([
-          fetchData(urls.documentTypes),
-          fetchData(urls.entities),
-          fetchData(urls.documents)
+          fetchJson(urls.documentTypes),
+          fetchJson(urls.entities),
+          fetchJson(urls.documents)
         ]);
+
+        if (isCancelled) return;
 
         const validTypes = allTypes || [];
         const validTypeIds = validTypes.map(t => t.id?.toString());
         const validDocs = (allDocs || []).filter(doc => validTypeIds.includes(doc.document_type_id?.toString()));
-        
+
         const nextApiData = { documents: validDocs, entities: allEntities || [], documentTypes: validTypes };
 
-        if (hadFetchError && validDocs.length === 0 && hasCachedData) {
-          setProgressInfo('');
-          return;
-        }
-        
         setApiData(normalizeApiData(nextApiData));
-        if (!hadFetchError) saveControlDocSnapshot(nextApiData);
-        
         setProgressInfo('');
+        setCacheNotice('');
       } catch (err) {
-        if (!hasCachedData) setError(err.message);
+        if (!snapshot) setError(err.message);
       } finally {
         setIsLoading(false);
       }
     };
 
     fetchAllData();
-  }, []);
+
+    return () => { isCancelled = true; };
+  }, [currentUser]);
 
   const myEntity = useMemo(() => {
     if (isAdmin) return null;
