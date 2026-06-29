@@ -578,12 +578,10 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                 <span className="text-[9px] font-bold uppercase tracking-wider">Admin</span>
               </button>
             )}
-            {!isAdminUser && (
-              <button type="button" onClick={handleOpenPasswordModal} className="relative z-10 bg-white/10 hover:bg-white/20 text-white p-2 rounded-xl border border-white/20 backdrop-blur-sm transition-all shadow-sm flex flex-col items-center justify-center shrink-0 cursor-pointer" title="Cambiar contraseña">
-                <KeyRound className="w-5 h-5 mb-0.5" />
-                <span className="text-[9px] font-bold uppercase tracking-wider">Clave</span>
-              </button>
-            )}
+            <button type="button" onClick={handleOpenPasswordModal} className="relative z-10 bg-white/10 hover:bg-white/20 text-white p-2 rounded-xl border border-white/20 backdrop-blur-sm transition-all shadow-sm flex flex-col items-center justify-center shrink-0 cursor-pointer" title="Cambiar contraseña">
+              <KeyRound className="w-5 h-5 mb-0.5" />
+              <span className="text-[9px] font-bold uppercase tracking-wider">Clave</span>
+            </button>
           </div>
         </div>
       </div>
