@@ -20,20 +20,23 @@ const readControlDocSnapshot = (key) => {
   } catch { return null; }
 };
 
-// --- VALIDACIÓN DE ROLES (BLINDADO CON IDs REALES DE DB) ---
-const readControlDocSnapshot = (key) => {
+const saveControlDocSnapshot = (data, key) => {
   try {
-    const stored = localStorage.getItem(`controlDocSnapshot_${key}`);
-    return stored ? JSON.parse(stored) : null;
-  } catch { return null; }
+    localStorage.setItem(`controlDocSnapshot_${key}`, JSON.stringify({ ...data, savedAt: new Date().toISOString() }));
+  } catch {}
 };
 
-// EL CANDADO DEFINITIVO DE ROLES CON TUS IDs EXACTOS
+// --- VALIDACIÓN DE ROLES (BLINDADO CON IDs REALES DE DB) ---
 const hasAdminRole = (user) => {
   if (!user) return false;
+  
+  // 1. Detección por ID (Inquebrantable)
   if (user.rol_id !== undefined && user.rol_id !== null) {
+    // 2=Lector Global, 10=Admin Supremo, 11=Admin Gestor, 13=Admin
     return [2, 10, 11, 13].includes(Number(user.rol_id));
   }
+
+  // 2. Fallback de seguridad (Por si no viaja el ID)
   const roleName = (user?.rol || user?.role || '').toLowerCase().trim();
   return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName) || roleName.includes('admin');
 };
@@ -261,17 +264,16 @@ export const ViewDocumentos = ({ currentUser }) => {
   const [visibleCount, setVisibleCount] = useState(50);
 
   const isAdmin = currentUser ? hasAdminRole(currentUser) : false;
+  const snapshotOwnerKey = getUserSnapshotKey(currentUser);
 
   useEffect(() => { setVisibleCount(50); }, [selectedType, selectedEntityId, statusFilter, signatureFilter]);
 
-  // 2. EFECTO CORREGIDO PARA QUE CANCELE LA DESCARGA SI HAY CACHÉ
   useEffect(() => {
     let isCancelled = false;
-    const snapshotOwnerKey = getUserSnapshotKey(currentUser);
 
     const fetchAllData = async () => {
-      // Intentar leer de la bóveda correcta que creó ViewInicio
       const snapshot = readControlDocSnapshot(snapshotOwnerKey);
+      let hasCachedData = false;
 
       if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
         setApiData(normalizeApiData({
@@ -280,14 +282,14 @@ export const ViewDocumentos = ({ currentUser }) => {
           documentTypes: snapshot.documentTypes || []
         }));
         
-        // Si la información es menor a 15 minutos, DETENEMOS LA DESCARGA. ¡Carga instantánea!
         if (isControlDocSnapshotFresh(snapshot, SNAPSHOT_FRESH_MS)) {
           setIsLoading(false);
           setCacheNotice('');
           return; 
         } else {
+          hasCachedData = true;
           const savedAt = new Date(snapshot.savedAt).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' });
-          setCacheNotice(`Mostrando datos de caché (${savedAt}). Actualizando en fondo...`);
+          setCacheNotice(`Mostrando datos en caché (${savedAt}). Buscando actualizaciones...`);
         }
       } else {
         setIsLoading(true);
@@ -297,26 +299,33 @@ export const ViewDocumentos = ({ currentUser }) => {
       setError(null);
       setProgressInfo("Sincronizando documentos...");
 
-      try {
-        const requestOptions = {
-          method: 'GET', credentials: 'same-origin', cache: 'no-store',
-          headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
-        };
+      let hadFetchError = false;
 
-        const fetchJson = async (url) => {
+      const fetchData = async (url) => {
+        try {
           const separator = url.includes('?') ? '&' : '?';
           const bypassUrl = `${url}${separator}_t=${Date.now()}`;
-          const response = await fetch(bypassUrl, requestOptions);
+          const response = await fetch(bypassUrl, { 
+             method: 'GET', credentials: 'same-origin', cache: 'no-store',
+             headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+          });
           if (response.status === 401) throw new Error("Acceso denegado. Por favor, inicia sesión.");
           if (response.status === 502) throw new Error("El servidor está procesando datos masivos. Por favor, espera 1 minuto.");
           if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
           return await response.json();
-        };
+        } catch (e) {
+          hadFetchError = true;
+          throw e;
+        }
+      };
 
+      try {
+        if (!hasCachedData) setProgressInfo("Conectando con Compas Marine...");
+        
         const [allTypes, allEntities, allDocs] = await Promise.all([
-          fetchJson(urls.documentTypes),
-          fetchJson(urls.entities),
-          fetchJson(urls.documents)
+          fetchData(urls.documentTypes),
+          fetchData(urls.entities),
+          fetchData(urls.documents)
         ]);
 
         if (isCancelled) return;
@@ -324,23 +333,30 @@ export const ViewDocumentos = ({ currentUser }) => {
         const validTypes = allTypes || [];
         const validTypeIds = validTypes.map(t => t.id?.toString());
         const validDocs = (allDocs || []).filter(doc => validTypeIds.includes(doc.document_type_id?.toString()));
-
+        
         const nextApiData = { documents: validDocs, entities: allEntities || [], documentTypes: validTypes };
 
+        if (hadFetchError && validDocs.length === 0 && hasCachedData) {
+          setProgressInfo('');
+          return;
+        }
+        
         setApiData(normalizeApiData(nextApiData));
+        if (!hadFetchError && !isAdmin) saveControlDocSnapshot(nextApiData, snapshotOwnerKey);
+        
         setProgressInfo('');
         setCacheNotice('');
       } catch (err) {
-        if (!snapshot) setError(err.message);
+        if (!hasCachedData) setError(err.message);
       } finally {
-        setIsLoading(false);
+        if (!isCancelled) setIsLoading(false);
       }
     };
 
     fetchAllData();
 
     return () => { isCancelled = true; };
-  }, [currentUser]);
+  }, [currentUser, isAdmin, snapshotOwnerKey]);
 
   const myEntity = useMemo(() => {
     if (isAdmin) return null;
