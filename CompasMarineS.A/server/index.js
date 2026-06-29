@@ -419,6 +419,8 @@ async function handleLogin(req, res) {
             res.setHeader('Set-Cookie', `compas_user_id=${rows[0].id}; Path=/; HttpOnly; SameSite=Lax`);
             return sendJson(res, 200, { ok: true, user: { id: rows[0].id, nombre: rows[0].nombre, email, rol: roles[0]?.rol || 'Usuario' } });
         }
+
+      return sendJson(res, 401, { error: 'Credenciales incorrectas.' });
     }
 
     const [entityRows] = await dbPool.execute(`SELECT * FROM entidades_api WHERE email = ?`, [email]);
