@@ -551,24 +551,33 @@ async function handleAuthMe(req, res) {
   } catch (e) { sendJson(res, 500, { error: 'Error interno' }); }
 }
 
-// --- SERVICIOS ADMIN SUPREMO (Gestión de Usuarios y Roles) ---
+// --- SERVICIOS ADMIN SUPREMO Y GESTOR (Gestión de Usuarios y Roles) ---
 async function isAdminSupremo(req) {
   const cookieUserId = getCookie(req, 'compas_user_id');
   if (!cookieUserId) return false;
   try {
     const [rows] = await dbPool.execute('SELECT r.id as rol_id FROM usuarios_roles ur JOIN roles r ON ur.rol_id = r.id WHERE ur.usuario_id = ?', [cookieUserId]);
     if (rows.length === 0) return false;
-    return Number(rows[0].rol_id) === 10; // 10 es el ID inquebrantable del Admin Supremo
+    return Number(rows[0].rol_id) === 10; // 10 = Admin Supremo
+  } catch { return false; }
+}
+
+async function isGestorOrSupremo(req) {
+  const cookieUserId = getCookie(req, 'compas_user_id');
+  if (!cookieUserId) return false;
+  try {
+    const [rows] = await dbPool.execute('SELECT r.id as rol_id FROM usuarios_roles ur JOIN roles r ON ur.rol_id = r.id WHERE ur.usuario_id = ?', [cookieUserId]);
+    if (rows.length === 0) return false;
+    const rolId = Number(rows[0].rol_id);
+    return rolId === 10 || rolId === 11; // 10 = Supremo, 11 = Gestor
   } catch { return false; }
 }
 
 async function handleGetUsers(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Método no válido' });
-  if (!(await isAdminSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere el rol de Admin Supremo.' });
+  if (!(await isGestorOrSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere nivel de Administrador.' });
 
   try {
-    // 1. Buscamos a TODOS los sincronizados (entidades_api)
-    // 2. Hacemos un cruce con usuarios por si ya tienen una cuenta
     const [users] = await dbPool.execute(`
       SELECT 
         e.external_id, 
@@ -593,7 +602,7 @@ async function handleGetUsers(req, res) {
 
 async function handleChangeUserRole(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
-  if (!(await isAdminSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere el rol de Admin Supremo.' });
+  if (!(await isAdminSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Solo el Admin Supremo puede cambiar roles.' });
 
   let payload;
   try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
@@ -604,7 +613,6 @@ async function handleChangeUserRole(req, res) {
   try {
     let targetUserId = userId;
 
-    // Si el frontend indica que no tiene cuenta, userId es el external_id de entidades_api
     if (needsAccount) {
       const [entities] = await dbPool.execute('SELECT nombre, email, rut FROM entidades_api WHERE external_id = ?', [userId]);
       if (entities.length === 0) return sendJson(res, 404, { error: 'No se encontró la entidad en la base de datos.' });
@@ -612,7 +620,6 @@ async function handleChangeUserRole(req, res) {
       const entidad = entities[0];
       const rutLimpio = entidad.rut ? entidad.rut.replace(/[^0-9kK]/g, '').toLowerCase().replace(/^0+/, '') : '123456789';
       
-      // Le creamos una cuenta automáticamente usando su RUT como clave inicial
       const hash = await bcrypt.hash(rutLimpio, 12);
       const [insertRes] = await dbPool.execute(
         'INSERT INTO usuarios (nombre, email, password_hash) VALUES (?, ?, ?)', 
@@ -621,7 +628,6 @@ async function handleChangeUserRole(req, res) {
       targetUserId = insertRes.insertId;
     }
 
-    // Actualizamos el rol de forma segura usando el ID interno válido
     await dbPool.execute('DELETE FROM usuarios_roles WHERE usuario_id = ?', [targetUserId]);
     await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [targetUserId, roleId]);
     
@@ -634,7 +640,7 @@ async function handleChangeUserRole(req, res) {
 
 async function handleResetUserPassword(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
-  if (!(await isAdminSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere el rol de Admin Supremo.' });
+  if (!(await isGestorOrSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere nivel de Administrador.' });
 
   let payload;
   try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
@@ -670,18 +676,19 @@ async function handleResetUserPassword(req, res) {
 
 // --- SERVICIOS ADMIN (Generales) ---
 async function handleSetupDB(req, res) {
+  if (!(await isGestorOrSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado.' });
   try {
     await dbPool.query(`CREATE TABLE IF NOT EXISTS usuarios (id INT AUTO_INCREMENT PRIMARY KEY, nombre VARCHAR(100) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, activo BOOLEAN NOT NULL DEFAULT TRUE)`);
     await dbPool.query(`CREATE TABLE IF NOT EXISTS roles (id INT AUTO_INCREMENT PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE)`);
     await dbPool.query(`CREATE TABLE IF NOT EXISTS usuarios_roles (usuario_id INT NOT NULL, rol_id INT NOT NULL, PRIMARY KEY (usuario_id, rol_id))`);
     await dbPool.query(`CREATE TABLE IF NOT EXISTS entidades_api (id INT AUTO_INCREMENT PRIMARY KEY, external_id VARCHAR(100) NOT NULL UNIQUE, rut VARCHAR(50), nombre VARCHAR(255), email VARCHAR(150), data_json JSON)`);
-    await dbPool.query(`INSERT IGNORE INTO roles (nombre) VALUES ('Admin'), ('Usuario')`);
+    await dbPool.query(`INSERT IGNORE INTO roles (nombre) VALUES ('Admin Supremo'), ('Admin Gestor'), ('Usuario')`);
     
     const [adminCheck] = await dbPool.execute('SELECT id FROM usuarios WHERE email = "admin@compasmarine.cl"');
     if (adminCheck.length === 0) {
       const hash = await bcrypt.hash('admin123', 12);
       const [insertUser] = await dbPool.execute('INSERT INTO usuarios (nombre, email, password_hash) VALUES (?, ?, ?)', ['Admin', 'admin@compasmarine.cl', hash]);
-      const [roleCheck] = await dbPool.execute('SELECT id FROM roles WHERE nombre = "Admin"');
+      const [roleCheck] = await dbPool.execute('SELECT id FROM roles WHERE nombre = "Admin Supremo"');
       if (roleCheck.length > 0) await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [insertUser.insertId, roleCheck[0].id]);
     }
     sendJson(res, 200, { ok: true, message: 'DB lista.' });
@@ -689,6 +696,7 @@ async function handleSetupDB(req, res) {
 }
 
 async function handleSyncUsersToDB(req, res) {
+  if (!(await isGestorOrSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado.' });
   try {
     const credentials = resolveControlDocCredentials(null);
     const allEntities = await fetchAllControlDocPages('/api/v1/abstract/entities', credentials);
@@ -719,7 +727,7 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/auth/reset-password') return await handleResetPassword(req, res);
     if (cleanPath === '/api/auth/me') return await handleAuthMe(req, res);
     
-    // API Admin Supremo
+    // API Admin Supremo y Gestor
     if (cleanPath === '/api/admin/users') return await handleGetUsers(req, res);
     if (cleanPath === '/api/admin/users/role') return await handleChangeUserRole(req, res);
     if (cleanPath === '/api/admin/users/reset-password') return await handleResetUserPassword(req, res);

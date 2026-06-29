@@ -14,7 +14,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
   const [usersError, setUsersError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   
-  // Paginación para no congelar el navegador con 8000 usuarios
+  // Paginación para no congelar el navegador
   const [visibleCount, setVisibleCount] = useState(50);
   
   // Identificador del Admin actual
@@ -27,6 +27,9 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
       .then(data => { if (data?.user) setAdminUser(data.user); })
       .catch(() => {});
   }, []);
+
+  const isSupremo = Number(adminUser?.rol_id) === 10;
+  const isGestor = Number(adminUser?.rol_id) === 11;
 
   // Reiniciar paginación al buscar o cambiar pestaña
   useEffect(() => {
@@ -92,7 +95,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     }
   };
 
-  // --- GESTIÓN DE USUARIOS (SOLO ADMIN SUPREMO) ---
+  // --- GESTIÓN DE USUARIOS ---
   const fetchUsers = async () => {
     setLoadingUsers(true);
     setUsersError('');
@@ -100,7 +103,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     try {
       const res = await fetch('/api/admin/users');
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Error al obtener usuarios. (¿Eres Admin Supremo?)');
+      if (!res.ok) throw new Error(data.error || 'Error al obtener usuarios. (Revisa tus permisos)');
       setUsers(data.users || []);
       setRoles(data.roles || []);
       onLoadingProgress?.({ percent: 100, done: true });
@@ -119,7 +122,9 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
   }, [activeTab]);
 
   const handleRoleChange = async (userId, newRoleId) => {
+    if (!isSupremo) return alert("Acción denegada: Solo el Admin Supremo puede cambiar roles.");
     if (!window.confirm('¿Estás seguro de que deseas cambiarle el rol a este usuario?')) return;
+    
     onLoadingProgress?.({ percent: 20 });
     try {
       const user = users.find(u => u.id === userId);
@@ -133,7 +138,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       alert(data.message);
-      fetchUsers(); // Recargar la lista para reflejar el cambio
+      fetchUsers(); 
     } catch (err) {
       onLoadingProgress?.({ active: false });
       alert('Error: ' + err.message);
@@ -159,27 +164,42 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     }
   };
 
-  // --- ACCIÓN MASIVA 1: DEGRADAR A TODOS A USUARIO ---
+  // --- ACCIÓN MASIVA: DEGRADAR A TODOS A USUARIO ---
   const handleAssignAllAsUser = async () => {
+    if (!isSupremo) return alert("Acción denegada: Solo el Admin Supremo puede ejecutar esta acción masiva.");
+
     const defaultRole = roles.find(r => r.nombre.toLowerCase() === 'usuario');
     const defaultRoleId = defaultRole ? defaultRole.id : 3;
 
-    // Excluimos al Admin actual y a los que ya tienen rol "Usuario"
-    const targetUsers = users.filter(u => String(u.id) !== String(adminUser?.id) && Number(u.rol_id) !== Number(defaultRoleId));
+    const allToChange = users.filter(u => String(u.id) !== String(adminUser?.id) && Number(u.rol_id) !== Number(defaultRoleId));
+    const activeAdminsOnly = allToChange.filter(u => u.rol_id !== null);
+
+    let targetUsers = activeAdminsOnly;
+
+    if (allToChange.length > activeAdminsOnly.length) {
+      const wantAll = window.confirm(
+        `Hemos detectado ${activeAdminsOnly.length} administradores que pueden ser degradados, y ${allToChange.length - activeAdminsOnly.length} tripulantes nuevos que aún no ingresan al sistema.\n\n` +
+        `¿Quieres aplicar el rol "Usuario" TAMBIÉN a los tripulantes nuevos?\n` +
+        `(ADVERTENCIA: Esto creará sus cuentas automáticamente y tomará varios minutos).\n\n` +
+        `Pulsa Aceptar para inicializar a TODOS. Pulsa Cancelar para degradar SOLO a los administradores actuales.`
+      );
+      if (wantAll) {
+        targetUsers = allToChange;
+      }
+    }
 
     if (targetUsers.length === 0) {
       alert("No hay usuarios que necesiten ser modificados.");
       return;
     }
 
-    if (!window.confirm(`⚠️ ADVERTENCIA: Se asignará el rol "Usuario" a ${targetUsers.length} trabajadores. Esto creará sus cuentas automáticamente si no existen.\n\nTú (${adminUser?.nombre}) quedarás intacto.\n\n¿Deseas continuar?`)) return;
+    if (!window.confirm(`Se modificará el rol de ${targetUsers.length} usuarios. Tú (${adminUser?.nombre}) quedarás intacto. ¿Continuar?`)) return;
 
     onLoadingProgress?.({ percent: 10 });
     setLoadingUsers(true);
 
     let completed = 0;
     
-    // Procesamiento secuencial para no colapsar el servidor
     for (const u of targetUsers) {
       try {
         await fetch('/api/admin/users/role', {
@@ -196,46 +216,6 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
 
     onLoadingProgress?.({ percent: 100, done: true });
     alert(`✅ Operación masiva completada. Se actualizaron ${completed} usuarios al rol "Usuario".`);
-    fetchUsers();
-  };
-
-  // --- ACCIÓN MASIVA 2: RESETEAR TODAS LAS CLAVES A RUT ---
-  const handleResetAllPasswords = async () => {
-    // Excluimos al Admin actual y solo tomamos a los que YA tienen cuenta activa (activo === 1)
-    const targetUsers = users.filter(u => String(u.id) !== String(adminUser?.id) && u.activo === 1);
-
-    if (targetUsers.length === 0) {
-      alert("No hay usuarios activos en el sistema para restablecer contraseñas.");
-      return;
-    }
-
-    if (!window.confirm(`🔥 PELIGRO EXTREMO: Estás a punto de restablecer la contraseña de TODOS los usuarios activos (${targetUsers.length} en total) a su RUT original.\n\nTú (${adminUser?.nombre}) serás el único que no será afectado.\n\n¿Estás ABSOLUTAMENTE seguro de continuar?`)) return;
-
-    onLoadingProgress?.({ percent: 10 });
-    setLoadingUsers(true);
-
-    let completed = 0;
-    let fallidos = 0;
-    
-    // Procesamiento secuencial
-    for (const u of targetUsers) {
-      try {
-        const res = await fetch('/api/admin/users/reset-password', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: u.id })
-        });
-        if (!res.ok) fallidos++;
-      } catch (e) {
-        fallidos++;
-        console.error(`Error reseteando clave de ${u.id}:`, e);
-      }
-      completed++;
-      onLoadingProgress?.({ percent: 10 + Math.floor((completed / targetUsers.length) * 80) });
-    }
-
-    onLoadingProgress?.({ percent: 100, done: true });
-    alert(`✅ Operación de reseteo completada.\n\nÉxitos: ${completed - fallidos}\nFallidos (Sin RUT): ${fallidos}`);
     fetchUsers();
   };
 
@@ -259,7 +239,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
         
         <div className="relative z-10 min-w-0">
           <p className="text-white/70 text-[10px] md:text-xs font-bold tracking-wider uppercase mb-0.5 flex items-center gap-1.5">
-            Modo Superusuario
+            {isSupremo ? 'Modo Superusuario' : 'Modo Gestor'}
           </p>
           <h2 className="text-white text-xl md:text-2xl font-semibold tracking-wide truncate">
             Panel Admin
@@ -280,7 +260,9 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
           className={`flex-1 py-3.5 text-xs md:text-sm font-bold border-b-2 transition-colors flex items-center justify-center gap-2 ${activeTab === 'usuarios' ? 'border-[#921E30] text-[#921E30]' : 'border-transparent text-gray-500 hover:bg-gray-50'}`}
         >
           <UserCog className="w-4 h-4" /> Usuarios
-          <span className="bg-red-100 text-[#921E30] text-[9px] px-2 py-0.5 rounded-full border border-red-200 ml-1">Supremo</span>
+          <span className={`text-[9px] px-2 py-0.5 rounded-full border ml-1 ${isSupremo ? 'bg-red-100 text-[#921E30] border-red-200' : 'bg-blue-100 text-blue-700 border-blue-200'}`}>
+            {isSupremo ? 'Supremo' : 'Gestor'}
+          </span>
         </button>
       </div>
 
@@ -365,33 +347,26 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
               </div>
             ) : (
               <>
-                {/* ACCIONES MASIVAS (DEGRADAR Y RESETEAR) */}
-                <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex flex-col gap-4 shadow-sm mb-2">
-                  <div>
-                    <h3 className="text-red-800 font-bold text-sm flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4" /> Acciones Masivas (Peligro)
-                    </h3>
-                    <p className="text-xs text-red-600 mt-1">
-                      Estas acciones afectarán a todos los trabajadores de la empresa (excepto a tu cuenta). Por favor, úsalas con precaución.
-                    </p>
-                  </div>
-                  <div className="flex flex-col sm:flex-row gap-3">
+                {/* ACCIÓN MASIVA (SOLO SUPREMO) */}
+                {isSupremo && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm mb-2 animate-fade-in">
+                    <div>
+                      <h3 className="text-red-800 font-bold text-sm flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4" /> Acción Masiva
+                      </h3>
+                      <p className="text-xs text-red-600 mt-1 max-w-sm">
+                        Asigna el rol "Usuario" a todos en el sistema (excepto a ti). Revoca permisos de administrador a terceros con un clic.
+                      </p>
+                    </div>
                     <button 
                       onClick={handleAssignAllAsUser}
                       disabled={loadingUsers || roles.length === 0}
-                      className="flex-1 bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2.5 px-4 rounded-lg shadow-sm transition-colors disabled:opacity-50"
+                      className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2.5 px-4 rounded-lg shadow-sm transition-colors shrink-0 w-full sm:w-auto disabled:opacity-50"
                     >
-                      1. Todos a "Usuario"
-                    </button>
-                    <button 
-                      onClick={handleResetAllPasswords}
-                      disabled={loadingUsers}
-                      className="flex-1 bg-red-800 hover:bg-red-900 text-white text-xs font-bold py-2.5 px-4 rounded-lg shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                    >
-                      <Key className="w-3.5 h-3.5" /> 2. Claves a RUT
+                      Degradar a "Usuario"
                     </button>
                   </div>
-                </div>
+                )}
 
                 {/* Buscador */}
                 <div className="relative bg-white rounded-xl shadow-sm border border-gray-200 focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
@@ -419,36 +394,35 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
                             <h4 className="font-bold text-gray-800 text-sm truncate">{user.nombre}</h4>
                             <p className="text-xs text-gray-500 truncate">{user.email}</p>
                           </div>
-                          <div className="flex flex-col items-end gap-1">
-                            <span className="text-[10px] font-bold bg-gray-100 text-gray-500 px-2 py-1 rounded-md shrink-0 border border-gray-200">
-                              ID: {user.id}
-                            </span>
-                            {user.activo === 1 ? (
-                              <span className="text-[9px] font-bold bg-green-100 text-green-700 px-2 py-0.5 rounded border border-green-200">Activo</span>
-                            ) : (
-                              <span className="text-[9px] font-bold bg-gray-100 text-gray-400 px-2 py-0.5 rounded border border-gray-200">Sin cuenta</span>
-                            )}
-                          </div>
+                          <span className="text-[10px] font-bold bg-gray-100 text-gray-500 px-2 py-1 rounded-md shrink-0 border border-gray-200">
+                            ID: {user.id}
+                          </span>
                         </div>
                         
                         <div className="flex flex-col sm:flex-row gap-2 pt-1 border-t border-gray-50">
                           <div className="flex-1">
-                            <select 
-                              value={user.rol_id || ''} 
-                              onChange={(e) => handleRoleChange(user.id, e.target.value)}
-                              className="w-full text-xs font-semibold text-gray-700 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#921E30]"
-                            >
-                              <option value="" disabled>Sin rol asignado</option>
-                              {roles.map(r => (
-                                <option key={r.id} value={r.id}>{r.nombre}</option>
-                              ))}
-                            </select>
+                            {/* Si es Supremo muestra el selector, si es Gestor solo muestra texto */}
+                            {isSupremo ? (
+                              <select 
+                                value={user.rol_id || ''} 
+                                onChange={(e) => handleRoleChange(user.id, e.target.value)}
+                                className="w-full text-xs font-semibold text-gray-700 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#921E30]"
+                              >
+                                <option value="" disabled>Sin rol asignado (Pendiente)</option>
+                                {roles.map(r => (
+                                  <option key={r.id} value={r.id}>{r.nombre}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <div className="w-full text-xs font-semibold text-gray-500 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 flex items-center h-full">
+                                {user.rol_nombre ? `Rol: ${user.rol_nombre}` : 'Sin rol asignado (Pendiente)'}
+                              </div>
+                            )}
                           </div>
                           
                           <button 
                             onClick={() => handleResetPassword(user.id, user.nombre)} 
-                            disabled={user.activo !== 1}
-                            className="text-[11px] font-bold bg-white hover:bg-red-50 hover:text-red-700 text-gray-700 border border-gray-200 hover:border-red-200 px-3 py-2.5 rounded-xl flex items-center justify-center shadow-sm shrink-0 transition-colors disabled:opacity-40"
+                            className="text-[11px] font-bold bg-white hover:bg-red-50 hover:text-red-700 text-gray-700 border border-gray-200 hover:border-red-200 px-3 py-2.5 rounded-xl flex items-center justify-center shadow-sm shrink-0 transition-colors"
                           >
                             <Key className="w-3.5 h-3.5 mr-1.5 opacity-70" /> Clave a RUT
                           </button>
