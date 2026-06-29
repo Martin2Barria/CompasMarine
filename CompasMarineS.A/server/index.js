@@ -186,22 +186,22 @@ function resolveControlDocCredentials(req) {
   };
 }
 
-async function fetchWithRetry(url, headers, maxRetries = 4) {
+async function fetchWithRetry(url, headers, maxRetries = 8) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const response = await fetch(url, { method: 'GET', headers });
       const isRateLimit = response.status === 429 || (response.status === 401 && url.searchParams.get('page') !== '1') || response.status === 403;
       
       if (isRateLimit) {
-        // Backoff más agresivo y rápido
-        const waitTime = attempt * 1500 + Math.random() * 500;
+        // Backoff súper agresivo para asegurar que ControlDoc perdone a la IP
+        const waitTime = attempt * 3000 + Math.random() * 2000;
         await new Promise(res => setTimeout(res, waitTime));
         continue;
       }
       
       if (!response.ok) {
         if (response.status >= 500) {
-           await new Promise(res => setTimeout(res, attempt * 1000));
+           await new Promise(res => setTimeout(res, attempt * 2000));
            continue;
         }
         return null; 
@@ -209,7 +209,7 @@ async function fetchWithRetry(url, headers, maxRetries = 4) {
       
       return await response.json();
     } catch (err) {
-      await new Promise(res => setTimeout(res, attempt * 1000));
+      await new Promise(res => setTimeout(res, attempt * 2000));
     }
   }
   return null;
@@ -232,8 +232,8 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
     if (credentials.customerId) baseHeaders['Customer-Id'] = credentials.customerId.trim();
     if (credentials.authorization) baseHeaders['Authorization'] = credentials.authorization.trim();
 
-    const MAX_PAGES = 50; // Reducido ya que rara vez pasan de 5
-    const CONCURRENCY = 5; // Modo súper masivo (descarga hasta 5 páginas a la vez)
+    const MAX_PAGES = 500; // Restaurado a 500 para permitir la carga de 8000+ documentos
+    const CONCURRENCY = 3; // Balance ideal para velocidad sin provocar bloqueos 429 masivos
 
     for (const entityTypeId of credentials.entityTypeIds) {
       console.log(`[ControlDoc] Iniciando descarga masiva en ${upstreamPath} para Empresa ID: ${entityTypeId}...`);
@@ -265,7 +265,7 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
         let emptyPageDetected = false;
 
         for (const json of batchResults) {
-          if (!json) continue; 
+          if (!json) continue; // Si finalmente falló después de 8 reintentos, lo ignoramos para no tumbar la app completa
           const items = extractControlDocItems(json);
           if (items.length === 0) {
               emptyPageDetected = true;
@@ -276,7 +276,9 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
 
         if (emptyPageDetected) hasMore = false;
         currentPage += CONCURRENCY;
-        // SIN RETRASOS ARTIFICIALES (Se eliminó el setTimeout 800ms)
+        
+        // Pausa diminuta para no agobiar a la API
+        if (hasMore) await new Promise(r => setTimeout(r, 400));
       }
       
       console.log(`[ControlDoc] Terminó descarga ID ${entityTypeId}. Extraídos: ${allItems.length}`);
