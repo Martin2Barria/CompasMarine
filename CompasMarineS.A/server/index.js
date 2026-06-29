@@ -335,7 +335,6 @@ async function proxyControlDocRequest(req, res, cleanPath) {
 
   let userEmail = '', isAdmin = false, rolId = null;
   try {
-    // MODIFICACIÓN: Solicitamos también el r.id as rol_id
     const [rows] = await dbPool.execute(`SELECT u.email, r.nombre as rol, r.id as rol_id FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id WHERE u.id = ? AND u.activo = TRUE`, [cookieUserId]);
     if (rows.length === 0) return sendJson(res, 401, { error: 'Usuario inactivo.' });
     
@@ -369,7 +368,6 @@ async function proxyControlDocRequest(req, res, cleanPath) {
           return sendJson(res, 200, await serveWithSWR(cacheKey, upstreamPath, credentials));
       }
 
-      // --- FILTRO GATEKEEPER PARA TRIPULANTES ---
       console.log(`🔒 [API] Tripulante detectado. Filtrando información en memoria...`);
       let dbRut = '';
       try {
@@ -428,7 +426,6 @@ async function handleLogin(req, res) {
     const [rows] = await dbPool.execute('SELECT * FROM usuarios WHERE email = ? AND activo = TRUE', [email]);
     if (rows.length > 0) {
         if (await bcrypt.compare(password, rows[0].password_hash)) {
-            // MODIFICACIÓN: Solicitamos r.id as rol_id
             const [roles] = await dbPool.execute('SELECT r.id as rol_id, r.nombre as rol FROM usuarios_roles ur JOIN roles r ON ur.rol_id = r.id WHERE ur.usuario_id = ?', [rows[0].id]);
             
             const rol = roles.length > 0 ? roles[0].rol : 'Usuario';
@@ -548,14 +545,98 @@ async function handleAuthMe(req, res) {
   const userId = getCookie(req, 'compas_user_id');
   if (!userId) return sendJson(res, 401, { error: 'No autorizado' });
   try {
-    // MODIFICACIÓN: Solicitamos r.id as rol_id
     const [rows] = await dbPool.execute(`SELECT u.id, u.nombre, u.email, r.nombre as rol, r.id as rol_id FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id WHERE u.id = ? AND u.activo = TRUE`, [userId]);
     if (rows.length === 0) return sendJson(res, 401, { error: 'Inactivo' });
     sendJson(res, 200, { user: rows[0] });
   } catch (e) { sendJson(res, 500, { error: 'Error interno' }); }
 }
 
-// --- SERVICIOS ADMIN ---
+// --- SERVICIOS ADMIN SUPREMO (Gestión de Usuarios y Roles) ---
+async function isAdminSupremo(req) {
+  const cookieUserId = getCookie(req, 'compas_user_id');
+  if (!cookieUserId) return false;
+  try {
+    const [rows] = await dbPool.execute('SELECT r.id as rol_id FROM usuarios_roles ur JOIN roles r ON ur.rol_id = r.id WHERE ur.usuario_id = ?', [cookieUserId]);
+    if (rows.length === 0) return false;
+    return Number(rows[0].rol_id) === 10; // 10 es el ID inquebrantable del Admin Supremo
+  } catch { return false; }
+}
+
+async function handleGetUsers(req, res) {
+  if (req.method !== 'GET') return sendJson(res, 405, { error: 'Método no válido' });
+  if (!(await isAdminSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere el rol de Admin Supremo.' });
+
+  try {
+    const [users] = await dbPool.execute(`
+      SELECT u.id, u.nombre, u.email, u.activo, r.id as rol_id, r.nombre as rol_nombre
+      FROM usuarios u
+      LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id
+      LEFT JOIN roles r ON ur.rol_id = r.id
+      ORDER BY u.nombre ASC
+    `);
+    const [roles] = await dbPool.execute('SELECT id, nombre FROM roles ORDER BY id ASC');
+    return sendJson(res, 200, { users, roles });
+  } catch (error) {
+    return sendJson(res, 500, { error: 'Error al obtener lista de usuarios.' });
+  }
+}
+
+async function handleChangeUserRole(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+  if (!(await isAdminSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere el rol de Admin Supremo.' });
+
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
+  
+  const { userId, roleId } = payload;
+  if (!userId || !roleId) return sendJson(res, 400, { error: 'Faltan datos para procesar la solicitud.' });
+
+  try {
+    await dbPool.execute('DELETE FROM usuarios_roles WHERE usuario_id = ?', [userId]);
+    await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [userId, roleId]);
+    return sendJson(res, 200, { ok: true, message: 'Rol del usuario actualizado exitosamente.' });
+  } catch (error) {
+    return sendJson(res, 500, { error: 'Error interno al actualizar el rol.' });
+  }
+}
+
+async function handleResetUserPassword(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+  if (!(await isAdminSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere el rol de Admin Supremo.' });
+
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
+
+  const { userId } = payload;
+  if (!userId) return sendJson(res, 400, { error: 'Falta el identificador del usuario.' });
+
+  try {
+    const [users] = await dbPool.execute('SELECT email FROM usuarios WHERE id = ?', [userId]);
+    if (users.length === 0) return sendJson(res, 404, { error: 'El usuario no existe en el sistema.' });
+    
+    const email = users[0].email;
+    const [entities] = await dbPool.execute('SELECT rut FROM entidades_api WHERE email = ?', [email]);
+    
+    let rut = '';
+    if (entities.length > 0 && entities[0].rut) {
+        rut = entities[0].rut.replace(/[^0-9kK]/g, '').toLowerCase().replace(/^0+/, '');
+    }
+
+    if (!rut) {
+        return sendJson(res, 400, { error: 'Imposible realizar la acción: El usuario no tiene un RUT asociado en ControlDoc.' });
+    }
+
+    const hash = await bcrypt.hash(rut, 12);
+    await dbPool.execute('UPDATE usuarios SET password_hash = ? WHERE id = ?', [hash, userId]);
+
+    return sendJson(res, 200, { ok: true, message: 'Contraseña restablecida. Ahora su clave es su RUT.' });
+  } catch (error) {
+    console.error("Error al restablecer contraseña:", error);
+    return sendJson(res, 500, { error: 'Error interno del servidor al restablecer contraseña.' });
+  }
+}
+
+// --- SERVICIOS ADMIN (Generales) ---
 async function handleSetupDB(req, res) {
   try {
     await dbPool.query(`CREATE TABLE IF NOT EXISTS usuarios (id INT AUTO_INCREMENT PRIMARY KEY, nombre VARCHAR(100) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, activo BOOLEAN NOT NULL DEFAULT TRUE)`);
@@ -605,6 +686,12 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/auth/verify-reset-identity') return await handleVerifyResetIdentity(req, res);
     if (cleanPath === '/api/auth/reset-password') return await handleResetPassword(req, res);
     if (cleanPath === '/api/auth/me') return await handleAuthMe(req, res);
+    
+    // API Admin Supremo
+    if (cleanPath === '/api/admin/users') return await handleGetUsers(req, res);
+    if (cleanPath === '/api/admin/users/role') return await handleChangeUserRole(req, res);
+    if (cleanPath === '/api/admin/users/reset-password') return await handleResetUserPassword(req, res);
+    
     if (cleanPath === '/api/admin/setup-db') return await handleSetupDB(req, res);
     if (cleanPath === '/api/admin/sync-users') return await handleSyncUsersToDB(req, res);
     
