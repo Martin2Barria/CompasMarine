@@ -323,6 +323,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         
         const fetchJson = async (url) => {
           const separator = url.includes('?') ? '&' : '?';
+          // Burlar al Service Worker cambiando la URL en cada petición
           const bypassUrl = `${url}${separator}_t=${Date.now()}`;
           
           const response = await fetch(bypassUrl, requestOptions);

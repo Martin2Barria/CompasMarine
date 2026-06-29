@@ -20,8 +20,17 @@ const readControlDocSnapshot = (key) => {
   } catch { return null; }
 };
 
+// --- VALIDACIÓN DE ROLES (BLINDADO CON IDs REALES DE DB) ---
 const hasAdminRole = (user) => {
   if (!user) return false;
+
+  // 1. Detección por ID exacto de la base de datos (Máxima Seguridad)
+  if (user.rol_id !== undefined && user.rol_id !== null) {
+    const adminIds = [2, 10, 11, 13]; 
+    return adminIds.includes(Number(user.rol_id));
+  }
+
+  // 2. Fallback de seguridad (Por si el backend aún no envía el rol_id)
   const roleName = (user?.rol || user?.role || '').toLowerCase();
   return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName);
 };
