@@ -186,21 +186,22 @@ function resolveControlDocCredentials(req) {
   };
 }
 
-async function fetchWithRetry(url, headers, maxRetries = 6) {
+async function fetchWithRetry(url, headers, maxRetries = 4) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const response = await fetch(url, { method: 'GET', headers });
       const isRateLimit = response.status === 429 || (response.status === 401 && url.searchParams.get('page') !== '1') || response.status === 403;
       
       if (isRateLimit) {
-        const waitTime = attempt * 3000 + Math.random() * 2000;
+        // Backoff más agresivo y rápido
+        const waitTime = attempt * 1500 + Math.random() * 500;
         await new Promise(res => setTimeout(res, waitTime));
         continue;
       }
       
       if (!response.ok) {
         if (response.status >= 500) {
-           await new Promise(res => setTimeout(res, attempt * 2000));
+           await new Promise(res => setTimeout(res, attempt * 1000));
            continue;
         }
         return null; 
@@ -208,7 +209,7 @@ async function fetchWithRetry(url, headers, maxRetries = 6) {
       
       return await response.json();
     } catch (err) {
-      await new Promise(res => setTimeout(res, attempt * 2000));
+      await new Promise(res => setTimeout(res, attempt * 1000));
     }
   }
   return null;
@@ -231,11 +232,11 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
     if (credentials.customerId) baseHeaders['Customer-Id'] = credentials.customerId.trim();
     if (credentials.authorization) baseHeaders['Authorization'] = credentials.authorization.trim();
 
-    const MAX_PAGES = 500; 
-    const CONCURRENCY = 2; 
+    const MAX_PAGES = 50; // Reducido ya que rara vez pasan de 5
+    const CONCURRENCY = 5; // Modo súper masivo (descarga hasta 5 páginas a la vez)
 
     for (const entityTypeId of credentials.entityTypeIds) {
-      console.log(`[ControlDoc] Iniciando descarga en ${upstreamPath} para Entity Type ID: ${entityTypeId}...`);
+      console.log(`[ControlDoc] Iniciando descarga masiva en ${upstreamPath} para Empresa ID: ${entityTypeId}...`);
       let allItems = [];
       let currentPage = 1, hasMore = true;
       
@@ -252,7 +253,7 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
 
           const url = new URL(upstreamPath, controlDocBaseUrl);
           url.searchParams.append('page', page);
-          url.searchParams.append('per_page', '150');
+          url.searchParams.append('per_page', '150'); // Límite alto por página
           for (const [key, value] of Object.entries(extraParams)) {
             url.searchParams.append(key, value);
           }
@@ -275,7 +276,7 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
 
         if (emptyPageDetected) hasMore = false;
         currentPage += CONCURRENCY;
-        if (hasMore) await new Promise(r => setTimeout(r, 800)); 
+        // SIN RETRASOS ARTIFICIALES (Se eliminó el setTimeout 800ms)
       }
       
       console.log(`[ControlDoc] Terminó descarga ID ${entityTypeId}. Extraídos: ${allItems.length}`);
@@ -294,15 +295,19 @@ async function serveWithSWR(cacheKey, upstreamPath, credentials, extraParams = {
   }
   const cacheStore = serverCache[cacheKey];
   
+  // Si ya hay una promesa en curso, adjuntarse a ella
   if (cacheStore.fetchPromise) {
     await cacheStore.fetchPromise;
     return cacheStore.data || [];
   }
 
+  // SIEMPRE DEVOLVER DATOS SI EXISTEN EN RAM (STALE-WHILE-REVALIDATE INDESTRUCTIBLE)
   if (cacheStore.data && cacheStore.data.length > 0) {
     if (cacheStore.expiresAt < Date.now()) {
+      // Disparar en segundo plano pero devolver los datos viejos inmediatamente
       cacheStore.fetchPromise = fetchAllControlDocPages(upstreamPath, credentials, extraParams)
         .then(data => { 
+            // Solo actualizamos la RAM si la descarga fue exitosa y trajo datos
             if(data && data.length > 0) {
                cacheStore.data = data;
                cacheStore.expiresAt = Date.now() + CACHE_TTL;
@@ -314,6 +319,7 @@ async function serveWithSWR(cacheKey, upstreamPath, credentials, extraParams = {
     return cacheStore.data;
   }
   
+  // Si no hay datos en absoluto (ej. primer arranque del servidor), bloquear y esperar
   cacheStore.fetchPromise = fetchAllControlDocPages(upstreamPath, credentials, extraParams)
     .then(data => { 
         if(data && data.length > 0) {
@@ -734,11 +740,18 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/admin/sync-users') return await handleSyncUsersToDB(req, res);
     
     if (cleanPath === '/api/controldoc/documents/sync') { 
-        serverCache.documents.data = null; 
-        serverCache.entities.data = null; 
-        serverCache.documentTypes.data = null; 
+        // ¡CLAVE! NUNCA vaciar la RAM (no usar = null).
+        // Solo marcamos como "expirado" para forzar la re-descarga silenciosa y masiva.
+        serverCache.documents.expiresAt = 0; 
+        serverCache.entities.expiresAt = 0; 
+        serverCache.documentTypes.expiresAt = 0; 
+        
         runBackgroundCachePreload(); 
-        return sendJson(res, 200, { ok: true, message: 'Descarga en segundo plano iniciada...' }); 
+        
+        return sendJson(res, 200, { 
+            ok: true, 
+            message: 'Actualizando datos. Tu pantalla seguirá mostrando los últimos datos vigentes mientras descargamos las novedades.' 
+        }); 
     }
     
     if (controlDocRoutes.has(cleanPath)) {
@@ -766,7 +779,7 @@ server.listen(port, host, () => {
 // --- TAREA FANTASMA (BACKGROUND WORKER) ---
 async function runBackgroundCachePreload() {
   const creds = resolveControlDocCredentials(null);
-  console.log(`⏱️ [Background Task] Iniciando sincronización fantasma para los IDs: ${creds.entityTypeIds.join(', ')}`);
+  console.log(`⏱️ [Background Task] Iniciando sincronización fantasma masiva para los IDs: ${creds.entityTypeIds.join(', ')}`);
   
   if (!creds.email || !creds.token) {
     console.warn("[Background Task] Faltan credenciales.");
@@ -777,7 +790,7 @@ async function runBackgroundCachePreload() {
     await serveWithSWR('documentTypes', '/api/v1/abstract/document_types', creds);
     await serveWithSWR('entities', '/api/v1/abstract/entities', creds);
     await serveWithSWR('documents', '/api/v1/abstract/documents', creds);
-    console.log("✅ [Background Task] ¡RAM cargada exitosamente!");
+    console.log("✅ [Background Task] ¡RAM cargada y asegurada masivamente!");
   } catch (err) {
     console.error("❌ [Background Task] Falló:", err.message);
   }
