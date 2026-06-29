@@ -122,10 +122,13 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     if (!window.confirm('¿Estás seguro de que deseas cambiarle el rol a este usuario?')) return;
     onLoadingProgress?.({ percent: 20 });
     try {
+      const user = users.find(u => u.id === userId);
+      const needsAccount = user ? user.activo === 0 : false;
+
       const res = await fetch('/api/admin/users/role', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, roleId: newRoleId })
+        body: JSON.stringify({ userId, roleId: newRoleId, needsAccount })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -182,7 +185,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
         await fetch('/api/admin/users/role', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: u.id, roleId: defaultRoleId })
+          body: JSON.stringify({ userId: u.id, roleId: defaultRoleId, needsAccount: u.activo === 0 })
         });
       } catch (e) {
         console.error(`Error con usuario ${u.id}:`, e);

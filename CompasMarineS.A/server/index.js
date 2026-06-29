@@ -598,14 +598,14 @@ async function handleChangeUserRole(req, res) {
   let payload;
   try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
   
-  const { userId, roleId } = payload;
+  const { userId, roleId, needsAccount } = payload;
   if (!userId || !roleId) return sendJson(res, 400, { error: 'Faltan datos para procesar la solicitud.' });
 
   try {
     let targetUserId = userId;
 
-    // Si el ID es un texto largo, significa que viene de entidades_api y no tiene cuenta
-    if (typeof userId === 'string' && isNaN(Number(userId))) {
+    // Si el frontend indica que no tiene cuenta, userId es el external_id de entidades_api
+    if (needsAccount) {
       const [entities] = await dbPool.execute('SELECT nombre, email, rut FROM entidades_api WHERE external_id = ?', [userId]);
       if (entities.length === 0) return sendJson(res, 404, { error: 'No se encontró la entidad en la base de datos.' });
       
@@ -621,7 +621,7 @@ async function handleChangeUserRole(req, res) {
       targetUserId = insertRes.insertId;
     }
 
-    // Actualizamos el rol de forma segura
+    // Actualizamos el rol de forma segura usando el ID interno válido
     await dbPool.execute('DELETE FROM usuarios_roles WHERE usuario_id = ?', [targetUserId]);
     await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [targetUserId, roleId]);
     
