@@ -567,17 +567,27 @@ async function handleGetUsers(req, res) {
   if (!(await isAdminSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere el rol de Admin Supremo.' });
 
   try {
+    // 1. Buscamos a TODOS los sincronizados (entidades_api)
+    // 2. Hacemos un cruce con usuarios por si ya tienen una cuenta
     const [users] = await dbPool.execute(`
-      SELECT u.id, u.nombre, u.email, u.activo, r.id as rol_id, r.nombre as rol_nombre
-      FROM usuarios u
+      SELECT 
+        e.external_id, 
+        COALESCE(u.id, e.external_id) as id, 
+        e.nombre, 
+        e.email, 
+        IF(u.id IS NOT NULL, 1, 0) as activo, 
+        r.id as rol_id, 
+        r.nombre as rol_nombre
+      FROM entidades_api e
+      LEFT JOIN usuarios u ON e.email = u.email AND e.email IS NOT NULL AND e.email != ''
       LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id
       LEFT JOIN roles r ON ur.rol_id = r.id
-      ORDER BY u.nombre ASC
+      ORDER BY e.nombre ASC
     `);
     const [roles] = await dbPool.execute('SELECT id, nombre FROM roles ORDER BY id ASC');
     return sendJson(res, 200, { users, roles });
   } catch (error) {
-    return sendJson(res, 500, { error: 'Error al obtener lista de usuarios.' });
+    return sendJson(res, 500, { error: 'Error al obtener lista de usuarios completos.' });
   }
 }
 
@@ -592,10 +602,32 @@ async function handleChangeUserRole(req, res) {
   if (!userId || !roleId) return sendJson(res, 400, { error: 'Faltan datos para procesar la solicitud.' });
 
   try {
-    await dbPool.execute('DELETE FROM usuarios_roles WHERE usuario_id = ?', [userId]);
-    await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [userId, roleId]);
-    return sendJson(res, 200, { ok: true, message: 'Rol del usuario actualizado exitosamente.' });
+    let targetUserId = userId;
+
+    // Si el ID es un texto largo, significa que viene de entidades_api y no tiene cuenta
+    if (typeof userId === 'string' && isNaN(Number(userId))) {
+      const [entities] = await dbPool.execute('SELECT nombre, email, rut FROM entidades_api WHERE external_id = ?', [userId]);
+      if (entities.length === 0) return sendJson(res, 404, { error: 'No se encontró la entidad en la base de datos.' });
+      
+      const entidad = entities[0];
+      const rutLimpio = entidad.rut ? entidad.rut.replace(/[^0-9kK]/g, '').toLowerCase().replace(/^0+/, '') : '123456789';
+      
+      // Le creamos una cuenta automáticamente usando su RUT como clave inicial
+      const hash = await bcrypt.hash(rutLimpio, 12);
+      const [insertRes] = await dbPool.execute(
+        'INSERT INTO usuarios (nombre, email, password_hash) VALUES (?, ?, ?)', 
+        [entidad.nombre || 'Sin Nombre', entidad.email || `sin-correo-${userId}@temp.com`, hash]
+      );
+      targetUserId = insertRes.insertId;
+    }
+
+    // Actualizamos el rol de forma segura
+    await dbPool.execute('DELETE FROM usuarios_roles WHERE usuario_id = ?', [targetUserId]);
+    await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [targetUserId, roleId]);
+    
+    return sendJson(res, 200, { ok: true, message: 'Rol asignado correctamente al tripulante.' });
   } catch (error) {
+    console.error("Error al cambiar rol:", error);
     return sendJson(res, 500, { error: 'Error interno al actualizar el rol.' });
   }
 }
