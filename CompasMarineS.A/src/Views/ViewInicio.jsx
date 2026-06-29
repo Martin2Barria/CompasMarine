@@ -46,8 +46,6 @@ const canAccessAdminPanel = (user) => {
   return ['admin supremo', 'admin gestor', 'admin'].includes(roleName) || roleName.includes('admin');
 };
 
-const evaluateDocumentNotificationRules = async () => {};
-
 const toArray = (value, fallbackKeys = []) => {
   if (Array.isArray(value)) return value;
   if (!value || typeof value !== 'object') return [];
@@ -56,30 +54,6 @@ const toArray = (value, fallbackKeys = []) => {
   }
   const dynamicArrayKey = Object.keys(value).find((key) => Array.isArray(value[key]));
   return dynamicArrayKey ? value[dynamicArrayKey] : [];
-};
-
-const findEntityForUser = (entities, user) => {
-  if (!entities || !entities.length || !user) return null;
-  const userEmail = (user.email || '').trim().toLowerCase();
-  const userRut = (user.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
-  
-  return entities.find(e => {
-    const eEmail = (e.email || e.custom_fields?.correo_electronico_personal || '').trim().toLowerCase();
-    const eRut = (e.identifier || e.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
-    return (userEmail && eEmail === userEmail) || (userRut && eRut === userRut);
-  });
-};
-
-const getScopedDocuments = (docs, entities, user) => {
-  if (hasAdminRole(user)) return docs;
-  const myEntity = findEntityForUser(entities, user) || (entities.length === 1 ? entities[0] : null);
-  if (!myEntity) return [];
-  const myExternalId = myEntity.id?.toString();
-  
-  return docs.filter(doc => {
-    const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
-    return docEntityId === myExternalId;
-  });
 };
 
 const parseControlDocDate = (dateString) => {
@@ -121,12 +95,6 @@ const getDocumentComplianceBucket = (doc) => {
   if (days !== null && days <= 60) return 'warning';
   if (days === null && !status) return 'nonCompliant';
   return 'healthy';
-};
-
-const calculateHealthyPercentage = (documents) => {
-  if (!documents.length) return 100;
-  const healthyDocs = documents.filter((doc) => getDocumentComplianceBucket(doc) === 'healthy').length;
-  return Math.round((healthyDocs / documents.length) * 100);
 };
 
 const normalizeText = (value) => (value || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
@@ -226,7 +194,7 @@ const getDocumentEntityIds = (doc) => {
   return [...new Set(ids.map(id => id.toString()))];
 }
 
-// AQUÍ COMIENZA EL COMPONENTE (ESTA ERA LA PARTE FALTANTE)
+// COMPONENTE PRINCIPAL
 export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const [allDocs, setAllDocs] = useState([]);
   const [allEntities, setAllEntities] = useState([]);
@@ -260,21 +228,11 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     const normalizedEntities = toArray(entities, ['entities', 'data', 'items']);
     const normalizedTypes = toArray(types, ['documentTypes', 'document_types', 'data', 'items']);
 
-    console.log("🧩 Procesando datos para renderizar:", { docsLen: normalizedDocs.length, entLen: normalizedEntities.length });
+    console.log("🧩 Procesando datos servidos por backend:", { docsLen: normalizedDocs.length, entLen: normalizedEntities.length });
     setAllDocs(normalizedDocs);
     setAllEntities(normalizedEntities);
     setAllTypes(normalizedTypes);
-
-    if (!hasAdminRole(currentUser)) {
-      const notificationDocs = getScopedDocuments(normalizedDocs, normalizedEntities, currentUser);
-      void evaluateDocumentNotificationRules({
-        documents: notificationDocs,
-        documentTypes: normalizedTypes,
-        percentage: calculateHealthyPercentage(notificationDocs),
-        ownerKey: snapshotOwnerKey
-      });
-    }
-  }, [currentUser, snapshotOwnerKey]);
+  }, []);
 
   const handleForceHardReset = async () => {
     localStorage.clear();
@@ -304,7 +262,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   useEffect(() => {
     let isCancelled = false;
 
-    const fetchFreshData = async ({ forceRefresh }) => {
+    const fetchFreshData = async () => {
       setIsSyncing(true);
       setServerNotice('');
       onLoadingProgress?.({ percent: 15 });
@@ -319,7 +277,6 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         
         const fetchJson = async (url) => {
           const separator = url.includes('?') ? '&' : '?';
-          // Burlar al Service Worker cambiando la URL en cada petición
           const bypassUrl = `${url}${separator}_t=${Date.now()}`;
           
           const response = await fetch(bypassUrl, requestOptions);
@@ -347,6 +304,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         setSyncStats({ source: 'api', totalItems: nextData.documents.length, complete: true });
         processData(nextData.documents, nextData.entities, nextData.documentTypes);
         
+        // Guardamos el snapshot validado
         if (!hasAdminRole(currentUser)) void saveControlDocSnapshotAsync(nextData, snapshotOwnerKey);
         
         onLoadingProgress?.({ percent: 100, done: true });
@@ -376,7 +334,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         return;
       }
 
-      await fetchFreshData({ forceRefresh: refreshToken > 0 });
+      await fetchFreshData();
     };
 
     loadData();
@@ -396,23 +354,20 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
 
   const isAdminUser = hasAdminRole(currentUser);
   
-  const scopedDocs = useMemo(() => getScopedDocuments(allDocs, allEntities, currentUser), [allDocs, allEntities, currentUser]);
-  
+  // 1. Confianza ciega en la API: allEntities viene filtrado para tripulantes
   const selectedEntity = useMemo(() => {
-    if (isAdminUser) return selectedUserId ? allEntities.find((item) => item.id?.toString() === selectedUserId.toString()) : null;
-    return findEntityForUser(allEntities, currentUser) || (allEntities.length === 1 ? allEntities[0] : null);
-  }, [allEntities, currentUser, isAdminUser, selectedUserId]);
-
-  const inferredUserEntityId = useMemo(() => {
-    if (isAdminUser || selectedEntity?.id) return '';
-    return scopedDocs.flatMap(getDocumentEntityIds)[0] || '';
-  }, [isAdminUser, scopedDocs, selectedEntity]);
+    if (isAdminUser) {
+      return selectedUserId ? allEntities.find((item) => item.id?.toString() === selectedUserId.toString()) : null;
+    }
+    return allEntities.length > 0 ? allEntities[0] : null;
+  }, [allEntities, isAdminUser, selectedUserId]);
 
   const displayEntity = selectedEntity || (!isAdminUser ? {
-    id: inferredUserEntityId, name: getCurrentUserDisplayName(currentUser), email: currentUser?.email || '', rut: currentUser?.rut || ''
+    name: getCurrentUserDisplayName(currentUser), 
+    email: currentUser?.email || '', 
+    rut: currentUser?.rut || ''
   } : null);
   
-  const activeExternalId = displayEntity?.id?.toString() || '';
   const isGlobalView = isAdminUser && !selectedEntity;
 
   const appRoleText = currentUser?.rol || 'Tripulante';
@@ -424,13 +379,16 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const rawContractDate = getEntityFieldValue(displayEntity, ['fecha_contrato', 'contract_date', 'hired_at', 'fecha_ingreso']);
   const detailFechaContrato = rawContractDate ? formatDate(rawContractDate) : 'No informado';
 
+  // 2. Confianza ciega en la API: allDocs viene filtrado para tripulantes
   const selectedUserDocs = useMemo(() => {
-    const docs = Array.isArray(scopedDocs) ? scopedDocs : [];
-    if (isGlobalView) return [];
-    if (!isAdminUser && !activeExternalId) return docs;
-    if (!activeExternalId) return [];
-    return docs.filter((doc) => getDocumentEntityIds(doc).includes(activeExternalId));
-  }, [isAdminUser, isGlobalView, activeExternalId, scopedDocs]);
+    if (!isAdminUser) return allDocs; 
+    if (!selectedUserId) return []; // Admin viendo vista global
+    
+    return allDocs.filter(doc => {
+      const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
+      return docEntityId === selectedUserId;
+    });
+  }, [isAdminUser, selectedUserId, allDocs]);
 
   const selectedPendingSignatures = useMemo(() =>
     selectedUserDocs.filter(hasPendingSignature).map((doc) => ({ ...doc, displayName: getDocName(doc) })), [selectedUserDocs, getDocName]
@@ -449,14 +407,13 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   }, [selectedUserDocs]);
 
   const globalMetrics = useMemo(() => {
-    const activeDocs = allDocs;
-    const totalDocsCount = activeDocs.length;
+    const totalDocsCount = allDocs.length;
     let docsAlDia = 0, docsCaducados = 0, docsEn30Dias = 0, docsEn3060Dias = 0;
 
     const collaboratorStatusMap = {};
     allEntities.forEach(ent => { collaboratorStatusMap[ent.id?.toString()] = 'healthy'; });
 
-    activeDocs.forEach((doc) => {
+    allDocs.forEach((doc) => {
       const entityIds = getDocumentEntityIds(doc);
       const bucket = getDocumentComplianceBucket(doc);
 

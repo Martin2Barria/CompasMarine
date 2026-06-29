@@ -4,9 +4,8 @@ import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Eye, Tag, D
 // --- STUBS Y DEPENDENCIAS INTEGRADAS ---
 const getApiUrl = (path) => path.startsWith('http') ? path : `/api${path}`;
 
-// 1. LLAVES CORREGIDAS PARA COMPARTIR CACHÉ CON VISTA INICIO
 const getUserSnapshotKey = (user) => user?.id ? `user_${user.id}` : 'global';
-const SNAPSHOT_FRESH_MS = 15 * 60 * 1000; // 15 minutos
+const SNAPSHOT_FRESH_MS = 15 * 60 * 1000;
 
 const isControlDocSnapshotFresh = (snapshot, maxAgeMs) => {
   if (!snapshot || !snapshot.savedAt) return false;
@@ -26,43 +25,14 @@ const saveControlDocSnapshot = (data, key) => {
   } catch {}
 };
 
-// --- VALIDACIÓN DE ROLES (BLINDADO CON IDs REALES DE DB) ---
+// --- VALIDACIÓN POR ID DE ROL ---
 const hasAdminRole = (user) => {
   if (!user) return false;
-  
-  // 1. Detección por ID (Inquebrantable)
   if (user.rol_id !== undefined && user.rol_id !== null) {
-    // 2=Lector Global, 10=Admin Supremo, 11=Admin Gestor, 13=Admin
     return [2, 10, 11, 13].includes(Number(user.rol_id));
   }
-
-  // 2. Fallback de seguridad (Por si no viaja el ID)
   const roleName = (user?.rol || user?.role || '').toLowerCase().trim();
   return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName) || roleName.includes('admin');
-};
-
-const findEntityForUser = (entities, user) => {
-  if (!entities || !entities.length || !user) return null;
-  const userEmail = (user.email || '').trim().toLowerCase();
-  const userRut = (user.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
-  
-  return entities.find(e => {
-    const eEmail = (e.email || e.custom_fields?.correo_electronico_personal || '').trim().toLowerCase();
-    const eRut = (e.identifier || e.rut || '').trim().toLowerCase().replace(/[^0-9kK]/g, '');
-    return (userEmail && eEmail === userEmail) || (userRut && eRut === userRut);
-  });
-};
-
-const getScopedDocuments = (docs, entities, user) => {
-  if (hasAdminRole(user)) return docs;
-  const myEntity = findEntityForUser(entities, user) || (entities.length === 1 ? entities[0] : null);
-  if (!myEntity) return [];
-  const myExternalId = myEntity.id?.toString();
-  
-  return docs.filter(doc => {
-    const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
-    return docEntityId === myExternalId;
-  });
 };
 
 // --- COMPONENTE DE TARJETA ESTÉTICO ---
@@ -358,28 +328,11 @@ export const ViewDocumentos = ({ currentUser }) => {
     return () => { isCancelled = true; };
   }, [currentUser, isAdmin, snapshotOwnerKey]);
 
-  const myEntity = useMemo(() => {
-    if (isAdmin) return null;
-    return findEntityForUser(apiData.entities, currentUser) || apiData.entities[0];
-  }, [isAdmin, apiData.entities, currentUser]);
-
-  const myExternalId = myEntity?.id?.toString() || '';
-
-  const baseDocuments = useMemo(() => {
-    if (isAdmin) return apiData.documents;
-    if (!myExternalId) return [];
-    
-    const scoped = getScopedDocuments(apiData.documents, apiData.entities, currentUser);
-    return (scoped && scoped.length > 0) 
-      ? scoped 
-      : apiData.documents.filter(doc => {
-          const entityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
-          return entityId === myExternalId;
-        });
-  }, [isAdmin, apiData.documents, apiData.entities, currentUser, myExternalId]);
+  // CONFIANZA CIEGA EN EL BACKEND: Lo que llega es lo que se pinta.
+  const baseDocuments = apiData.documents;
 
   const relevantEntities = useMemo(() => {
-    if (!isAdmin) return myEntity ? [myEntity] : [];
+    if (!isAdmin) return apiData.entities.length > 0 ? [apiData.entities[0]] : [];
 
     const activeEntityIds = new Set(baseDocuments.map(d => d.entity_id?.toString() || d.abstract_entity_id?.toString()).filter(id => id && id !== 'undefined' && id !== 'null'));
     const usersMap = new Map();
@@ -394,7 +347,7 @@ export const ViewDocumentos = ({ currentUser }) => {
     });
 
     return finalUsers.sort((a, b) => a.name.localeCompare(b.name));
-  }, [isAdmin, baseDocuments, apiData.entities, myEntity]);
+  }, [isAdmin, baseDocuments, apiData.entities]);
 
   const entityById = useMemo(() => new Map(apiData.entities.map(entity => [entity.id?.toString(), entity])), [apiData.entities]);
   const documentTypeById = useMemo(() => new Map(apiData.documentTypes.map(type => [type.id?.toString(), type])), [apiData.documentTypes]);
@@ -407,7 +360,7 @@ export const ViewDocumentos = ({ currentUser }) => {
   }, [documentTypeById]);
 
   const progressMetrics = useMemo(() => {
-    const targetEntityId = isAdmin ? selectedEntityId : myExternalId;
+    const targetEntityId = isAdmin ? selectedEntityId : (apiData.entities[0]?.id?.toString() || '');
     if (!targetEntityId || targetEntityId === 'all') return { percentage: 0, count: 0, total: 0 };
 
     const userDocs = baseDocuments.filter(doc => (doc.entity_id?.toString() || doc.abstract_entity_id?.toString()) === targetEntityId);
@@ -418,7 +371,7 @@ export const ViewDocumentos = ({ currentUser }) => {
     }).length;
 
     return { percentage: total > 0 ? Math.round((count / total) * 100) : 0, count, total };
-  }, [baseDocuments, selectedEntityId, isAdmin, myExternalId]);
+  }, [baseDocuments, selectedEntityId, isAdmin, apiData.entities]);
 
   const processedDocuments = useMemo(() => {
     const urgencyValue = (days) => {

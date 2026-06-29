@@ -27,7 +27,7 @@ export async function handleLogin(req, res) {
     if (rows.length > 0) {
         const user = rows[0];
         if (await bcrypt.compare(password, user.password_hash)) {
-            // AQUÍ ESTÁ EL CAMBIO: Extraemos también el ID del rol
+            // Extraemos también el ID del rol
             const [roles] = await dbPool.execute('SELECT r.id as rol_id, r.nombre as rol FROM usuarios_roles ur JOIN roles r ON ur.rol_id = r.id WHERE ur.usuario_id = ?', [user.id]);
             
             const rol = roles.length > 0 ? roles[0].rol : 'Usuario';

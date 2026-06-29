@@ -3,7 +3,7 @@ import { dbPool } from '../config/db.js';
 import { sendJson, getCookie } from '../utils/http.js';
 import { fetchAllControlDocPages, resolveControlDocCredentials } from '../utils/controldoc.js';
 
-// --- CACHÉ PERSISTENTE GLOBAL (V4) ---
+// --- CACHÉ PERSISTENTE GLOBAL (V4 - BACKEND GATEKEEPER) ---
 if (!global.serverCache || !global.serverCache._v4) {
     global.serverCache = {
         _v4: true,
@@ -22,7 +22,7 @@ export const controlDocRoutes = new Map([
 
 export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
     console.log(`\n======================================================`);
-    console.log(`🚨 [API] Petición interceptada en backend: ${cleanPath}`);
+    console.log(`🚨 [API GATEKEEPER] Petición entrante: ${cleanPath}`);
 
     if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
 
@@ -34,6 +34,7 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
 
     let userEmail = '';
     let isAdmin = false;
+    let rolId = null;
 
     try {
         const [userRows] = await dbPool.execute(
@@ -52,14 +53,15 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
         
         userEmail = userRows[0].email;
         const rolStr = (userRows[0].rol || '').toLowerCase().trim();
-        const rolId = userRows[0].rol_id ? Number(userRows[0].rol_id) : null;
+        rolId = userRows[0].rol_id ? Number(userRows[0].rol_id) : null;
         
-        // --- LA LLAVE MAESTRA ---
-        // 1. Si el correo es el admin supremo, siempre pasa.
-        // 2. Si el ID del rol es 2, 10, 11 o 13, también pasa.
+        // --- LA LLAVE MAESTRA (FILTRO CENTRALIZADO EN EL SERVIDOR) ---
+        // IDs Administradores: 2 (Lector Global), 10 (Admin Supremo), 11 (Admin Gestor), 13 (Admin)
+        // IDs Usuarios normales: 3 (Usuario), 12 (UsuarioPrueba Notificaciones)
         if (userEmail === 'admin@compasmarine.cl' || (rolId !== null && [2, 10, 11, 13].includes(rolId))) {
             isAdmin = true;
         } else {
+            // Fallback por nombre por si la BD falla
             isAdmin = ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(rolStr) || rolStr.includes('admin');
         }
         
@@ -93,17 +95,19 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
             
             let dataToSend = cacheStore.data;
 
+            // Los tipos de documento (metadatos) son públicos para todos
             if (cacheKey === 'documentTypes') {
                 return sendJson(res, 200, dataToSend);
             }
 
-            // SI ES ADMIN, SE ENVÍA TODO SIN FILTRAR NADA
+            // SI ES ADMIN (IDs 2, 10, 11, 13), SE ENVÍA TODO SIN FILTRAR NADA
             if (isAdmin) {
                 console.log(`🚀 [API] Bypass de Admin activado. Enviando TODOS los datos (${dataToSend.length}).`);
                 return sendJson(res, 200, dataToSend);
             }
             
-            // --- FILTRADO ESTRICTO PARA TRIPULANTES ---
+            // --- FILTRADO ESTRICTO PARA TRIPULANTES (IDs 3, 12) ---
+            console.log(`🔒 [API] Tripulante detectado. Filtrando información confidencial...`);
             const allEntities = global.serverCache['entities'].data || [];
             let dbRut = '';
             try {
@@ -125,7 +129,7 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
                 dataToSend = cacheStore.data.filter(item => item && item.entity_id?.toString() === myExternalId);
             }
             
-            console.log(`👤 [API] Enviando ${dataToSend.length} datos filtrados al tripulante ${userEmail}.`);
+            console.log(`👤 [API] Enviando solo ${dataToSend.length} registros que le pertenecen a ${userEmail}.`);
             return sendJson(res, 200, dataToSend);
         }
         
