@@ -21,18 +21,21 @@ const readControlDocSnapshot = (key) => {
 };
 
 // --- VALIDACIÓN DE ROLES (BLINDADO CON IDs REALES DE DB) ---
+const readControlDocSnapshot = (key) => {
+  try {
+    const stored = localStorage.getItem(`controlDocSnapshot_${key}`);
+    return stored ? JSON.parse(stored) : null;
+  } catch { return null; }
+};
+
+// EL CANDADO DEFINITIVO DE ROLES CON TUS IDs EXACTOS
 const hasAdminRole = (user) => {
   if (!user) return false;
-
-  // 1. Detección por ID exacto de la base de datos (Máxima Seguridad)
   if (user.rol_id !== undefined && user.rol_id !== null) {
-    const adminIds = [2, 10, 11, 13]; 
-    return adminIds.includes(Number(user.rol_id));
+    return [2, 10, 11, 13].includes(Number(user.rol_id));
   }
-
-  // 2. Fallback de seguridad (Por si el backend aún no envía el rol_id)
-  const roleName = (user?.rol || user?.role || '').toLowerCase();
-  return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName);
+  const roleName = (user?.rol || user?.role || '').toLowerCase().trim();
+  return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName) || roleName.includes('admin');
 };
 
 const findEntityForUser = (entities, user) => {

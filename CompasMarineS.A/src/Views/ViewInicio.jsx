@@ -24,30 +24,26 @@ const saveControlDocSnapshotAsync = async (data, key) => {
 
 const getUserSnapshotKey = (user) => user?.id ? `user_${user.id}` : 'global';
 
-// --- VALIDACIÓN DE ROLES (BLINDADO CON IDs REALES DE DB) ---
+// EL CANDADO DEFINITIVO DE ROLES CON TUS IDs EXACTOS
 const hasAdminRole = (user) => {
   if (!user) return false;
-
-  // 1. Detección por ID exacto de la base de datos (Máxima Seguridad)
-  // Lector Global (2), Admin Supremo (10), Admin Gestor (11), Admin (13)
+  // Validamos usando los IDs de la base de datos: 2, 10, 11, 13
   if (user.rol_id !== undefined && user.rol_id !== null) {
-    const adminIds = [2, 10, 11, 13]; 
-    return adminIds.includes(Number(user.rol_id));
+    return [2, 10, 11, 13].includes(Number(user.rol_id));
   }
-
-  // 2. Fallback de seguridad (Por si el backend aún no envía el rol_id)
-  const roleName = (user?.rol || user?.role || '').toLowerCase();
-  return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName);
+  // Salvavidas por si falla el ID (limpiando espacios)
+  const roleName = (user?.rol || user?.role || '').toLowerCase().trim();
+  return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName) || roleName.includes('admin');
 };
 
 const canAccessAdminPanel = (user) => {
   if (!user) return false;
-  // Solo Admin Supremo (10), Admin Gestor (11) y Admin (13) pueden ver el botón de panel
+  // El ID 2 (Lector Global) no entra aquí
   if (user.rol_id !== undefined && user.rol_id !== null) {
     return [10, 11, 13].includes(Number(user.rol_id));
   }
-  const roleName = (user?.rol || user?.role || '').toLowerCase();
-  return ['admin supremo', 'admin gestor', 'admin'].includes(roleName);
+  const roleName = (user?.rol || user?.role || '').toLowerCase().trim();
+  return ['admin supremo', 'admin gestor', 'admin'].includes(roleName) || roleName.includes('admin');
 };
 
 const evaluateDocumentNotificationRules = async () => {};
