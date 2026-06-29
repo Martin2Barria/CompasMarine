@@ -155,17 +155,14 @@ function extractControlDocItems(json) {
 function resolveControlDocCredentials(req) {
   const byUser = parseJsonEnv('CONTROLDOC_USER_CREDENTIALS_JSON');
   const cookieUserId = req ? getCookie(req, 'compas_user_id') : null;
-const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
+  const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
 
-  // MAGIA: Leer todos los IDs, separarlos por coma y limpiarlos
-  // ¡Cambiamos el valor por defecto de '467' a la lista completa!
   const rawEntityTypes = process.env.API_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_ID || '467, 468, 469';
   const entityTypeIds = String(rawEntityTypes).split(',').map(id => id.trim()).filter(Boolean);
 
   if (byUser && typeof byUser === 'object') {
     const profile = byUser[requestedUserId] || byUser[process.env.CONTROLDOC_DEFAULT_USER_ID] || Object.values(byUser)[0];
     if (profile) {
-       // CORRECCIÓN: Obligamos a que la variable de Railway pise al JSON si existe
        const explicitGlobalEntityTypes = process.env.API_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_IDS;
        const profileRawTypes = explicitGlobalEntityTypes || profile.entityTypeIds || profile.entity_type_ids || profile.entityTypeId || rawEntityTypes;
        
@@ -188,8 +185,6 @@ const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
     authorization: process.env.CONTROLDOC_AUTHORIZATION || ''
   };
 }
-
-
 
 async function fetchWithRetry(url, headers, maxRetries = 6) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -239,7 +234,6 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
     const MAX_PAGES = 500; 
     const CONCURRENCY = 2; 
 
-    // BUCLE PRINCIPAL: Itera por cada ID de sucursal (Ej: 467, 468, 469)
     for (const entityTypeId of credentials.entityTypeIds) {
       console.log(`[ControlDoc] Iniciando descarga en ${upstreamPath} para Entity Type ID: ${entityTypeId}...`);
       let allItems = [];
@@ -339,12 +333,22 @@ async function proxyControlDocRequest(req, res, cleanPath) {
   const cookieUserId = getCookie(req, 'compas_user_id');
   if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado' });
 
-  let userEmail = '', isAdmin = false;
+  let userEmail = '', isAdmin = false, rolId = null;
   try {
-    const [rows] = await dbPool.execute(`SELECT u.email, r.nombre as rol FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id WHERE u.id = ? AND u.activo = TRUE`, [cookieUserId]);
+    // MODIFICACIÓN: Solicitamos también el r.id as rol_id
+    const [rows] = await dbPool.execute(`SELECT u.email, r.nombre as rol, r.id as rol_id FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id WHERE u.id = ? AND u.activo = TRUE`, [cookieUserId]);
     if (rows.length === 0) return sendJson(res, 401, { error: 'Usuario inactivo.' });
+    
     userEmail = rows[0].email;
-    isAdmin = (rows[0].rol || '').toLowerCase() === 'admin';
+    rolId = rows[0].rol_id ? Number(rows[0].rol_id) : null;
+    const rolStr = (rows[0].rol || '').toLowerCase().trim();
+
+    // GATEKEEPER: IDs Administradores: 2, 10, 11, 13
+    if (userEmail === 'admin@compasmarine.cl' || (rolId !== null && [2, 10, 11, 13].includes(rolId))) {
+      isAdmin = true;
+    } else {
+      isAdmin = ['admin', 'admin supremo', 'admin gestor', 'lector global'].includes(rolStr) || rolStr.includes('admin');
+    }
   } catch (err) { return sendJson(res, 200, []); }
 
   const upstreamPath = controlDocRoutes.get(cleanPath);
@@ -365,33 +369,42 @@ async function proxyControlDocRequest(req, res, cleanPath) {
           return sendJson(res, 200, await serveWithSWR(cacheKey, upstreamPath, credentials));
       }
 
-      let myExternalId = null;
+      // --- FILTRO GATEKEEPER PARA TRIPULANTES ---
+      console.log(`🔒 [API] Tripulante detectado. Filtrando información en memoria...`);
+      let dbRut = '';
       try {
-        const [rows] = await dbPool.execute('SELECT external_id FROM entidades_api WHERE email = ?', [userEmail]);
-        if (rows.length > 0) myExternalId = rows[0].external_id?.toString();
+        const [rows] = await dbPool.execute('SELECT rut FROM entidades_api WHERE email = ?', [userEmail]);
+        if (rows.length > 0) dbRut = (rows[0].rut || '').replace(/[^0-9kK]/g, '').toLowerCase();
       } catch(e) {}
 
-      if (!myExternalId) return sendJson(res, 200, []);
+      const allEntities = await serveWithSWR('entities', controlDocRoutes.get('/api/controldoc/entities'), credentials);
+      
+      const myEntity = allEntities.find(e => {
+         const eEmail = (e.email || e.custom_fields?.correo_electronico_personal || '').trim().toLowerCase();
+         const eRut = (e.identifier || e.custom_fields?.numero_de_documento || e.rut || '').replace(/[^0-9kK]/g, '').toLowerCase();
+         return (eEmail && eEmail === userEmail.toLowerCase()) || (dbRut && eRut && eRut === dbRut);
+      });
+
+      const myExternalId = myEntity ? myEntity.id?.toString() : null;
+
+      if (!myExternalId) {
+          console.log(`⚠️ [API] No se encontró entidad para el tripulante ${userEmail}.`);
+          return sendJson(res, 200, []);
+      }
 
       if (isUsersEndpoint) {
-          try {
-              const [rows] = await dbPool.execute('SELECT data_json FROM entidades_api WHERE external_id = ?', [myExternalId]);
-              if (rows.length > 0) return sendJson(res, 200, [JSON.parse(rows[0].data_json)]);
-          } catch(e) {}
-          return sendJson(res, 200, await serveWithSWR(`entities_${myExternalId}`, upstreamPath, credentials, { id: myExternalId }));
+          const filteredEntities = allEntities.filter(e => e.id?.toString() === myExternalId);
+          return sendJson(res, 200, filteredEntities);
       }
 
       if (isDocsEndpoint) {
-          const globalCache = serverCache['documents'];
-          if (globalCache && globalCache.data && globalCache.data.length > 0) {
-              const filtered = globalCache.data.filter(item => {
-                  const docEntityId = item.entity_id?.toString() || item.abstract_entity_id?.toString() || item.employee_id?.toString();
-                  return docEntityId === myExternalId;
-              });
-              return sendJson(res, 200, filtered);
-          }
-          const userDocs = await serveWithSWR(`docs_${myExternalId}`, upstreamPath, credentials, { abstract_entity_id: myExternalId });
-          return sendJson(res, 200, userDocs);
+          const allDocs = await serveWithSWR('documents', upstreamPath, credentials);
+          const filteredDocs = allDocs.filter(item => {
+              const docEntityId = item.entity_id?.toString() || item.abstract_entity_id?.toString() || item.employee_id?.toString();
+              return docEntityId === myExternalId;
+          });
+          console.log(`👤 [API] Enviando ${filteredDocs.length} documentos filtrados al tripulante ${userEmail}.`);
+          return sendJson(res, 200, filteredDocs);
       }
     }
     return sendJson(res, 200, []);
@@ -415,11 +428,15 @@ async function handleLogin(req, res) {
     const [rows] = await dbPool.execute('SELECT * FROM usuarios WHERE email = ? AND activo = TRUE', [email]);
     if (rows.length > 0) {
         if (await bcrypt.compare(password, rows[0].password_hash)) {
-            const [roles] = await dbPool.execute('SELECT r.nombre as rol FROM usuarios_roles ur JOIN roles r ON ur.rol_id = r.id WHERE ur.usuario_id = ?', [rows[0].id]);
-            res.setHeader('Set-Cookie', `compas_user_id=${rows[0].id}; Path=/; HttpOnly; SameSite=Lax`);
-            return sendJson(res, 200, { ok: true, user: { id: rows[0].id, nombre: rows[0].nombre, email, rol: roles[0]?.rol || 'Usuario' } });
-        }
+            // MODIFICACIÓN: Solicitamos r.id as rol_id
+            const [roles] = await dbPool.execute('SELECT r.id as rol_id, r.nombre as rol FROM usuarios_roles ur JOIN roles r ON ur.rol_id = r.id WHERE ur.usuario_id = ?', [rows[0].id]);
+            
+            const rol = roles.length > 0 ? roles[0].rol : 'Usuario';
+            const rol_id = roles.length > 0 ? roles[0].rol_id : null;
 
+            res.setHeader('Set-Cookie', `compas_user_id=${rows[0].id}; Path=/; HttpOnly; SameSite=Lax`);
+            return sendJson(res, 200, { ok: true, user: { id: rows[0].id, nombre: rows[0].nombre, email, rol, rol_id } });
+        }
       return sendJson(res, 401, { error: 'Credenciales incorrectas.' });
     }
 
@@ -429,12 +446,16 @@ async function handleLogin(req, res) {
         if (matchedEntidad) {
             const hash = await bcrypt.hash(password, 12); 
             const [insertRes] = await dbPool.execute('INSERT INTO usuarios (nombre, email, password_hash) VALUES (?, ?, ?)', [matchedEntidad.nombre || email, email, hash]);
+            let assignedRolId = null;
             try {
                 const [roles] = await dbPool.execute('SELECT id FROM roles WHERE nombre = "Usuario" LIMIT 1');
-                if (roles.length > 0) await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [insertRes.insertId, roles[0].id]);
+                if (roles.length > 0) {
+                  assignedRolId = roles[0].id;
+                  await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [insertRes.insertId, assignedRolId]);
+                }
             } catch(e) {}
             res.setHeader('Set-Cookie', `compas_user_id=${insertRes.insertId}; Path=/; HttpOnly; SameSite=Lax`);
-            return sendJson(res, 200, { ok: true, user: { id: insertRes.insertId, nombre: matchedEntidad.nombre, email, rol: 'Usuario' } });
+            return sendJson(res, 200, { ok: true, user: { id: insertRes.insertId, nombre: matchedEntidad.nombre, email, rol: 'Usuario', rol_id: assignedRolId } });
         } else return sendJson(res, 401, { error: 'Tu contraseña de activación debe ser tu RUT.' });
     }
     sendJson(res, 401, { error: 'Credenciales incorrectas.' });
@@ -527,7 +548,8 @@ async function handleAuthMe(req, res) {
   const userId = getCookie(req, 'compas_user_id');
   if (!userId) return sendJson(res, 401, { error: 'No autorizado' });
   try {
-    const [rows] = await dbPool.execute(`SELECT u.id, u.nombre, u.email, r.nombre as rol FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id WHERE u.id = ? AND u.activo = TRUE`, [userId]);
+    // MODIFICACIÓN: Solicitamos r.id as rol_id
+    const [rows] = await dbPool.execute(`SELECT u.id, u.nombre, u.email, r.nombre as rol, r.id as rol_id FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id WHERE u.id = ? AND u.activo = TRUE`, [userId]);
     if (rows.length === 0) return sendJson(res, 401, { error: 'Inactivo' });
     sendJson(res, 200, { user: rows[0] });
   } catch (e) { sendJson(res, 500, { error: 'Error interno' }); }
@@ -610,7 +632,6 @@ const server = createServer(async (req, res) => {
 server.listen(port, host, () => {
   console.log(`✅ Servidor Compas Marine encendido en http://${host}:${port}`);
   
-  // Imprimir qué IDs se van a procesar para estar 100% seguros
   const creds = resolveControlDocCredentials(null);
   console.log(`🔍 [Config] Múltiples Empresas Detectadas (IDs): [ ${creds.entityTypeIds.join(', ')} ]`);
 
