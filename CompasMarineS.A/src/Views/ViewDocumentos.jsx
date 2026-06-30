@@ -100,7 +100,8 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById }) => {
           </h3>
         </div>
 
-        <div className="space-y-1.5 mb-3 bg-gray-50/70 p-2.5 rounded-xl border border-gray-100/70">
+        {/* Corrección para Modo Oscuro en contenedor interno de la tarjeta */}
+        <div className="space-y-1.5 mb-3 bg-gray-50 p-2.5 rounded-xl border border-gray-100">
           <div className="text-xs text-gray-600 flex items-center min-w-0">
             <UserIcon className="w-3.5 h-3.5 mr-2 text-gray-400 flex-shrink-0" />
             <span className="font-semibold text-gray-800 truncate max-w-[200px] xs:max-w-[280px] sm:max-w-none">
@@ -424,15 +425,19 @@ export const ViewDocumentos = ({ currentUser }) => {
   const handleClearSelection = () => { setSearchTerm(''); setIsAutocompleteOpen(false); };
 
   return (
-    <div className="flex flex-col flex-1 overflow-hidden animate-fade-in w-full">
+    /*contenedores*/
+    /* Agregado bg-gray-50 al contenedor raíz para heredar correctamente el tema de fondo de extremo a extremo */
+    <div className="flex flex-col flex-1 overflow-hidden animate-fade-in w-full bg-gray-50">
       <div className="bg-[#394049] p-4 md:p-5 flex items-center justify-between flex-shrink-0 shadow-md">
         <h2 className="text-white text-lg md:text-xl font-semibold flex items-center">
           <FolderOpen className="w-5 h-5 md:w-6 md:h-6 mr-2 shrink-0 text-gray-300" /> <span>Mis Documentos</span>
         </h2>
       </div>
 
-      <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50 p-4 md:p-6 max-w-7xl mx-auto w-full">
-        <div className="space-y-4">
+      {/* Corregido: El contenedor <main> ahora mantiene bg-gray-50 a ancho completo */}
+      <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
+        {/* Trasladadas las clases de estructura y espaciado aquí para envolver el contenido y respetar el tema global sin cortes */}
+        <div className="p-4 md:p-6 max-w-7xl mx-auto w-full space-y-4">
           <div className="flex flex-col gap-4">
             {totalDocumentsWithoutBlocked > 0 && (
               <span className="text-[11px] md:text-xs bg-gray-200 text-gray-600 px-3 py-1.5 rounded-full font-bold shadow-sm inline-flex items-center w-fit">

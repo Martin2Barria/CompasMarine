@@ -179,6 +179,105 @@
   color: #ffffff !important;
 }
 
+/* ==========================================================================
+   ▼▼▼ INICIO - MODO OSCURO PARA LOGIN Y OLVIDASTE CONTRASEÑA ▼▼▼
+   ========================================================================== */
+
+/* Tarjeta contenedora principal (Login y Recuperación) */
+.dark .card {
+  background: #1e293b !important; /* Cambia a azul grisáceo oscuro */
+  border: 1px solid #334155 !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5) !important;
+}
+
+/* Encabezados y títulos principales */
+.dark .card-heading {
+  color: #f8fafc !important;
+}
+
+/* Subtítulos informativos */
+.dark .card-sub {
+  color: #94a3b8 !important;
+}
+
+/* Etiquetas de los campos (Email, Contraseña, etc.) */
+.dark .field-label {
+  color: #cbd5e1 !important;
+}
+
+/* Campos de texto / Inputs */
+.dark .input {
+  background-color: #0f172a !important; /* Fondo oscuro interno */
+  border-color: #334155 !important;
+  color: #f8fafc !important;
+}
+
+/* Campo de texto enfocado (Focus) */
+.dark .input:focus {
+  background-color: #0f172a !important;
+  border-color: #921E30 !important; /* Mantiene el color corporativo guinda */
+}
+
+/* Inputs deshabilitados (Como el correo validado en el paso 2 de recuperación) */
+.dark .input:disabled {
+  background-color: #1e293b !important;
+  color: #64748b !important;
+  border-color: #334155 !important;
+}
+
+/* Icono/Botón para visualizar la contraseña (Ojo) */
+.dark .eye-btn {
+  color: #64748b !important;
+}
+.dark .eye-btn:hover {
+  color: #94a3b8 !important;
+}
+
+/* Línea divisoria central ("Acceso corporativo") */
+.dark .divider-line {
+  background-color: #334155 !important;
+}
+
+.dark .divider-txt {
+  color: #64748b !important;
+}
+
+/* Borde inferior de la sección del logo */
+.dark .auth-branding-logo {
+  border-color: #334155 !important;
+}
+
+/* Cajas de Alertas de Error */
+.dark .error-box {
+  background-color: #2d1616 !important;
+  border-color: #7f1d1d !important;
+  color: #fca5a5 !important;
+}
+
+/* Cajas de Alertas de Éxito */
+.dark .success-box {
+  background-color: #142416 !important;
+  border-color: #14532d !important;
+  color: #86efac !important;
+}
+
+/* Nota de derechos de autor en el pie del formulario */
+.dark .footer-note {
+  color: #64748b !important;
+}
+
+/* Botones secundarios de tipo enlace (Ej: "Volver al paso anterior") */
+.dark .link-btn {
+  color: #fca5a5 !important;
+}
+.dark .link-btn:hover {
+  color: #f87171 !important;
+}
+
+/* ==========================================================================
+   ▲▲▲ FIN - MODO OSCURO PARA LOGIN Y OLVIDASTE CONTRASEÑA ▲▲▲
+   ========================================================================== */
+
 /* Animaciones del Logo emergente */
 @keyframes overlayOut {
   from { opacity: 1; }
