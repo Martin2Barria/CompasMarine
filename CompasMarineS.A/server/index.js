@@ -274,7 +274,6 @@ async function fetchWithRetry(url, headers, maxRetries = 8) {
       const isRateLimit = response.status === 429 || (response.status === 401 && url.searchParams.get('page') !== '1') || response.status === 403;
       
       if (isRateLimit) {
-        // Backoff súper agresivo para asegurar que ControlDoc perdone a la IP
         const waitTime = attempt * 3000 + Math.random() * 2000;
         await new Promise(res => setTimeout(res, waitTime));
         continue;
@@ -313,8 +312,8 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
     if (credentials.customerId) baseHeaders['Customer-Id'] = credentials.customerId.trim();
     if (credentials.authorization) baseHeaders['Authorization'] = credentials.authorization.trim();
 
-    const MAX_PAGES = 500; // Restaurado a 500 para permitir la carga de 8000+ documentos
-    const CONCURRENCY = 3; // Balance ideal para velocidad sin provocar bloqueos 429 masivos
+    const MAX_PAGES = 500; 
+    const CONCURRENCY = 3; 
 
     for (const entityTypeId of credentials.entityTypeIds) {
       console.log(`[ControlDoc] Iniciando descarga masiva en ${upstreamPath} para Empresa ID: ${entityTypeId}...`);
@@ -334,7 +333,7 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
 
           const url = new URL(upstreamPath, controlDocBaseUrl);
           url.searchParams.append('page', page);
-          url.searchParams.append('per_page', '150'); // Límite alto por página
+          url.searchParams.append('per_page', '150'); 
           for (const [key, value] of Object.entries(extraParams)) {
             url.searchParams.append(key, value);
           }
@@ -346,7 +345,7 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
         let emptyPageDetected = false;
 
         for (const json of batchResults) {
-          if (!json) continue; // Si finalmente falló después de 8 reintentos, lo ignoramos para no tumbar la app completa
+          if (!json) continue; 
           const items = extractControlDocItems(json);
           if (items.length === 0) {
               emptyPageDetected = true;
@@ -357,8 +356,6 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
 
         if (emptyPageDetected) hasMore = false;
         currentPage += CONCURRENCY;
-        
-        // Pausa diminuta para no agobiar a la API
         if (hasMore) await new Promise(r => setTimeout(r, 400));
       }
       
@@ -378,19 +375,15 @@ async function serveWithSWR(cacheKey, upstreamPath, credentials, extraParams = {
   }
   const cacheStore = serverCache[cacheKey];
   
-  // Si ya hay una promesa en curso, adjuntarse a ella
   if (cacheStore.fetchPromise) {
     await cacheStore.fetchPromise;
     return cacheStore.data || [];
   }
 
-  // SIEMPRE DEVOLVER DATOS SI EXISTEN EN RAM (STALE-WHILE-REVALIDATE INDESTRUCTIBLE)
   if (cacheStore.data && cacheStore.data.length > 0) {
     if (cacheStore.expiresAt < Date.now()) {
-      // Disparar en segundo plano pero devolver los datos viejos inmediatamente
       cacheStore.fetchPromise = fetchAllControlDocPages(upstreamPath, credentials, extraParams)
         .then(data => { 
-            // Solo actualizamos la RAM si la descarga fue exitosa y trajo datos
             if(data && data.length > 0) {
                cacheStore.data = data;
                cacheStore.expiresAt = Date.now() + CACHE_TTL;
@@ -402,7 +395,6 @@ async function serveWithSWR(cacheKey, upstreamPath, credentials, extraParams = {
     return cacheStore.data;
   }
   
-  // Si no hay datos en absoluto (ej. primer arranque del servidor), bloquear y esperar
   cacheStore.fetchPromise = fetchAllControlDocPages(upstreamPath, credentials, extraParams)
     .then(data => { 
         if(data && data.length > 0) {
@@ -432,7 +424,6 @@ async function proxyControlDocRequest(req, res, cleanPath) {
     const rolId = rows[0].rol_id ? Number(rows[0].rol_id) : null;
     const rolStr = (rows[0].rol || '').toLowerCase().trim();
 
-    // GATEKEEPER: Admin de pruebas por correo, y roles admin: 2, 10, 11, 13.
     if (userEmail === 'admin@compasmarine.cl' || (rolId !== null && [2, 10, 11, 13].includes(rolId))) {
       isAdmin = true;
     } else {
@@ -468,9 +459,7 @@ async function proxyControlDocRequest(req, res, cleanPath) {
       try {
         const [rows] = await dbPool.execute('SELECT rut FROM entidades_api WHERE email = ?', [userEmail]);
         if (rows.length > 0) dbRut = (rows[0].rut || '').replace(/[^0-9kK]/g, '').toLowerCase();
-      } catch (error) {
-        console.warn('No se pudo leer el RUT local para filtrar ControlDoc:', error.message);
-      }
+      } catch (error) {}
 
       const allEntities = await serveWithSWR('entities', controlDocRoutes.get('/api/controldoc/entities'), credentials);
       
@@ -675,29 +664,60 @@ async function getAdminRoleId(req) {
 
 async function handleGetUsers(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Método no válido' });
-  if (!(await isGestorOrSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere nivel de Administrador.' });
+  const roleId = await getAdminRoleId(req);
+  if (![10, 11, 13].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere nivel de Administrador.' });
 
   try {
-    // CORRECCIÓN CRÍTICA: La consulta a la BD. 
-    // Usamos MAX() y GROUP BY external_id para eliminar duplicados reales causados por múltiples tipos de entidad (ej: contratista y empleado al mismo tiempo)
-    const [users] = await dbPool.execute(`
+    // 💡 SOLUCIÓN DEFINITIVA A LOS CLONES Y AL ERROR 500
+    // Ejecutamos una consulta plana (sin GROUP BY ni MAX) para evitar conflictos estrictos de MySQL
+    const [rows] = await dbPool.query(`
       SELECT 
-        e.external_id as id,  -- Siempre usamos el external_id para comunicarnos con el Frontend
-        MAX(u.id) as local_user_id, -- Mantenemos el ID local escondido si existe
-        MAX(e.rut) as rut,
-        MAX(e.nombre) as nombre, 
-        MAX(e.email) as email, 
-        MAX(IF(u.id IS NOT NULL, 1, 0)) as activo, 
-        MAX(r.id) as rol_id, 
-        MAX(r.nombre) as rol_nombre
+        e.external_id, 
+        e.rut,
+        e.nombre, 
+        e.email, 
+        u.id as local_user_id, 
+        r.id as rol_id, 
+        r.nombre as rol_nombre
       FROM entidades_api e
       LEFT JOIN usuarios u ON e.email = u.email AND e.email IS NOT NULL AND e.email != ''
       LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id
       LEFT JOIN roles r ON ur.rol_id = r.id
-      GROUP BY e.external_id
-      ORDER BY MAX(e.nombre) ASC
     `);
-    const [roles] = await dbPool.execute('SELECT id, nombre FROM roles ORDER BY id ASC');
+
+    // Deduplicamos los clones en la memoria de JavaScript (Infinitamente más seguro y rápido)
+    const usersMap = new Map();
+    for (const row of rows) {
+      const extId = row.external_id?.toString();
+      if (!extId) continue;
+
+      if (!usersMap.has(extId)) {
+        usersMap.set(extId, {
+          id: extId,
+          local_user_id: row.local_user_id,
+          rut: row.rut,
+          nombre: row.nombre || 'Sin Nombre',
+          email: row.email,
+          activo: row.local_user_id ? 1 : 0,
+          rol_id: row.rol_id,
+          rol_nombre: row.rol_nombre
+        });
+      } else if (row.local_user_id) {
+        // Si ya registramos el usuario, pero este registro SI tiene cuenta creada, lo sobreescribimos
+        const existing = usersMap.get(extId);
+        existing.local_user_id = row.local_user_id;
+        existing.activo = 1;
+        existing.rol_id = row.rol_id;
+        existing.rol_nombre = row.rol_nombre;
+        if (row.rut && !existing.rut) existing.rut = row.rut;
+        if (row.email && !existing.email) existing.email = row.email;
+      }
+    }
+
+    const users = Array.from(usersMap.values());
+    users.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')); // Ordenar alfabéticamente
+
+    const [roles] = await dbPool.query('SELECT id, nombre FROM roles ORDER BY id ASC');
     return sendJson(res, 200, { users, roles });
   } catch (error) {
     console.error("Error Obteniendo Usuarios:", error);
@@ -707,19 +727,19 @@ async function handleGetUsers(req, res) {
 
 async function handleChangeUserRole(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
-  if (!(await isAdminSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Solo el Admin Supremo puede cambiar roles.' });
+  const roleIdAuth = await getAdminRoleId(req);
+  if (![10, 13].includes(roleIdAuth)) return sendJson(res, 403, { error: 'Acceso denegado. Solo el Admin Supremo puede cambiar roles.' });
 
   let payload;
   try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
   
-  // El frontend nos enviará el external_id (lo que el panel llama "userId")
   const { userId, roleId } = payload;
   if (!userId || !roleId) return sendJson(res, 400, { error: 'Faltan datos para procesar la solicitud.' });
 
   try {
     let targetLocalUserId = null;
 
-    // 1. Verificar si este external_id ya está en la tabla "usuarios" (por su email)
+    // 1. Buscamos primero al usuario en base de datos.
     const [entities] = await dbPool.execute('SELECT nombre, email, rut FROM entidades_api WHERE external_id = ? LIMIT 1', [userId]);
     if (entities.length === 0) return sendJson(res, 404, { error: 'No se encontró la entidad en ControlDoc.' });
     
@@ -729,10 +749,9 @@ async function handleChangeUserRole(req, res) {
     const [existingUsers] = await dbPool.execute('SELECT id FROM usuarios WHERE email = ? LIMIT 1', [emailAUsar]);
 
     if (existingUsers.length > 0) {
-       // El usuario ya existe en nuestra BD local
        targetLocalUserId = existingUsers[0].id;
     } else {
-      // 2. EL USUARIO NO EXISTE: Auto-crearlo de forma segura antes de asignarle el rol
+      // 💡 SOLUCIÓN ER_NO_REFERENCED_ROW_2: Si NO existe, creamos su cuenta primero.
       const rutLimpio = entidad.rut ? entidad.rut.replace(/[^0-9kK]/g, '').toLowerCase().replace(/^0+/, '') : '123456789';
       const hash = await bcrypt.hash(rutLimpio, 12);
       
@@ -743,7 +762,7 @@ async function handleChangeUserRole(req, res) {
       targetLocalUserId = insertRes.insertId;
     }
 
-    // 3. Asignar el rol (ahora 100% seguros de que targetLocalUserId existe en la tabla usuarios)
+    // Ahora insertamos usando el ID local que SÍ existe en la BD
     await dbPool.execute('DELETE FROM usuarios_roles WHERE usuario_id = ?', [targetLocalUserId]);
     await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [targetLocalUserId, roleId]);
     
@@ -757,8 +776,8 @@ async function handleChangeUserRole(req, res) {
 async function handleResetUserPassword(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
   if (!requireSameOriginRequest(req, res)) return;
-  const roleId = await getAdminRoleId(req);
-  if (![2, 10, 11, 13].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere nivel de Administrador.' });
+  const roleIdAuth = await getAdminRoleId(req);
+  if (![10, 11, 13].includes(roleIdAuth)) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere nivel de Administrador.' });
 
   let payload;
   try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
@@ -767,15 +786,21 @@ async function handleResetUserPassword(req, res) {
   if (!userId) return sendJson(res, 400, { error: 'Falta el identificador del usuario.' });
 
   try {
-    const [users] = await dbPool.execute('SELECT email FROM usuarios WHERE id = ?', [userId]);
-    if (users.length === 0) return sendJson(res, 404, { error: 'El usuario no existe en el sistema.' });
+    const [entities] = await dbPool.execute('SELECT email, rut FROM entidades_api WHERE external_id = ? LIMIT 1', [userId]);
+    if (entities.length === 0) return sendJson(res, 404, { error: 'La entidad no existe en el sistema.' });
     
-    const email = users[0].email;
-    const [entities] = await dbPool.execute('SELECT rut FROM entidades_api WHERE email = ?', [email]);
+    const entidad = entities[0];
+    const email = entidad.email;
     
+    if (!email) return sendJson(res, 400, { error: 'Imposible realizar la acción: El usuario no tiene correo asociado.' });
+
+    const [users] = await dbPool.execute('SELECT id FROM usuarios WHERE email = ? LIMIT 1', [email]);
+    if (users.length === 0) return sendJson(res, 400, { error: 'Este usuario aún no ha ingresado al sistema ni tiene cuenta.' });
+    
+    const localUserId = users[0].id;
     let rut = '';
-    if (entities.length > 0 && entities[0].rut) {
-        rut = entities[0].rut.replace(/[^0-9kK]/g, '').toLowerCase().replace(/^0+/, '');
+    if (entidad.rut) {
+        rut = entidad.rut.replace(/[^0-9kK]/g, '').toLowerCase().replace(/^0+/, '');
     }
 
     if (!rut) {
@@ -783,7 +808,7 @@ async function handleResetUserPassword(req, res) {
     }
 
     const hash = await bcrypt.hash(rut, 12);
-    await dbPool.execute('UPDATE usuarios SET password_hash = ? WHERE id = ?', [hash, userId]);
+    await dbPool.execute('UPDATE usuarios SET password_hash = ? WHERE id = ?', [hash, localUserId]);
 
     return sendJson(res, 200, { ok: true, message: 'Contraseña restablecida. Ahora su clave es su RUT.' });
   } catch (error) {
@@ -796,7 +821,7 @@ async function handleResetUserPassword(req, res) {
 async function handleSetupDB(req, res) {
   if (!requireSameOriginRequest(req, res)) return;
   const roleId = await getAdminRoleId(req);
-  if (![2, 10, 11, 13].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Mantenimiento exclusivo para administradores.' });
+  if (![10, 11].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Mantenimiento exclusivo para administradores.' });
   
   try {
     await dbPool.query(`CREATE TABLE IF NOT EXISTS usuarios (id INT AUTO_INCREMENT PRIMARY KEY, nombre VARCHAR(100) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, activo BOOLEAN NOT NULL DEFAULT TRUE)`);
@@ -821,7 +846,7 @@ async function handleSetupDB(req, res) {
 async function handleSyncUsersToDB(req, res) {
   if (!requireSameOriginRequest(req, res)) return;
   const roleId = await getAdminRoleId(req);
-  if (![2, 10, 11, 13].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Mantenimiento exclusivo para administradores.' });
+  if (![10, 11].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Mantenimiento exclusivo para administradores.' });
   
   try {
     const credentials = resolveControlDocCredentials(null);
@@ -843,12 +868,6 @@ async function handleSyncUsersToDB(req, res) {
   }
 }
 
-async function getNotificationService() {
-  const notifications = await import('./services/notifications.service.js');
-  notifications.configureWebPush();
-  return notifications;
-}
-
 // --- SERVIDOR PRINCIPAL ---
 const server = createServer(async (req, res) => {
   try {
@@ -862,23 +881,6 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/auth/verify-reset-identity') return await handleVerifyResetIdentity(req, res);
     if (cleanPath === '/api/auth/reset-password') return await handleResetPassword(req, res);
     if (cleanPath === '/api/auth/me') return await handleAuthMe(req, res);
-
-    if (cleanPath === '/api/notifications/vapid-public-key') {
-      const { hasVapidConfig } = await getNotificationService();
-      return sendJson(res, 200, { publicKey: process.env.VAPID_PUBLIC_KEY || null, ready: hasVapidConfig() });
-    }
-    if (cleanPath === '/api/notifications/subscriptions') {
-      const { handlePushSubscription } = await getNotificationService();
-      return await handlePushSubscription(req, res);
-    }
-    if (cleanPath === '/api/notifications/test') {
-      const { handlePushTest } = await getNotificationService();
-      return await handlePushTest(req, res);
-    }
-    if (cleanPath === '/api/notifications/email-alerts') {
-      const { handleEmailAlerts } = await getNotificationService();
-      return await handleEmailAlerts(req, res);
-    }
     
     // API Gestión de Usuarios
     if (cleanPath === '/api/admin/users') return await handleGetUsers(req, res);
@@ -892,8 +894,6 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/controldoc/documents/sync') { 
         if (!requireSameOriginRequest(req, res)) return;
         if (!getCookie(req, 'compas_user_id')) return sendJson(res, 401, { error: 'No autorizado' });
-        // ¡CLAVE! NUNCA vaciar la RAM (no usar = null).
-        // Solo marcamos como "expirado" para forzar la re-descarga silenciosa y masiva.
         serverCache.documents.expiresAt = 0; 
         serverCache.entities.expiresAt = 0; 
         serverCache.documentTypes.expiresAt = 0; 
@@ -926,38 +926,7 @@ server.listen(port, host, () => {
   console.log(`🔍 [Config] Múltiples Empresas Detectadas (IDs): [ ${creds.entityTypeIds.join(', ')} ]`);
 
   setTimeout(runBackgroundCachePreload, 5000);
-  setTimeout(startPushNotificationScheduler, 10000);
 });
-
-async function startPushNotificationScheduler() {
-  try {
-    const { startNotificationScheduler } = await getNotificationService();
-    const result = startNotificationScheduler({
-      getControlDocData: getNotificationSchedulerControlDocData
-    });
-
-    if (!result.started) {
-      console.log(`ℹ️ [Push Scheduler] No iniciado: ${result.reason}`);
-    }
-  } catch (error) {
-    console.error('❌ [Push Scheduler] No se pudo iniciar:', error.message);
-  }
-}
-
-async function getNotificationSchedulerControlDocData() {
-  const creds = resolveControlDocCredentials(null);
-  if (!creds.email || !creds.token) {
-    throw new Error('Faltan credenciales de ControlDoc');
-  }
-
-  const [documentTypes, entities, documents] = await Promise.all([
-    serveWithSWR('documentTypes', '/api/v1/abstract/document_types', creds),
-    serveWithSWR('entities', '/api/v1/abstract/entities', creds),
-    serveWithSWR('documents', '/api/v1/abstract/documents', creds)
-  ]);
-
-  return { documentTypes, entities, documents };
-}
 
 // --- TAREA FANTASMA (BACKGROUND WORKER) ---
 async function runBackgroundCachePreload() {
