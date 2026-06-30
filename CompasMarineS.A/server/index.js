@@ -675,66 +675,77 @@ async function getAdminRoleId(req) {
 
 async function handleGetUsers(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Método no válido' });
-  const roleId = await getAdminRoleId(req);
-  if (![2, 10, 11, 13].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere nivel de Administrador.' });
+  if (!(await isGestorOrSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere nivel de Administrador.' });
 
   try {
+    // CORRECCIÓN CRÍTICA: La consulta a la BD. 
+    // Usamos MAX() y GROUP BY external_id para eliminar duplicados reales causados por múltiples tipos de entidad (ej: contratista y empleado al mismo tiempo)
     const [users] = await dbPool.execute(`
       SELECT 
-        e.external_id, 
-        COALESCE(u.id, e.external_id) as id, 
-        e.rut,
-        e.nombre, 
-        e.email,
-        IF(u.id IS NOT NULL, 1, 0) as activo, 
-        r.id as rol_id, 
-        r.nombre as rol_nombre
+        e.external_id as id,  -- Siempre usamos el external_id para comunicarnos con el Frontend
+        MAX(u.id) as local_user_id, -- Mantenemos el ID local escondido si existe
+        MAX(e.rut) as rut,
+        MAX(e.nombre) as nombre, 
+        MAX(e.email) as email, 
+        MAX(IF(u.id IS NOT NULL, 1, 0)) as activo, 
+        MAX(r.id) as rol_id, 
+        MAX(r.nombre) as rol_nombre
       FROM entidades_api e
       LEFT JOIN usuarios u ON e.email = u.email AND e.email IS NOT NULL AND e.email != ''
       LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id
       LEFT JOIN roles r ON ur.rol_id = r.id
-      ORDER BY e.nombre ASC
+      GROUP BY e.external_id
+      ORDER BY MAX(e.nombre) ASC
     `);
     const [roles] = await dbPool.execute('SELECT id, nombre FROM roles ORDER BY id ASC');
     return sendJson(res, 200, { users, roles });
-  } catch {
+  } catch (error) {
+    console.error("Error Obteniendo Usuarios:", error);
     return sendJson(res, 500, { error: 'Error al obtener lista de usuarios completos.' });
   }
 }
 
 async function handleChangeUserRole(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
-  if (!requireSameOriginRequest(req, res)) return;
-  const roleId = await getAdminRoleId(req);
-  // 10 = Admin Supremo | 13 = Admin
-  if (![10, 13].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Solo el Admin o Admin Supremo pueden cambiar roles.' });
+  if (!(await isAdminSupremo(req))) return sendJson(res, 403, { error: 'Acceso denegado. Solo el Admin Supremo puede cambiar roles.' });
 
   let payload;
   try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
   
-  const { userId, roleId: newRoleId, needsAccount } = payload;
-  if (!userId || !newRoleId) return sendJson(res, 400, { error: 'Faltan datos para procesar la solicitud.' });
+  // El frontend nos enviará el external_id (lo que el panel llama "userId")
+  const { userId, roleId } = payload;
+  if (!userId || !roleId) return sendJson(res, 400, { error: 'Faltan datos para procesar la solicitud.' });
 
   try {
-    let targetUserId = userId;
+    let targetLocalUserId = null;
 
-    if (needsAccount) {
-      const [entities] = await dbPool.execute('SELECT nombre, email, rut FROM entidades_api WHERE external_id = ?', [userId]);
-      if (entities.length === 0) return sendJson(res, 404, { error: 'No se encontró la entidad en la base de datos.' });
-      
-      const entidad = entities[0];
+    // 1. Verificar si este external_id ya está en la tabla "usuarios" (por su email)
+    const [entities] = await dbPool.execute('SELECT nombre, email, rut FROM entidades_api WHERE external_id = ? LIMIT 1', [userId]);
+    if (entities.length === 0) return sendJson(res, 404, { error: 'No se encontró la entidad en ControlDoc.' });
+    
+    const entidad = entities[0];
+    const emailAUsar = entidad.email || `sin-correo-${userId}@temp.com`;
+
+    const [existingUsers] = await dbPool.execute('SELECT id FROM usuarios WHERE email = ? LIMIT 1', [emailAUsar]);
+
+    if (existingUsers.length > 0) {
+       // El usuario ya existe en nuestra BD local
+       targetLocalUserId = existingUsers[0].id;
+    } else {
+      // 2. EL USUARIO NO EXISTE: Auto-crearlo de forma segura antes de asignarle el rol
       const rutLimpio = entidad.rut ? entidad.rut.replace(/[^0-9kK]/g, '').toLowerCase().replace(/^0+/, '') : '123456789';
-      
       const hash = await bcrypt.hash(rutLimpio, 12);
+      
       const [insertRes] = await dbPool.execute(
         'INSERT INTO usuarios (nombre, email, password_hash) VALUES (?, ?, ?)', 
-        [entidad.nombre || 'Sin Nombre', entidad.email || `sin-correo-${userId}@temp.com`, hash]
+        [entidad.nombre || 'Sin Nombre', emailAUsar, hash]
       );
-      targetUserId = insertRes.insertId;
+      targetLocalUserId = insertRes.insertId;
     }
 
-    await dbPool.execute('DELETE FROM usuarios_roles WHERE usuario_id = ?', [targetUserId]);
-    await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [targetUserId, newRoleId]);
+    // 3. Asignar el rol (ahora 100% seguros de que targetLocalUserId existe en la tabla usuarios)
+    await dbPool.execute('DELETE FROM usuarios_roles WHERE usuario_id = ?', [targetLocalUserId]);
+    await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [targetLocalUserId, roleId]);
     
     return sendJson(res, 200, { ok: true, message: 'Rol asignado correctamente al tripulante.' });
   } catch (error) {

@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { ShieldAlert, Database, RefreshCw, Users, ServerCrash, CheckCircle2, Search, Key, UserCog, AlertTriangle } from 'lucide-react';
 
 export const ViewAdmin = ({ onLoadingProgress }) => {
@@ -97,7 +97,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
   };
 
   // --- GESTIÓN DE USUARIOS ---
-  const fetchUsers = useCallback(async () => {
+  const fetchUsers = async () => {
     setLoadingUsers(true);
     setUsersError('');
     onLoadingProgress?.({ percent: 30 });
@@ -114,11 +114,11 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     } finally {
       setLoadingUsers(false);
     }
-  }, [onLoadingProgress]);
+  };
 
   useEffect(() => {
     fetchUsers();
-  }, [fetchUsers]);
+  }, []);
 
   const handleRoleChange = async (userId, newRoleId) => {
     if (!isSupremo) return alert("Acción denegada: Solo el Admin Supremo puede cambiar roles.");
@@ -568,4 +568,4 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
       </main>
     </div>
   );
-};//fgh
+};
