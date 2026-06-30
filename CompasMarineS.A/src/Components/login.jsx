@@ -131,7 +131,7 @@ export const Login = ({ onLoginSuccess, onLoadingProgress }) => {
           {/* ==========================================================================
              ⚠️ BOTÓN TEMPORAL DE DESARROLLO (Borrar por completo para producción)
              ========================================================================== */}
-          <div style={{ marginBottom: '1.5rem', textAlign: 'center' }}>
+          {/* <div style={{ marginBottom: '1.5rem', textAlign: 'center' }}>
             <button
               type="button"
               onClick={onLoginSuccess}
@@ -149,7 +149,7 @@ export const Login = ({ onLoginSuccess, onLoadingProgress }) => {
             >
               ⚠️ Modo Desarrollo: Saltar Login (Bypass)
             </button>
-          </div>
+          </div> */}
           {/* ========================================================================== */}
 
           <p className="footer-note">Compas Marine &copy; 2026 &middot; Gestión Documental</p>
