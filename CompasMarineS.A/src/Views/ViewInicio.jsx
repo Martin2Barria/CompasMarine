@@ -19,7 +19,9 @@ const readControlDocSnapshotAsync = async (key) => {
 const saveControlDocSnapshotAsync = async (data, key) => {
   try {
     localStorage.setItem(`controlDocSnapshot_${key}`, JSON.stringify({ ...data, savedAt: new Date().toISOString() }));
-  } catch {}
+  } catch (error) {
+    console.warn('No se pudo guardar el respaldo local de ControlDoc:', error);
+  }
 };
 
 const getUserSnapshotKey = (user) => user?.id ? `user_${user.id}` : 'global';
@@ -27,23 +29,20 @@ const getUserSnapshotKey = (user) => user?.id ? `user_${user.id}` : 'global';
 // EL CANDADO DEFINITIVO DE ROLES CON TUS IDs EXACTOS
 const hasAdminRole = (user) => {
   if (!user) return false;
-  // Validamos usando los IDs de la base de datos: 2, 10, 11, 13
   if (user.rol_id !== undefined && user.rol_id !== null) {
     return [2, 10, 11, 13].includes(Number(user.rol_id));
   }
-  // Salvavidas por si falla el ID (limpiando espacios)
   const roleName = (user?.rol || user?.role || '').toLowerCase().trim();
   return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName) || roleName.includes('admin');
 };
 
 const canAccessAdminPanel = (user) => {
   if (!user) return false;
-  // El ID 2 (Lector Global) no entra aquí
   if (user.rol_id !== undefined && user.rol_id !== null) {
-    return [10, 11, 13].includes(Number(user.rol_id));
+    return [2, 10, 11, 13].includes(Number(user.rol_id));
   }
   const roleName = (user?.rol || user?.role || '').toLowerCase().trim();
-  return ['admin supremo', 'admin gestor', 'admin'].includes(roleName) || roleName.includes('admin');
+  return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName) || roleName.includes('admin');
 };
 
 const toArray = (value, fallbackKeys = []) => {
@@ -151,7 +150,22 @@ const getCurrentUserDisplayName = (user) => {
 
 const getEntityRut = (entity) => getEntityFieldValue(entity, ENTITY_RUT_KEYS);
 const getEntityEmail = (entity) => getEntityFieldValue(entity, ['email', 'correo_electronico_personal', 'correo electronico personal', 'correo_electronico_corporativo', 'correo electronico corporativo', 'correo', 'mail']);
+const getEntityCorporateEmail = (entity) => getEntityFieldValue(entity, ['correo_electronico_corporativo', 'correo electronico corporativo', 'email_corporativo', 'email corporativo', 'corporate_email', 'corporateEmail', 'work_email', 'workEmail', 'correo_empresa', 'correo empresa']);
+const getEntityPhone = (entity) => getEntityFieldValue(entity, ['telefono', 'teléfono', 'phone', 'mobile', 'celular', 'telefono_movil', 'telefono movil', 'numero_telefono', 'numero telefono', 'phone_number', 'phoneNumber', 'contact_phone', 'contactPhone']);
 const SNAPSHOT_FRESH_MS = 15 * 60 * 1000;
+const SEVERITY_COLORS = {
+  red: '#921E30',
+  orange: '#D94A00',
+  yellow: '#B8860B',
+  green: '#22c55e'
+};
+
+const getProgressColor = (percentage) => {
+  if (percentage <= 30) return SEVERITY_COLORS.red;
+  if (percentage <= 50) return SEVERITY_COLORS.orange;
+  if (percentage <= 70) return SEVERITY_COLORS.yellow;
+  return SEVERITY_COLORS.green;
+};
 
 const hasPendingSignature = (doc) => {
   if (!doc || typeof doc !== 'object') return false;
@@ -378,6 +392,9 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const detailEmpresa = formatInfoValue(getEntityFieldValue(displayEntity, ['empresa', 'company', 'organization', 'razon_social']));
   const rawContractDate = getEntityFieldValue(displayEntity, ['fecha_contrato', 'contract_date', 'hired_at', 'fecha_ingreso']);
   const detailFechaContrato = rawContractDate ? formatDate(rawContractDate) : 'No informado';
+  const profileEmail = currentUser?.email || getEntityEmail(displayEntity);
+  const profileCorporateEmail = getEntityCorporateEmail(displayEntity);
+  const profilePhone = getEntityPhone(displayEntity);
 
   // 2. Confianza ciega en la API: allDocs viene filtrado para tripulantes
   const selectedUserDocs = useMemo(() => {
@@ -400,11 +417,14 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     })).filter((doc) => doc.daysRemaining !== null && doc.daysRemaining <= 60).sort((a, b) => a.daysRemaining - b.daysRemaining), [selectedUserDocs, getDocName]
   );
 
+  const selectedHealthyDocsCount = useMemo(() =>
+    selectedUserDocs.filter((doc) => getDocumentComplianceBucket(doc) === 'healthy').length, [selectedUserDocs]
+  );
+
   const selectedDocPercentage = useMemo(() => {
     if (selectedUserDocs.length === 0) return 0;
-    const healthyDocs = selectedUserDocs.filter((doc) => getDocumentComplianceBucket(doc) === 'healthy').length;
-    return Math.round((healthyDocs / selectedUserDocs.length) * 100);
-  }, [selectedUserDocs]);
+    return Math.round((selectedHealthyDocsCount / selectedUserDocs.length) * 100);
+  }, [selectedHealthyDocsCount, selectedUserDocs.length]);
 
   const globalMetrics = useMemo(() => {
     const totalDocsCount = allDocs.length;
@@ -634,7 +654,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
             <div className="space-y-3 mt-2">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
-                  <div className="bg-[#f96302] text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]">
+                  <div className="text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]" style={{ backgroundColor: getProgressColor(globalMetrics.cumplimientoColaboradores) }}>
                     <h4 className="text-sm font-semibold uppercase tracking-wider opacity-90">Cumplimiento Colaboradores</h4>
                     <p className="text-5xl font-black my-2">{globalMetrics.cumplimientoColaboradores} %</p>
                     <p className="text-xs opacity-75">De {globalMetrics.totalColabs} Colaboradores</p>
@@ -642,16 +662,16 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                   <div className="p-4 bg-white text-center border-t border-gray-50">
                     <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">Estado de Colaboradores</p>
                     <div className="grid grid-cols-4 gap-1">
-                      <div><p className="text-base font-bold text-red-600">{globalMetrics.colabCaducados}</p><p className="text-[10px] text-gray-400 leading-tight">Caducado</p></div>
-                      <div><p className="text-base font-bold text-amber-600">{globalMetrics.colabEn30Dias}</p><p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 días</p></div>
-                      <div><p className="text-base font-bold text-blue-600">{globalMetrics.colabEn3060Dias}</p><p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 a 60 días</p></div>
+                      <div><p className="text-base font-bold text-[#921E30]">{globalMetrics.colabCaducados}</p><p className="text-[10px] text-gray-400 leading-tight">Caducado</p></div>
+                      <div><p className="text-base font-bold text-[#D94A00]">{globalMetrics.colabEn30Dias}</p><p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 días</p></div>
+                      <div><p className="text-base font-bold text-[#B8860B]">{globalMetrics.colabEn3060Dias}</p><p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 a 60 días</p></div>
                       <div><p className="text-base font-bold text-green-600">{globalMetrics.colabsAlDia}</p><p className="text-[10px] text-gray-400 leading-tight">Al<br/>día</p></div>
                     </div>
                   </div>
                 </div>
 
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
-                  <div className="bg-[#008000] text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]">
+                  <div className="text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]" style={{ backgroundColor: getProgressColor(globalMetrics.cumplimientoDocumental) }}>
                     <h4 className="text-sm font-semibold uppercase tracking-wider opacity-90">Cumplimiento Documental</h4>
                     <p className="text-5xl font-black my-2">{globalMetrics.cumplimientoDocumental} %</p>
                     <p className="text-xs opacity-75">De {globalMetrics.totalDocsCount} Documentos</p>
@@ -659,9 +679,9 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                   <div className="p-4 bg-white text-center border-t border-gray-50">
                     <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">Estado de Documentos</p>
                     <div className="grid grid-cols-4 gap-1">
-                      <div><p className="text-base font-bold text-red-600">{globalMetrics.docsCaducados}</p><p className="text-[10px] text-gray-400 leading-tight">Caducado</p></div>
-                      <div><p className="text-base font-bold text-amber-600">{globalMetrics.docsEn30Dias}</p><p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 días</p></div>
-                      <div><p className="text-base font-bold text-blue-600">{globalMetrics.docsEn3060Dias}</p><p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 a 60 días</p></div>
+                      <div><p className="text-base font-bold text-[#921E30]">{globalMetrics.docsCaducados}</p><p className="text-[10px] text-gray-400 leading-tight">Caducado</p></div>
+                      <div><p className="text-base font-bold text-[#D94A00]">{globalMetrics.docsEn30Dias}</p><p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 días</p></div>
+                      <div><p className="text-base font-bold text-[#B8860B]">{globalMetrics.docsEn3060Dias}</p><p className="text-[10px] text-gray-400 leading-tight">Caduca en<br/>30 a 60 días</p></div>
                       <div><p className="text-base font-bold text-green-600">{globalMetrics.docsAlDia}</p><p className="text-[10px] text-gray-400 leading-tight">Al<br/>día</p></div>
                     </div>
                   </div>
@@ -685,11 +705,13 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
               <div className="flex items-start justify-between gap-2 mb-4">
                 <div>
                   <p className="text-xs uppercase font-semibold text-[#921E30]">{!isAdminUser ? 'Mi Perfil' : 'Usuario seleccionado'}</p>
-                  <h3 className="text-base font-bold text-[#394049]">{getEntityDisplayName(displayEntity)}</h3>
+                  {isAdminUser && <h3 className="text-base font-bold text-[#394049]">{getEntityDisplayName(displayEntity)}</h3>}
                   <p className="text-xs text-gray-500 mb-2">RUT: {formatInfoValue(getEntityRut(displayEntity))}</p>
-                  {!isAdminUser && currentUser?.email && (<p className="text-xs text-gray-500 mb-2">Email: {currentUser.email}</p>)}
+                  <p className="text-xs text-gray-500 mb-2">Email: {profileEmail || 'No registrado'}</p>
+                  <p className="text-xs text-gray-500 mb-2">Correo corporativo: {profileCorporateEmail || 'No registrado'}</p>
+                  <p className="text-xs text-gray-500 mb-2">Teléfono: {profilePhone || 'No registrado'}</p>
                   <div className="mt-2 space-y-1.5 border-t border-gray-100 pt-2">
-                    <p className="text-xs text-gray-600"><span className="font-semibold text-gray-700">Cargo:</span> {detailCargo}</p>
+                    {isAdminUser && <p className="text-xs text-gray-600"><span className="font-semibold text-gray-700">Cargo:</span> {detailCargo}</p>}
                     <p className="text-xs text-gray-600"><span className="font-semibold text-gray-700">Empresa:</span> {detailEmpresa}</p>
                     <p className="text-xs text-gray-600"><span className="font-semibold text-gray-700">Fecha de Contrato:</span> {detailFechaContrato}</p>
                   </div>
@@ -710,12 +732,18 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
               )}
 
               <div className="mt-4 pt-4 border-t border-gray-100">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-[10px] uppercase font-bold text-gray-500 tracking-wide">Progreso documental</p>
-                  <span className="text-sm font-black text-[#921E30]">{selectedDocPercentage}%</span>
+                <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-gray-800 uppercase tracking-wide">Avance del Trabajador</h3>
+                    <p className="text-xs text-gray-400 mt-0.5">Documentos vigentes del colaborador seleccionado</p>
+                  </div>
+                  <div className="flex items-baseline sm:text-right gap-2 sm:flex-col sm:gap-0">
+                    <span className="text-2xl font-black" style={{ color: getProgressColor(selectedDocPercentage) }}>{selectedDocPercentage}%</span>
+                    <p className="text-xs font-semibold text-gray-400">{selectedHealthyDocsCount} de {selectedUserDocs.length} docs</p>
+                  </div>
                 </div>
-                <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
-                  <div className="h-3 rounded-full transition-all duration-500" style={{ width: `${selectedDocPercentage}%`, backgroundColor: selectedDocPercentage === 100 ? '#22c55e' : '#f96302' }}></div>
+                <div className="w-full bg-gray-100 rounded-full h-3 mt-3 overflow-hidden">
+                  <div className="h-3 rounded-full transition-all duration-1000 ease-out" style={{ width: `${selectedDocPercentage}%`, backgroundColor: getProgressColor(selectedDocPercentage) }}></div>
                 </div>
               </div>
             </div>
@@ -770,25 +798,33 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                 {selectedExpiringDocs.length > 0 ? (
                   <div className="space-y-3">
                     {selectedExpiringDocs.slice(0, 5).map((doc) => {
-                      const isExpired = doc.daysRemaining < 0;
-                      const isCritical = doc.daysRemaining >= 0 && doc.daysRemaining <= 30;
-                      const isWarning = doc.daysRemaining > 30 && doc.daysRemaining <= 60;
-                      let colorClass = '', textColor = '', statusText = '';
+                      const isExpired = doc.daysRemaining <= 0;
+                      const isCritical = doc.daysRemaining >= 1 && doc.daysRemaining <= 30;
+                      const isWarning = doc.daysRemaining >= 31 && doc.daysRemaining <= 60;
+                      let borderClass = 'border-gray-100', pillClass = '', statusText = '';
 
-                      if (isExpired || isCritical) {
-                        colorClass = 'bg-red-50 border-red-200'; textColor = 'text-red-700'; statusText = isExpired ? `Expirado (${Math.abs(doc.daysRemaining)}d)` : `Expira en ${doc.daysRemaining}d`;
+                      if (isExpired) {
+                        borderClass = 'border-red-200';
+                        pillClass = 'severity-pill-red';
+                        statusText = doc.daysRemaining === 0 ? 'Expira hoy' : `Expirado (${Math.abs(doc.daysRemaining)}d)`;
+                      } else if (isCritical) {
+                        borderClass = 'border-orange-200';
+                        pillClass = 'severity-pill-orange';
+                        statusText = `Expira en ${doc.daysRemaining}d`;
                       } else if (isWarning) {
-                        colorClass = 'bg-amber-50 border-amber-200'; textColor = 'text-amber-700'; statusText = `Expira en ${doc.daysRemaining}d`;
+                        borderClass = 'border-amber-200';
+                        pillClass = 'severity-pill-amber';
+                        statusText = `Expira en ${doc.daysRemaining}d`;
                       }
 
                       return (
-                        <div key={doc.id} className={`rounded-xl border p-3 bg-white shadow-sm hover:shadow transition ${colorClass}`}>
+                        <div key={doc.id} className={`rounded-xl border p-3 bg-white shadow-sm hover:shadow transition ${borderClass}`}>
                           <div className="flex justify-between items-start gap-3">
                             <div className="flex-1 overflow-hidden">
                               <p className="text-sm font-semibold text-[#394049] truncate">{doc.displayName}</p>
                               <p className="text-[11px] text-gray-500">Vence el {formatDate(doc.expirationDate)}</p>
                             </div>
-                            <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border flex-shrink-0 ${textColor}`}>{statusText}</span>
+                            <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border flex-shrink-0 ${pillClass}`}>{statusText}</span>
                           </div>
                         </div>
                       );

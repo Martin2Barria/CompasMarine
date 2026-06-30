@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Eye, Tag, Download, User as UserIcon } from 'lucide-react';
 
 // --- STUBS Y DEPENDENCIAS INTEGRADAS ---
@@ -6,7 +6,6 @@ const getApiUrl = (path) => path.startsWith('http') ? path : `/api${path}`;
 
 const getUserSnapshotKey = (user) => user?.id ? `user_${user.id}` : 'global';
 const SNAPSHOT_FRESH_MS = 15 * 60 * 1000;
-
 const isControlDocSnapshotFresh = (snapshot, maxAgeMs) => {
   if (!snapshot || !snapshot.savedAt) return false;
   return (Date.now() - new Date(snapshot.savedAt).getTime()) < maxAgeMs;
@@ -22,7 +21,9 @@ const readControlDocSnapshot = (key) => {
 const saveControlDocSnapshot = (data, key) => {
   try {
     localStorage.setItem(`controlDocSnapshot_${key}`, JSON.stringify({ ...data, savedAt: new Date().toISOString() }));
-  } catch {}
+  } catch (error) {
+    console.warn('No se pudo guardar el respaldo local de ControlDoc:', error);
+  }
 };
 
 // --- VALIDACIÓN POR ID DE ROL ---
@@ -36,7 +37,7 @@ const hasAdminRole = (user) => {
 };
 
 // --- COMPONENTE DE TARJETA ESTÉTICO ---
-const ApiDocumentCard = ({ doc, documentTypeById, entityById }) => {
+const ApiDocumentCard = ({ doc, documentTypeById, entityById, showEntityName = true }) => {
   const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
   const entity = entityById ? entityById.get(docEntityId) : null;
   const docType = documentTypeById ? documentTypeById.get(doc.document_type_id?.toString()) : null;
@@ -63,21 +64,23 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById }) => {
       status = { label: 'Sin Fecha', bgClass: 'bg-gray-100 text-gray-600 border-2 border-gray-200' };
     } else if (isBlocked) {
       const blockedDays = daysRemaining > 0 ? daysRemaining : 0;
-      status = { label: `Bloqueado (${blockedDays} días)`, bgClass: 'bg-red-50 text-[#921E30] border-2 border-red-200' };
-    } else if (daysRemaining > 30) {
+      status = { label: `Bloqueado (${blockedDays} días)`, bgClass: 'severity-pill-red border-2' };
+    } else if (daysRemaining > 60) {
       status = { label: `Vigente por ${daysRemaining} días`, bgClass: 'bg-green-50 text-green-700 border-2 border-green-200' };
+    } else if (daysRemaining > 30) {
+      status = { label: `Próximo a vencer (${daysRemaining} días)`, bgClass: 'severity-pill-amber border-2' };
     } else if (daysRemaining > 0) {
-      status = { label: `Próximo a vencer (${daysRemaining} días)`, bgClass: 'bg-yellow-50 text-yellow-700 border-2 border-yellow-200' };
+      status = { label: `Próximo a vencer (${daysRemaining} días)`, bgClass: 'severity-pill-orange border-2' };
     } else if (daysRemaining === 0) {
-      status = { label: 'Expira hoy', bgClass: 'bg-red-50 text-[#921E30] border-2 border-red-200' };
+      status = { label: 'Expira hoy', bgClass: 'severity-pill-red border-2' };
     } else {
       const expired = Math.abs(daysRemaining);
-      status = { label: `Expirado hace ${expired} días`, bgClass: 'bg-red-50 text-[#921E30] border-2 border-red-200' };
+      status = { label: `Expirado hace ${expired} días`, bgClass: 'severity-pill-red border-2' };
     }
   }
 
   if (!expirationDateValue && hasExpiredStatus) {
-    status = { label: 'Vencido', bgClass: 'bg-red-50 text-[#921E30] border-2 border-red-200' };
+    status = { label: 'Vencido', bgClass: 'severity-pill-red border-2' };
   }
 
   const formatDate = (dateString) => {
@@ -102,12 +105,14 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById }) => {
 
         {/* Corrección para Modo Oscuro en contenedor interno de la tarjeta */}
         <div className="space-y-1.5 mb-3 bg-gray-50 p-2.5 rounded-xl border border-gray-100">
-          <div className="text-xs text-gray-600 flex items-center min-w-0">
-            <UserIcon className="w-3.5 h-3.5 mr-2 text-gray-400 flex-shrink-0" />
-            <span className="font-semibold text-gray-800 truncate max-w-[200px] xs:max-w-[280px] sm:max-w-none">
-              {entityName}
-            </span>
-          </div>
+          {showEntityName && (
+            <div className="text-xs text-gray-600 flex items-center min-w-0">
+              <UserIcon className="w-3.5 h-3.5 mr-2 text-gray-400 flex-shrink-0" />
+              <span className="font-semibold text-gray-800 truncate max-w-[200px] xs:max-w-[280px] sm:max-w-none">
+                {entityName}
+              </span>
+            </div>
+          )}
           <div className="text-xs text-gray-600 flex items-center min-w-0">
             <Tag className="w-3.5 h-3.5 mr-2 text-gray-400 flex-shrink-0" />
             <span className="truncate text-gray-500 font-medium max-w-[200px] xs:max-w-[280px] sm:max-w-none">
@@ -360,20 +365,6 @@ export const ViewDocumentos = ({ currentUser }) => {
     return `${typeName} ${docLabel}`.trim() || `Documento ${doc.id || ''}`;
   }, [documentTypeById]);
 
-  const progressMetrics = useMemo(() => {
-    const targetEntityId = isAdmin ? selectedEntityId : (apiData.entities[0]?.id?.toString() || '');
-    if (!targetEntityId || targetEntityId === 'all') return { percentage: 0, count: 0, total: 0 };
-
-    const userDocs = baseDocuments.filter(doc => (doc.entity_id?.toString() || doc.abstract_entity_id?.toString()) === targetEntityId);
-    const total = userDocs.length;
-    const count = userDocs.filter((doc) => {
-      const days = getDaysRemaining(doc.expires_at);
-      return days === null || days > 30;
-    }).length;
-
-    return { percentage: total > 0 ? Math.round((count / total) * 100) : 0, count, total };
-  }, [baseDocuments, selectedEntityId, isAdmin, apiData.entities]);
-
   const processedDocuments = useMemo(() => {
     const urgencyValue = (days) => {
       if (days === null) return 10000;
@@ -445,23 +436,6 @@ export const ViewDocumentos = ({ currentUser }) => {
               </span>
             )}
 
-            {(!isAdmin || selectedEntityId !== 'all') && (
-              <div className="bg-white rounded-2xl p-4 md:p-5 border border-gray-100 shadow-sm">
-                <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
-                  <div>
-                    <h3 className="text-sm font-bold text-gray-800 uppercase tracking-wide">Avance del Trabajador</h3>
-                    <p className="text-xs text-gray-400 mt-0.5">Documentos vigentes del colaborador seleccionado</p>
-                  </div>
-                  <div className="flex items-baseline sm:text-right gap-2 sm:flex-col sm:gap-0">
-                    <span className="text-2xl font-black text-[#921E30]">{progressMetrics.percentage}%</span>
-                    <p className="text-xs font-semibold text-gray-400">{progressMetrics.count} de {progressMetrics.total} docs</p>
-                  </div>
-                </div>
-                <div className="w-full bg-gray-100 rounded-full h-3 mt-3 overflow-hidden">
-                  <div className="bg-[#921E30] h-3 rounded-full transition-all duration-1000 ease-out" style={{ width: `${progressMetrics.percentage}%` }}></div>
-                </div>
-              </div>
-            )}
           </div>
 
           {cacheNotice && (
@@ -475,26 +449,28 @@ export const ViewDocumentos = ({ currentUser }) => {
                 <h3 className="text-sm font-bold text-gray-800">Filtros de Búsqueda</h3>
               </div>
               
-              <div className="space-y-1">
-                <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Buscar Documento</label>
-                <div className="relative">
-                  <div className="relative bg-white rounded-xl border border-gray-200 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
-                    <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                    <input type="text" value={searchTerm} onChange={(e) => { setSearchTerm(e.target.value); setIsAutocompleteOpen(true); }} onFocus={() => setIsAutocompleteOpen(true)} placeholder="Busca por nombre o tipo de documento..." className="w-full bg-transparent py-2.5 pl-10 pr-10 focus:outline-none text-sm text-gray-700 placeholder-gray-400" />
-                    {searchTerm && (<button type="button" onClick={handleClearSelection} className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 font-bold text-xs">✕</button>)}
-                  </div>
-                  {isAutocompleteOpen && searchSuggestions.length > 0 && (
-                    <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 max-h-60 overflow-y-auto">
-                      {searchSuggestions.map((doc) => (
-                        <button key={doc.id} type="button" onClick={() => handleSelectSuggestion(doc)} className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-50 last:border-b-0">
-                          <p className="text-sm font-semibold text-gray-700 truncate">{getDocumentDisplayName(doc)}</p>
-                          <p className="text-[11px] text-gray-400 mt-0.5">ID: {doc.id}</p>
-                        </button>
-                      ))}
+              {isAdmin && (
+                <div className="space-y-1">
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Buscar Documento</label>
+                  <div className="relative">
+                    <div className="relative bg-white rounded-xl border border-gray-200 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
+                      <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                      <input type="text" value={searchTerm} onChange={(e) => { setSearchTerm(e.target.value); setIsAutocompleteOpen(true); }} onFocus={() => setIsAutocompleteOpen(true)} placeholder="Busca por nombre o tipo de documento..." className="w-full bg-transparent py-2.5 pl-10 pr-10 focus:outline-none text-sm text-gray-700 placeholder-gray-400" />
+                      {searchTerm && (<button type="button" onClick={handleClearSelection} className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 font-bold text-xs">✕</button>)}
                     </div>
-                  )}
+                    {isAutocompleteOpen && searchSuggestions.length > 0 && (
+                      <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 max-h-60 overflow-y-auto">
+                        {searchSuggestions.map((doc) => (
+                          <button key={doc.id} type="button" onClick={() => handleSelectSuggestion(doc)} className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-50 last:border-b-0">
+                            <p className="text-sm font-semibold text-gray-700 truncate">{getDocumentDisplayName(doc)}</p>
+                            <p className="text-[11px] text-gray-400 mt-0.5">ID: {doc.id}</p>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
+              )}
               
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
                 <div>
@@ -563,7 +539,7 @@ export const ViewDocumentos = ({ currentUser }) => {
           {documentsToRender.length > 0 && (
             <div className="space-y-3">
               {documentsToRender.map((doc) => (
-                <ApiDocumentCard key={doc.id} doc={doc} entityById={entityById} documentTypeById={documentTypeById} />
+                <ApiDocumentCard key={doc.id} doc={doc} entityById={entityById} documentTypeById={documentTypeById} showEntityName={isAdmin} />
               ))}
             </div>
           )}

@@ -37,7 +37,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
       const nextAlerts = await getCachedNotificationRecords(snapshotOwnerKey);
       setAlerts(nextAlerts);
       try {
-        if (nextAlerts.length > 0) {
+        if (Number(currentUser?.rol_id) === 12 && nextAlerts.length > 0) {
           await sendEmailAlertDigest(nextAlerts);
           setEmailStatus('sent');
         }
@@ -147,7 +147,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
         <div className="bg-white rounded-2xl p-4 md:p-5 shadow-sm relative overflow-hidden border border-gray-100">
           <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-[#921E30]"></div>
           <div className="flex gap-4 items-start">
-            <div className="bg-red-50 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+            <div className="severity-pill-red w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
               <AlertTriangle className="w-5 h-5 text-[#921E30]" />
             </div>
             <div className="min-w-0 flex-1 w-full">
@@ -159,7 +159,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
               ) : (
                 <div className="space-y-3 mt-3">
                   {alerts.slice(0, 20).map((alert) => (
-                    <div key={alert.id} className="rounded-xl border border-gray-100 bg-gray-50/70 p-3 md:p-4 transition-all">
+                    <div key={alert.id} className="notification-record-card rounded-xl border border-gray-100 p-3 md:p-4 transition-all">
                       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
                           <p className="text-sm font-bold text-[#394049] truncate">{alert.docName}</p>
@@ -210,12 +210,13 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
 
 function getSeverityLabel(severity) {
   if (severity === 'expired') return 'Vencido';
-  if (severity === 'critical') return '30 días';
-  return '60 días';
+  if (severity === 'signature') return 'Firma pendiente';
+  return 'Por vencer';
 }
 
 function getSeverityClass(severity) {
-  if (severity === 'expired') return 'bg-red-100 text-[#921E30] border border-red-200/50';
-  if (severity === 'critical') return 'bg-amber-100 text-amber-700 border border-amber-200/50';
-  return 'bg-blue-100 text-blue-700 border border-blue-200/50';
+  if (severity === 'expired') return 'severity-pill-red border';
+  if (severity === 'critical') return 'severity-pill-orange border';
+  if (severity === 'signature') return 'severity-pill-amber border';
+  return 'severity-pill-amber border';
 }

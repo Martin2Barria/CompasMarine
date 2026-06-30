@@ -1,16 +1,14 @@
-import { createReadStream, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import webPush from 'web-push';
 import mysql from 'mysql2/promise';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const appRoot = resolve(__dirname, '..');
 const distDir = resolve(appRoot, 'dist');
-const notificationsStorePath = resolve(appRoot, 'server', 'notifications.json');
 
 // --- CARGA DE VARIABLES DE ENTORNO ---
 function loadEnvFiles(fileNames) {
@@ -58,12 +56,17 @@ const controlDocRoutes = new Map([
   ['/api/controldoc/documents', '/api/v1/abstract/documents']
 ]);
 
-const securityHeaders = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin' };
+const securityHeaders = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'same-origin',
+  'X-Frame-Options': 'DENY',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()'
+};
 
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.ico': 'image/x-icon',
   '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png', '.svg': 'image/svg+xml'
+  '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json; charset=utf-8'
 };
 
 // --- CACHÉ DEL SERVIDOR ---
@@ -94,6 +97,84 @@ function readRequestBody(req) {
 function getCookie(req, cookieName) {
   const match = (req.headers.cookie || '').split(';').map(c => c.trim()).find(c => c.startsWith(`${cookieName}=`));
   return match ? decodeURIComponent(match.slice(cookieName.length + 1)) : '';
+}
+
+function isSecureRequest(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const hostHeader = String(req.headers['x-forwarded-host'] || req.headers.host || '').toLowerCase();
+  const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(hostHeader);
+  return process.env.NODE_ENV === 'production' || forwardedProto === 'https' || (hostHeader && !isLocalHost);
+}
+
+function buildSessionCookie(req, userId) {
+  const cookieParts = [
+    `compas_user_id=${encodeURIComponent(userId)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax'
+  ];
+
+  if (isSecureRequest(req)) cookieParts.push('Secure');
+  return cookieParts.join('; ');
+}
+
+function buildClearSessionCookie(req) {
+  const cookieParts = [
+    'compas_user_id=',
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+    'Expires=Thu, 01 Jan 1970 00:00:00 GMT'
+  ];
+
+  if (isSecureRequest(req)) cookieParts.push('Secure');
+  return cookieParts.join('; ');
+}
+
+function requireSameOriginRequest(req, res) {
+  if (isAllowedRequestOrigin(req)) return true;
+  return sendJson(res, 403, { error: 'Origen no permitido' });
+}
+
+function isAllowedRequestOrigin(req) {
+  const requestOrigin = getRequestOrigin(req);
+  if (!requestOrigin) return process.env.NODE_ENV !== 'production';
+
+  const allowedOrigins = getAllowedOrigins(req);
+  return allowedOrigins.has(requestOrigin);
+}
+
+function getRequestOrigin(req) {
+  if (typeof req.headers.origin === 'string') return req.headers.origin;
+  if (typeof req.headers.referer === 'string') {
+    try { return new URL(req.headers.referer).origin; } catch { return ''; }
+  }
+  return '';
+}
+
+function getAllowedOrigins(req) {
+  const allowedOrigins = new Set(
+    String(process.env.APP_ALLOWED_ORIGINS || '')
+      .split(',')
+      .map(origin => origin.trim())
+      .filter(Boolean)
+  );
+  const requestHost = req.headers['x-forwarded-host'] || req.headers.host;
+
+  if (requestHost) {
+    const forwardedProto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
+    allowedOrigins.add(`${forwardedProto}://${requestHost}`);
+    allowedOrigins.add(`https://${requestHost}`);
+    allowedOrigins.add(`http://${requestHost}`);
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    allowedOrigins.add('http://localhost:5173');
+    allowedOrigins.add('http://127.0.0.1:5173');
+  }
+
+  return allowedOrigins;
 }
 
 function createPasswordResetToken(email, userId) {
@@ -208,7 +289,7 @@ async function fetchWithRetry(url, headers, maxRetries = 8) {
       }
       
       return await response.json();
-    } catch (err) {
+    } catch {
       await new Promise(res => setTimeout(res, attempt * 2000));
     }
   }
@@ -341,26 +422,32 @@ async function proxyControlDocRequest(req, res, cleanPath) {
   const cookieUserId = getCookie(req, 'compas_user_id');
   if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado' });
 
-  let userEmail = '', isAdmin = false, rolId = null;
+  let userEmail = '';
+  let isAdmin;
   try {
     const [rows] = await dbPool.execute(`SELECT u.email, r.nombre as rol, r.id as rol_id FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id WHERE u.id = ? AND u.activo = TRUE`, [cookieUserId]);
     if (rows.length === 0) return sendJson(res, 401, { error: 'Usuario inactivo.' });
     
     userEmail = rows[0].email;
-    rolId = rows[0].rol_id ? Number(rows[0].rol_id) : null;
+    const rolId = rows[0].rol_id ? Number(rows[0].rol_id) : null;
     const rolStr = (rows[0].rol || '').toLowerCase().trim();
 
-    // GATEKEEPER: IDs Administradores: 2, 10, 11, 13
+    // GATEKEEPER: Admin de pruebas por correo, y roles admin: 2, 10, 11, 13.
     if (userEmail === 'admin@compasmarine.cl' || (rolId !== null && [2, 10, 11, 13].includes(rolId))) {
       isAdmin = true;
     } else {
       isAdmin = ['admin', 'admin supremo', 'admin gestor', 'lector global'].includes(rolStr) || rolStr.includes('admin');
     }
-  } catch (err) { return sendJson(res, 200, []); }
+  } catch (error) {
+    console.error('Error validando usuario para ControlDoc:', error.message);
+    return sendJson(res, 500, { error: 'No se pudo validar el usuario para ControlDoc.' });
+  }
 
   const upstreamPath = controlDocRoutes.get(cleanPath);
   const credentials = resolveControlDocCredentials(req);
-  if (!credentials.email || !credentials.token) return sendJson(res, 200, []);
+  if (!credentials.email || !credentials.token) {
+    return sendJson(res, 503, { error: 'Faltan credenciales de ControlDoc.' });
+  }
 
   try {
     if (upstreamPath === '/api/v1/abstract/document_types') {
@@ -381,7 +468,9 @@ async function proxyControlDocRequest(req, res, cleanPath) {
       try {
         const [rows] = await dbPool.execute('SELECT rut FROM entidades_api WHERE email = ?', [userEmail]);
         if (rows.length > 0) dbRut = (rows[0].rut || '').replace(/[^0-9kK]/g, '').toLowerCase();
-      } catch(e) {}
+      } catch (error) {
+        console.warn('No se pudo leer el RUT local para filtrar ControlDoc:', error.message);
+      }
 
       const allEntities = await serveWithSWR('entities', controlDocRoutes.get('/api/controldoc/entities'), credentials);
       
@@ -416,7 +505,7 @@ async function proxyControlDocRequest(req, res, cleanPath) {
     return sendJson(res, 200, []);
   } catch (err) {
     console.error("Error en proxy request:", err);
-    return sendJson(res, 200, []); 
+    return sendJson(res, 502, { error: 'No se pudo obtener información desde ControlDoc.' });
   }
 }
 
@@ -439,7 +528,7 @@ async function handleLogin(req, res) {
             const rol = roles.length > 0 ? roles[0].rol : 'Usuario';
             const rol_id = roles.length > 0 ? roles[0].rol_id : null;
 
-            res.setHeader('Set-Cookie', `compas_user_id=${rows[0].id}; Path=/; HttpOnly; SameSite=Lax`);
+            res.setHeader('Set-Cookie', buildSessionCookie(req, rows[0].id));
             return sendJson(res, 200, { ok: true, user: { id: rows[0].id, nombre: rows[0].nombre, email, rol, rol_id } });
         }
       return sendJson(res, 401, { error: 'Credenciales incorrectas.' });
@@ -458,17 +547,30 @@ async function handleLogin(req, res) {
                   assignedRolId = roles[0].id;
                   await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [insertRes.insertId, assignedRolId]);
                 }
-            } catch(e) {}
-            res.setHeader('Set-Cookie', `compas_user_id=${insertRes.insertId}; Path=/; HttpOnly; SameSite=Lax`);
+            } catch (error) {
+                console.warn('No se pudo asignar el rol Usuario automáticamente:', error.message);
+            }
+            res.setHeader('Set-Cookie', buildSessionCookie(req, insertRes.insertId));
             return sendJson(res, 200, { ok: true, user: { id: insertRes.insertId, nombre: matchedEntidad.nombre, email, rol: 'Usuario', rol_id: assignedRolId } });
         } else return sendJson(res, 401, { error: 'Tu contraseña de activación debe ser tu RUT.' });
     }
     sendJson(res, 401, { error: 'Credenciales incorrectas.' });
-  } catch (error) { sendJson(res, 200, { error: 'Error ignorado', ok: false }); }
+  } catch (error) {
+    console.error('Error en login:', error.message);
+    sendJson(res, 200, { error: 'Error ignorado', ok: false });
+  }
+}
+
+async function handleLogout(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+  if (!requireSameOriginRequest(req, res)) return;
+  res.setHeader('Set-Cookie', buildClearSessionCookie(req));
+  return sendJson(res, 200, { ok: true });
 }
 
 async function handleVerifyResetIdentity(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+  if (!requireSameOriginRequest(req, res)) return;
 
   let payload;
   try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
@@ -506,6 +608,7 @@ async function handleVerifyResetIdentity(req, res) {
 
 async function handleResetPassword(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+  if (!requireSameOriginRequest(req, res)) return;
 
   let payload;
   try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
@@ -556,7 +659,7 @@ async function handleAuthMe(req, res) {
     const [rows] = await dbPool.execute(`SELECT u.id, u.nombre, u.email, r.nombre as rol, r.id as rol_id FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id WHERE u.id = ? AND u.activo = TRUE`, [userId]);
     if (rows.length === 0) return sendJson(res, 401, { error: 'Inactivo' });
     sendJson(res, 200, { user: rows[0] });
-  } catch (e) { sendJson(res, 500, { error: 'Error interno' }); }
+  } catch { sendJson(res, 500, { error: 'Error interno' }); }
 }
 
 // --- SERVICIOS DE GESTIÓN (Roles Centralizados) ---
@@ -573,7 +676,7 @@ async function getAdminRoleId(req) {
 async function handleGetUsers(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Método no válido' });
   const roleId = await getAdminRoleId(req);
-  if (![10, 11, 13].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere nivel de Administrador.' });
+  if (![2, 10, 11, 13].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere nivel de Administrador.' });
 
   try {
     const [users] = await dbPool.execute(`
@@ -594,13 +697,14 @@ async function handleGetUsers(req, res) {
     `);
     const [roles] = await dbPool.execute('SELECT id, nombre FROM roles ORDER BY id ASC');
     return sendJson(res, 200, { users, roles });
-  } catch (error) {
+  } catch {
     return sendJson(res, 500, { error: 'Error al obtener lista de usuarios completos.' });
   }
 }
 
 async function handleChangeUserRole(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+  if (!requireSameOriginRequest(req, res)) return;
   const roleId = await getAdminRoleId(req);
   // 10 = Admin Supremo | 13 = Admin
   if (![10, 13].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Solo el Admin o Admin Supremo pueden cambiar roles.' });
@@ -641,8 +745,9 @@ async function handleChangeUserRole(req, res) {
 
 async function handleResetUserPassword(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+  if (!requireSameOriginRequest(req, res)) return;
   const roleId = await getAdminRoleId(req);
-  if (![10, 11, 13].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere nivel de Administrador.' });
+  if (![2, 10, 11, 13].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Se requiere nivel de Administrador.' });
 
   let payload;
   try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
@@ -678,14 +783,17 @@ async function handleResetUserPassword(req, res) {
 
 // --- SERVICIOS ADMIN (Generales de Mantenimiento) ---
 async function handleSetupDB(req, res) {
+  if (!requireSameOriginRequest(req, res)) return;
   const roleId = await getAdminRoleId(req);
-  if (![10, 11].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Mantenimiento exclusivo para Supremo o Gestor.' });
+  if (![2, 10, 11, 13].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Mantenimiento exclusivo para administradores.' });
   
   try {
     await dbPool.query(`CREATE TABLE IF NOT EXISTS usuarios (id INT AUTO_INCREMENT PRIMARY KEY, nombre VARCHAR(100) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, activo BOOLEAN NOT NULL DEFAULT TRUE)`);
     await dbPool.query(`CREATE TABLE IF NOT EXISTS roles (id INT AUTO_INCREMENT PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE)`);
     await dbPool.query(`CREATE TABLE IF NOT EXISTS usuarios_roles (usuario_id INT NOT NULL, rol_id INT NOT NULL, PRIMARY KEY (usuario_id, rol_id))`);
     await dbPool.query(`CREATE TABLE IF NOT EXISTS entidades_api (id INT AUTO_INCREMENT PRIMARY KEY, external_id VARCHAR(100) NOT NULL UNIQUE, rut VARCHAR(50), nombre VARCHAR(255), email VARCHAR(150), data_json JSON)`);
+    await dbPool.query(`CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint_hash CHAR(64) PRIMARY KEY, user_id INT NULL, endpoint TEXT NOT NULL, subscription_json JSON NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, INDEX idx_push_subscriptions_user_id (user_id))`);
+    await dbPool.query(`CREATE TABLE IF NOT EXISTS push_notification_events (event_hash CHAR(64) PRIMARY KEY, user_id INT NULL, event_key TEXT NOT NULL, event_id TEXT NOT NULL, rule_version INT NOT NULL DEFAULT 1, sent_at DATETIME NOT NULL, last_sent_at DATETIME NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, INDEX idx_push_notification_events_user_id (user_id))`);
     await dbPool.query(`INSERT IGNORE INTO roles (nombre) VALUES ('Admin Supremo'), ('Admin Gestor'), ('Admin'), ('Usuario')`);
     
     const [adminCheck] = await dbPool.execute('SELECT id FROM usuarios WHERE email = "admin@compasmarine.cl"');
@@ -700,8 +808,9 @@ async function handleSetupDB(req, res) {
 }
 
 async function handleSyncUsersToDB(req, res) {
+  if (!requireSameOriginRequest(req, res)) return;
   const roleId = await getAdminRoleId(req);
-  if (![10, 11].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Mantenimiento exclusivo para Supremo o Gestor.' });
+  if (![2, 10, 11, 13].includes(roleId)) return sendJson(res, 403, { error: 'Acceso denegado. Mantenimiento exclusivo para administradores.' });
   
   try {
     const credentials = resolveControlDocCredentials(null);
@@ -717,7 +826,16 @@ async function handleSyncUsersToDB(req, res) {
       insertados++;
     }
     sendJson(res, 200, { ok: true, message: `Sincronizados ${insertados} usuarios.` });
-  } catch (err) { sendJson(res, 500, { error: 'Fallo al sincronizar' }); }
+  } catch (error) {
+    console.error('Error sincronizando usuarios:', error.message);
+    sendJson(res, 500, { error: 'Fallo al sincronizar' });
+  }
+}
+
+async function getNotificationService() {
+  const notifications = await import('./services/notifications.service.js');
+  notifications.configureWebPush();
+  return notifications;
 }
 
 // --- SERVIDOR PRINCIPAL ---
@@ -729,9 +847,27 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/health') return sendJson(res, 200, { ok: true });
     if (cleanPath === '/api/auth/register') return sendJson(res, 403, { error: 'Deshabilitado' });
     if (cleanPath === '/api/auth/login') return await handleLogin(req, res);
+    if (cleanPath === '/api/auth/logout') return await handleLogout(req, res);
     if (cleanPath === '/api/auth/verify-reset-identity') return await handleVerifyResetIdentity(req, res);
     if (cleanPath === '/api/auth/reset-password') return await handleResetPassword(req, res);
     if (cleanPath === '/api/auth/me') return await handleAuthMe(req, res);
+
+    if (cleanPath === '/api/notifications/vapid-public-key') {
+      const { hasVapidConfig } = await getNotificationService();
+      return sendJson(res, 200, { publicKey: process.env.VAPID_PUBLIC_KEY || null, ready: hasVapidConfig() });
+    }
+    if (cleanPath === '/api/notifications/subscriptions') {
+      const { handlePushSubscription } = await getNotificationService();
+      return await handlePushSubscription(req, res);
+    }
+    if (cleanPath === '/api/notifications/test') {
+      const { handlePushTest } = await getNotificationService();
+      return await handlePushTest(req, res);
+    }
+    if (cleanPath === '/api/notifications/email-alerts') {
+      const { handleEmailAlerts } = await getNotificationService();
+      return await handleEmailAlerts(req, res);
+    }
     
     // API Gestión de Usuarios
     if (cleanPath === '/api/admin/users') return await handleGetUsers(req, res);
@@ -743,6 +879,8 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/admin/sync-users') return await handleSyncUsersToDB(req, res);
     
     if (cleanPath === '/api/controldoc/documents/sync') { 
+        if (!requireSameOriginRequest(req, res)) return;
+        if (!getCookie(req, 'compas_user_id')) return sendJson(res, 401, { error: 'No autorizado' });
         // ¡CLAVE! NUNCA vaciar la RAM (no usar = null).
         // Solo marcamos como "expirado" para forzar la re-descarga silenciosa y masiva.
         serverCache.documents.expiresAt = 0; 
@@ -777,7 +915,38 @@ server.listen(port, host, () => {
   console.log(`🔍 [Config] Múltiples Empresas Detectadas (IDs): [ ${creds.entityTypeIds.join(', ')} ]`);
 
   setTimeout(runBackgroundCachePreload, 5000);
+  setTimeout(startPushNotificationScheduler, 10000);
 });
+
+async function startPushNotificationScheduler() {
+  try {
+    const { startNotificationScheduler } = await getNotificationService();
+    const result = startNotificationScheduler({
+      getControlDocData: getNotificationSchedulerControlDocData
+    });
+
+    if (!result.started) {
+      console.log(`ℹ️ [Push Scheduler] No iniciado: ${result.reason}`);
+    }
+  } catch (error) {
+    console.error('❌ [Push Scheduler] No se pudo iniciar:', error.message);
+  }
+}
+
+async function getNotificationSchedulerControlDocData() {
+  const creds = resolveControlDocCredentials(null);
+  if (!creds.email || !creds.token) {
+    throw new Error('Faltan credenciales de ControlDoc');
+  }
+
+  const [documentTypes, entities, documents] = await Promise.all([
+    serveWithSWR('documentTypes', '/api/v1/abstract/document_types', creds),
+    serveWithSWR('entities', '/api/v1/abstract/entities', creds),
+    serveWithSWR('documents', '/api/v1/abstract/documents', creds)
+  ]);
+
+  return { documentTypes, entities, documents };
+}
 
 // --- TAREA FANTASMA (BACKGROUND WORKER) ---
 async function runBackgroundCachePreload() {

@@ -27,21 +27,23 @@ export const ApiDocumentCard = ({ doc, entities = [], documentTypes = [], entity
       status = { label: 'Sin Fecha', bgClass: 'bg-gray-100 text-gray-600 border-2 border-gray-200' };
     } else if (isBlocked) {
       const blockedDays = daysRemaining > 0 ? daysRemaining : 0;
-      status = { label: `Bloqueado (${blockedDays} días)`, bgClass: 'bg-red-50 text-[#921E30] border-2 border-red-200' };
-    } else if (daysRemaining > 30) {
+      status = { label: `Bloqueado (${blockedDays} días)`, bgClass: 'severity-pill-red border-2' };
+    } else if (daysRemaining > 60) {
       status = { label: `Vigente por ${daysRemaining} días`, bgClass: 'bg-green-50 text-green-700 border-2 border-green-200' };
+    } else if (daysRemaining > 30) {
+      status = { label: `Próximo a vencer (${daysRemaining} días)`, bgClass: 'severity-pill-amber border-2' };
     } else if (daysRemaining > 0) {
-      status = { label: `Próximo a vencer (${daysRemaining} días)`, bgClass: 'bg-yellow-50 text-[#B8860B] border-2 border-yellow-200' };
+      status = { label: `Próximo a vencer (${daysRemaining} días)`, bgClass: 'severity-pill-orange border-2' };
     } else if (daysRemaining === 0) {
-      status = { label: 'Expira hoy', bgClass: 'bg-red-50 text-[#FF0000] border-2 border-red-200' };
+      status = { label: 'Expira hoy', bgClass: 'severity-pill-red border-2' };
     } else {
       const expired = Math.abs(daysRemaining);
-      status = { label: `Expirado hace ${expired} días`, bgClass: 'bg-red-50 text-[#FF0000] border-2 border-red-200' };
+      status = { label: `Expirado hace ${expired} días`, bgClass: 'severity-pill-red border-2' };
     }
   }
 
   if (!expirationDateValue && hasExpiredStatus) {
-    status = { label: 'Vencido', bgClass: 'bg-red-50 text-[#FF0000] border-2 border-red-200' };
+    status = { label: 'Vencido', bgClass: 'severity-pill-red border-2' };
   }
 
   const formatDate = (dateString) => {

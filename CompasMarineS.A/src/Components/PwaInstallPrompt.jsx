@@ -2,19 +2,27 @@ import { useEffect, useState } from 'react';
 import { Download, Share2, Smartphone, X } from 'lucide-react';
 
 const DISMISSED_KEY = 'compas:pwa-install-dismissed-at:v1';
-const DISMISS_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const PwaInstallPrompt = ({ className = '' }) => {
   const [installPrompt, setInstallPrompt] = useState(null);
   const [isInstalled, setIsInstalled] = useState(() => isRunningStandalone());
-  const [isDismissed, setIsDismissed] = useState(() => wasRecentlyDismissed());
+  const [isDismissed, setIsDismissed] = useState(false);
+  const [isMobileDevice, setIsMobileDevice] = useState(() => isMobileOrTabletDevice());
   const [showManualSteps, setShowManualSteps] = useState(false);
   const isManualInstall = !installPrompt;
-  const shouldShow = !isInstalled && !isDismissed;
+  const shouldShow = isMobileDevice && !isInstalled && !isDismissed;
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(display-mode: standalone)');
-    const handleDisplayModeChange = () => setIsInstalled(isRunningStandalone());
+    const refreshInstallState = () => {
+      const nextInstalled = isRunningStandalone();
+      setIsInstalled(nextInstalled);
+      setIsMobileDevice(isMobileOrTabletDevice());
+      if (!nextInstalled) {
+        setIsDismissed(false);
+        window.localStorage.removeItem(DISMISSED_KEY);
+      }
+    };
     const handleBeforeInstallPrompt = (event) => {
       event.preventDefault();
       setInstallPrompt(event);
@@ -26,12 +34,17 @@ export const PwaInstallPrompt = ({ className = '' }) => {
       window.localStorage.removeItem(DISMISSED_KEY);
     };
 
-    mediaQuery.addEventListener('change', handleDisplayModeChange);
+    refreshInstallState();
+    mediaQuery.addEventListener('change', refreshInstallState);
+    window.addEventListener('focus', refreshInstallState);
+    document.addEventListener('visibilitychange', refreshInstallState);
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     window.addEventListener('appinstalled', handleAppInstalled);
 
     return () => {
-      mediaQuery.removeEventListener('change', handleDisplayModeChange);
+      mediaQuery.removeEventListener('change', refreshInstallState);
+      window.removeEventListener('focus', refreshInstallState);
+      document.removeEventListener('visibilitychange', refreshInstallState);
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
       window.removeEventListener('appinstalled', handleAppInstalled);
     };
@@ -55,7 +68,6 @@ export const PwaInstallPrompt = ({ className = '' }) => {
   };
 
   const handleDismiss = () => {
-    window.localStorage.setItem(DISMISSED_KEY, String(Date.now()));
     setIsDismissed(true);
   };
 
@@ -95,7 +107,7 @@ export const PwaInstallPrompt = ({ className = '' }) => {
 
         {isManualInstall && showManualSteps && (
           <div className="mt-3 border-t border-white/10 pt-3 text-[11px] leading-relaxed text-white/85">
-            {getManualInstallText()}
+            <ManualInstallSteps />
           </div>
         )}
       </div>
@@ -123,17 +135,48 @@ function isIosDevice() {
   return isClassicIos || isIpadOs;
 }
 
-function getManualInstallText() {
-  if (isIosDevice()) {
-    return 'En iPhone: toca Compartir y luego Anadir a pantalla de inicio.';
-  }
-
-  return 'Abre el menu del navegador y elige Instalar app o Agregar a pantalla principal.';
-}
-
-function wasRecentlyDismissed() {
+function isMobileOrTabletDevice() {
   if (typeof window === 'undefined') return false;
 
-  const dismissedAt = Number(window.localStorage.getItem(DISMISSED_KEY));
-  return Number.isFinite(dismissedAt) && Date.now() - dismissedAt < DISMISS_DURATION_MS;
+  const userAgent = window.navigator.userAgent.toLowerCase();
+  const hasTouch = window.navigator.maxTouchPoints > 0;
+  const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
+  const smallScreen = window.matchMedia('(max-width: 900px)').matches;
+
+  return /android|iphone|ipad|ipod|mobile|tablet/.test(userAgent) || (hasTouch && coarsePointer && smallScreen);
+}
+
+function ManualInstallSteps() {
+  if (isIosDevice()) {
+    return (
+      <div className="space-y-2">
+        <p className="font-bold text-white">iPhone: agregar a pantalla de inicio</p>
+        <ol className="list-decimal pl-4 space-y-1.5">
+          <li>Abre esta pagina en Safari. Si estas en Chrome, Gmail, WhatsApp u otra app, toca el boton para abrir en Safari.</li>
+          <li>Verifica que la pagina haya cargado correctamente y que estes en el inicio de sesion de Compas Marine.</li>
+          <li>Toca el boton Compartir de Safari. Es el icono de un cuadrado con una flecha hacia arriba.</li>
+          <li>Desliza hacia abajo en el menu hasta encontrar Agregar a pantalla de inicio.</li>
+          <li>Si no aparece, toca Editar acciones, busca Agregar a pantalla de inicio y activalo.</li>
+          <li>Toca Agregar a pantalla de inicio.</li>
+          <li>Deja el nombre como Compas Marine o escribe uno mas corto, por ejemplo Compas.</li>
+          <li>Toca Agregar en la esquina superior derecha.</li>
+          <li>Vuelve a la pantalla principal del iPhone y abre Compas Marine desde el nuevo icono.</li>
+        </ol>
+        <p className="text-white/70">
+          Nota: en iPhone este acceso directo solo se puede crear desde Safari. Si no aparece la opcion, actualiza iOS o revisa que Safari no tenga restricciones.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="font-bold text-white">Android: agregar acceso directo</p>
+      <ol className="list-decimal pl-4 space-y-1.5">
+        <li>Toca el menu del navegador.</li>
+        <li>Elige Instalar app o Agregar a pantalla principal.</li>
+        <li>Confirma con Instalar o Agregar.</li>
+      </ol>
+    </div>
+  );
 }

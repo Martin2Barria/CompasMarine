@@ -115,7 +115,7 @@
 
 .dark .text-gray-500,
 .dark .text-gray-400 {
-  color: #94a3b8 !important;
+  color: #cbd5e1 !important;
 }
 
 .dark .text-gray-600,
@@ -159,16 +159,39 @@
   color: #f8fafc !important;
 }
 
+.severity-pill-red {
+  background-color: #fef2f2 !important;
+  border-color: #fecaca !important;
+  color: #921E30 !important;
+}
+
+.severity-pill-orange {
+  background-color: #fff7ed !important;
+  border-color: #fed7aa !important;
+  color: #D94A00 !important;
+}
+
+.severity-pill-amber {
+  background-color: #fffbeb !important;
+  border-color: #fde68a !important;
+  color: #B8860B !important;
+}
+
+.notification-record-card {
+  background-color: #f9fafb !important;
+}
+
+.dark .notification-record-card {
+  background-color: #111827 !important;
+  border-color: #334155 !important;
+}
+
 .dark .bg-red-50 {
   background-color: #1e1b1b !important;
 }
 
 .dark .border-red-100 {
   border-color: #4c1d1d !important;
-}
-
-.dark .text-gray-500 {
-  color: #94a3b8 !important;
 }
 
 .text-doc-percentage {

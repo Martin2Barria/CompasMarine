@@ -130,6 +130,35 @@ CREATE TABLE respaldos_documentos (
         ON UPDATE CASCADE
 );
 
+-- Suscripciones push Web/PWA por dispositivo
+
+CREATE TABLE push_subscriptions (
+    endpoint_hash CHAR(64) PRIMARY KEY,
+    user_id INT NULL,
+    endpoint TEXT NOT NULL,
+    subscription_json JSON NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+
+    INDEX idx_push_subscriptions_user_id (user_id)
+);
+
+-- Cooldowns de notificaciones push ya enviadas
+
+CREATE TABLE push_notification_events (
+    event_hash CHAR(64) PRIMARY KEY,
+    user_id INT NULL,
+    event_key TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    rule_version INT NOT NULL DEFAULT 1,
+    sent_at DATETIME NOT NULL,
+    last_sent_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_push_notification_events_user_id (user_id)
+);
+
 -- Registro sincronizaciones API externa
 
 CREATE TABLE sync_logs (

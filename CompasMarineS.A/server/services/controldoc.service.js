@@ -1,7 +1,7 @@
-import bcrypt from 'bcryptjs';
 import { dbPool } from '../config/db.js';
 import { sendJson, getCookie } from '../utils/http.js';
 import { fetchAllControlDocPages, resolveControlDocCredentials } from '../utils/controldoc.js';
+import { requireSameOriginRequest } from '../utils/security.js';
 
 // --- CACHÉ PERSISTENTE GLOBAL (V4 - BACKEND GATEKEEPER) ---
 if (!global.serverCache || !global.serverCache._v4) {
@@ -33,8 +33,7 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
     }
 
     let userEmail = '';
-    let isAdmin = false;
-    let rolId = null;
+    let isAdmin;
 
     try {
         const [userRows] = await dbPool.execute(
@@ -53,11 +52,11 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
         
         userEmail = userRows[0].email;
         const rolStr = (userRows[0].rol || '').toLowerCase().trim();
-        rolId = userRows[0].rol_id ? Number(userRows[0].rol_id) : null;
+        const rolId = userRows[0].rol_id ? Number(userRows[0].rol_id) : null;
         
         // --- LA LLAVE MAESTRA (FILTRO CENTRALIZADO EN EL SERVIDOR) ---
         // IDs Administradores: 2 (Lector Global), 10 (Admin Supremo), 11 (Admin Gestor), 13 (Admin)
-        // IDs Usuarios normales: 3 (Usuario), 12 (UsuarioPrueba Notificaciones)
+        // IDs Usuarios normales: 3 (Usuario), 12 (UsuarioPrueba)
         if (userEmail === 'admin@compasmarine.cl' || (rolId !== null && [2, 10, 11, 13].includes(rolId))) {
             isAdmin = true;
         } else {
@@ -113,7 +112,9 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
             try {
                 const [entRows] = await dbPool.execute('SELECT rut FROM entidades_api WHERE email = ?', [userEmail]);
                 if (entRows.length > 0) dbRut = (entRows[0].rut || '').replace(/[^0-9kK]/g, '').toLowerCase();
-            } catch(e) {}
+            } catch (error) {
+                console.warn('No se pudo leer el RUT local para filtrar ControlDoc:', error.message);
+            }
 
             const myEntity = allEntities.find(e => {
                 const eEmail = (e.email || e.custom_fields?.correo_electronico_personal || '').trim().toLowerCase();
@@ -160,6 +161,7 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
 }
 
 export async function handleDocumentsSync(req, res) {
+  if (!requireSameOriginRequest(req, res)) return;
   global.serverCache.documents = { data: null, expiresAt: 0, isFetching: false };
   global.serverCache.entities = { data: null, expiresAt: 0, isFetching: false };
   global.serverCache.documentTypes = { data: null, expiresAt: 0, isFetching: false };
@@ -168,6 +170,7 @@ export async function handleDocumentsSync(req, res) {
 
 export async function handleSyncUsersToDB(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
+  if (!requireSameOriginRequest(req, res)) return;
   try {
     const credentials = resolveControlDocCredentials(req);
     const allEntities = await fetchAllControlDocPages('/api/v1/abstract/entities', credentials);
@@ -193,11 +196,15 @@ export async function handleSyncUsersToDB(req, res) {
       insertados++;
     }
     sendJson(res, 200, { ok: true, message: `Sincronizados ${insertados} usuarios.` });
-  } catch (error) { sendJson(res, 500, { error: 'Fallo al sincronizar' }); }
+  } catch (error) {
+    console.error('Error sincronizando usuarios:', error.message);
+    sendJson(res, 500, { error: 'Fallo al sincronizar' });
+  }
 }
 
 export async function handleSetupDB(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
+  if (!requireSameOriginRequest(req, res)) return;
   try {
     const queries = [
       `CREATE TABLE IF NOT EXISTS usuarios (id INT AUTO_INCREMENT PRIMARY KEY, nombre VARCHAR(100) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, activo BOOLEAN NOT NULL DEFAULT TRUE, creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP, actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)`,
@@ -207,9 +214,14 @@ export async function handleSetupDB(req, res) {
       `CREATE TABLE IF NOT EXISTS tipos_documento_api (id INT AUTO_INCREMENT PRIMARY KEY, external_id VARCHAR(100) NOT NULL UNIQUE, nombre VARCHAR(255) NOT NULL, descripcion TEXT, data_json JSON NOT NULL, sincronizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS documentos_api (id INT AUTO_INCREMENT PRIMARY KEY, usuario_id INT NOT NULL, tipo_documento_id INT NULL, external_id VARCHAR(100) NOT NULL UNIQUE, entidad_external_id VARCHAR(100), nombre VARCHAR(255), estado VARCHAR(100), fecha_emision DATE NULL, fecha_vencimiento DATE NULL, data_json JSON NOT NULL, disponible_offline BOOLEAN NOT NULL DEFAULT FALSE, sincronizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE ON UPDATE CASCADE, FOREIGN KEY (tipo_documento_id) REFERENCES tipos_documento_api(id) ON DELETE RESTRICT ON UPDATE CASCADE)`,
       `CREATE TABLE IF NOT EXISTS respaldos_documentos (id INT AUTO_INCREMENT PRIMARY KEY, documento_id INT NOT NULL, ruta_archivo VARCHAR(500) NOT NULL, nombre_archivo VARCHAR(255), mime_type VARCHAR(100), peso_bytes BIGINT, hash_archivo VARCHAR(128), descargado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (documento_id) REFERENCES documentos_api(id) ON DELETE CASCADE ON UPDATE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint_hash CHAR(64) PRIMARY KEY, user_id INT NULL, endpoint TEXT NOT NULL, subscription_json JSON NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, INDEX idx_push_subscriptions_user_id (user_id))`,
+      `CREATE TABLE IF NOT EXISTS push_notification_events (event_hash CHAR(64) PRIMARY KEY, user_id INT NULL, event_key TEXT NOT NULL, event_id TEXT NOT NULL, rule_version INT NOT NULL DEFAULT 1, sent_at DATETIME NOT NULL, last_sent_at DATETIME NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, INDEX idx_push_notification_events_user_id (user_id))`,
       `CREATE TABLE IF NOT EXISTS sync_logs (id INT AUTO_INCREMENT PRIMARY KEY, tipo VARCHAR(100) NOT NULL, estado ENUM('exitoso', 'fallido') NOT NULL, mensaje TEXT, registros_procesados INT DEFAULT 0, creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`
     ];
     for (const query of queries) await dbPool.query(query);
     sendJson(res, 200, { ok: true, message: 'Tablas verificadas.' });
-  } catch (error) { sendJson(res, 500, { error: 'Fallo DB' }); }
+  } catch (error) {
+    console.error('Error preparando tablas:', error.message);
+    sendJson(res, 500, { error: 'Fallo DB' });
+  }
 }

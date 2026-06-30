@@ -1,6 +1,72 @@
+import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { dbPool } from '../config/db.js';
 import { sendJson, readRequestBody, getCookie } from '../utils/http.js';
+import { requireSameOriginRequest } from '../utils/security.js';
+
+const PASSWORD_RESET_TOKEN_TTL = 10 * 60 * 1000;
+const passwordResetTokens = new Map();
+
+function isSecureRequest(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const hostHeader = String(req.headers['x-forwarded-host'] || req.headers.host || '').toLowerCase();
+  const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(hostHeader);
+  return process.env.NODE_ENV === 'production' || forwardedProto === 'https' || (hostHeader && !isLocalHost);
+}
+
+function buildSessionCookie(req, userId) {
+  const cookieParts = [
+    `compas_user_id=${encodeURIComponent(userId)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax'
+  ];
+
+  if (isSecureRequest(req)) cookieParts.push('Secure');
+  return cookieParts.join('; ');
+}
+
+function buildClearSessionCookie(req) {
+  const cookieParts = [
+    'compas_user_id=',
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+    'Expires=Thu, 01 Jan 1970 00:00:00 GMT'
+  ];
+
+  if (isSecureRequest(req)) cookieParts.push('Secure');
+  return cookieParts.join('; ');
+}
+
+function createPasswordResetToken(email, userId) {
+  const now = Date.now();
+  for (const [token, tokenData] of passwordResetTokens.entries()) {
+    if (tokenData.expiresAt <= now) passwordResetTokens.delete(token);
+  }
+
+  const token = randomUUID();
+  passwordResetTokens.set(token, {
+    email,
+    userId,
+    expiresAt: now + PASSWORD_RESET_TOKEN_TTL
+  });
+  return token;
+}
+
+function consumePasswordResetToken(token, email) {
+  if (!token) return null;
+  const tokenData = passwordResetTokens.get(token);
+  if (!tokenData) return null;
+
+  passwordResetTokens.delete(token);
+  const isExpired = tokenData.expiresAt <= Date.now();
+  const sameEmail = tokenData.email === email;
+  if (isExpired || !sameEmail) return null;
+
+  return tokenData;
+}
 
 export async function handleRegister(req, res) {
   sendJson(res, 403, { error: 'El registro manual está deshabilitado.' });
@@ -33,7 +99,7 @@ export async function handleLogin(req, res) {
             const rol = roles.length > 0 ? roles[0].rol : 'Usuario';
             const rol_id = roles.length > 0 ? roles[0].rol_id : null;
             
-            res.setHeader('Set-Cookie', `compas_user_id=${user.id}; Path=/; HttpOnly; SameSite=Lax`);
+            res.setHeader('Set-Cookie', buildSessionCookie(req, user.id));
             return sendJson(res, 200, { 
                 ok: true, 
                 message: 'Inicio de sesión correcto.', 
@@ -67,7 +133,7 @@ export async function handleLogin(req, res) {
                 }
             } catch(e) { console.error("Error asignando rol automático:", e); }
 
-            res.setHeader('Set-Cookie', `compas_user_id=${userIdToLogin}; Path=/; HttpOnly; SameSite=Lax`);
+            res.setHeader('Set-Cookie', buildSessionCookie(req, userIdToLogin));
             return sendJson(res, 200, { 
                 ok: true, 
                 message: 'Cuenta activada e inicio de sesión correcto.', 
@@ -85,6 +151,97 @@ export async function handleLogin(req, res) {
   }
 }
 
+export async function handleLogout(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+  if (!requireSameOriginRequest(req, res)) return;
+  res.setHeader('Set-Cookie', buildClearSessionCookie(req));
+  return sendJson(res, 200, { ok: true });
+}
+
+export async function handleVerifyResetIdentity(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+  if (!requireSameOriginRequest(req, res)) return;
+
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
+
+  const email = (payload.email || '').trim().toLowerCase();
+  const currentPassword = payload.password || '';
+
+  if (!email || !currentPassword) {
+    return sendJson(res, 400, { error: 'El correo electrónico y la contraseña actual son obligatorios.' });
+  }
+
+  try {
+    const [rows] = await dbPool.execute('SELECT id, password_hash FROM usuarios WHERE email = ? AND activo = TRUE LIMIT 1', [email]);
+    if (rows.length === 0) {
+      return sendJson(res, 404, { error: 'No existe un usuario activo registrado con ese correo.' });
+    }
+
+    const user = rows[0];
+    const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!isValidPassword) {
+      return sendJson(res, 401, { error: 'La contraseña actual no es válida.' });
+    }
+
+    const verificationToken = createPasswordResetToken(email, user.id);
+    return sendJson(res, 200, {
+      ok: true,
+      verificationToken,
+      message: 'Identidad validada. Ya puedes definir tu nueva contraseña.'
+    });
+  } catch (error) {
+    console.error('Error validando identidad para restablecer contraseña:', error);
+    return sendJson(res, 500, { error: 'No se pudo validar la identidad.' });
+  }
+}
+
+export async function handleResetPassword(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+  if (!requireSameOriginRequest(req, res)) return;
+
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
+
+  const email = (payload.email || '').trim().toLowerCase();
+  const nextPassword = payload.password || '';
+  const verificationToken = payload.verificationToken || '';
+
+  if (!email || !nextPassword || !verificationToken) {
+    return sendJson(res, 400, { error: 'Debes validar tu identidad antes de cambiar la contraseña.' });
+  }
+
+  if (nextPassword.length < 8) {
+    return sendJson(res, 400, { error: 'La nueva contraseña debe tener al menos 8 caracteres.' });
+  }
+
+  const verifiedSession = consumePasswordResetToken(verificationToken, email);
+  if (!verifiedSession) {
+    return sendJson(res, 401, { error: 'La validación expiró o no es válida. Vuelve a verificar tu identidad.' });
+  }
+
+  try {
+    const [userRows] = await dbPool.execute('SELECT id, password_hash FROM usuarios WHERE email = ? AND activo = TRUE LIMIT 1', [email]);
+
+    if (userRows.length === 0) {
+      return sendJson(res, 404, { error: 'El usuario ya no está disponible para actualizar contraseña.' });
+    }
+
+    const user = userRows[0];
+    const isSamePassword = await bcrypt.compare(nextPassword, user.password_hash);
+    if (isSamePassword) {
+      return sendJson(res, 400, { error: 'La nueva contraseña no puede ser igual a la actual.' });
+    }
+
+    const passwordHash = await bcrypt.hash(nextPassword, 12);
+    await dbPool.execute('UPDATE usuarios SET password_hash = ? WHERE id = ?', [passwordHash, user.id]);
+    return sendJson(res, 200, { ok: true, message: 'La contraseña fue actualizada correctamente.' });
+  } catch (error) {
+    console.error('Error restableciendo contraseña:', error);
+    return sendJson(res, 500, { error: 'No se pudo actualizar la contraseña.' });
+  }
+}
+
 export async function handleAuthMe(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
   const cookieUserId = getCookie(req, 'compas_user_id');
@@ -99,7 +256,7 @@ export async function handleAuthMe(req, res) {
     
     if (userRows.length === 0) return sendJson(res, 401, { error: 'Usuario no encontrado o inactivo' });
     return sendJson(res, 200, { user: userRows[0] });
-  } catch (error) {
+  } catch {
     return sendJson(res, 500, { error: 'Error interno' });
   }
 }

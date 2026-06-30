@@ -6,27 +6,13 @@ import logoCompasMarine1 from '../assets/images/compas-marine1.jpeg';
 const POPUP_DURATION = 1500; // ← tiempo normal antes del fade (1.5s)
 const FADE_DURATION  = 900;  // ← duración del fadeOut en CSS (0.9s)
 
-export const Header = ({ onLogout }) => {
-  const [darkMode,  setDarkMode]  = useState(false);
+export const Header = ({ onLogout, darkMode, onToggleTheme }) => {
   const [showPopup, setShowPopup] = useState(true);
   const [isClosing, setIsClosing] = useState(false);
 
   // Usamos referencias para poder limpiar los timers desde cualquier función
   const timerTimeoutRef = useRef(null);
   const fadeTimeoutRef = useRef(null);
-
-  useEffect(() => {
-    const stored      = localStorage.getItem('theme');
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const initial     = stored ? stored === 'dark' : prefersDark;
-    setDarkMode(initial);
-    document.documentElement.classList.toggle('dark', initial);
-  }, []);
-
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', darkMode);
-    localStorage.setItem('theme', darkMode ? 'dark' : 'light');
-  }, [darkMode]);
 
   useEffect(() => {
     if (!showPopup) return;
@@ -57,8 +43,6 @@ export const Header = ({ onLogout }) => {
     setShowPopup(false);
   };
 
-  const toggleTheme = () => setDarkMode(prev => !prev);
-
   return (
     <header className="header-nav">
       <div className="header-logo">
@@ -76,7 +60,7 @@ export const Header = ({ onLogout }) => {
         <button
           type="button"
           className="header-theme-button"
-          onClick={toggleTheme}
+          onClick={onToggleTheme}
           aria-label="Cambiar modo claro/oscuro"
         >
           {darkMode

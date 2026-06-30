@@ -43,6 +43,26 @@ VAPID_PUBLIC_KEY=
 VAPID_PRIVATE_KEY=
 ```
 
+Para enviar resúmenes por correo usando Gmail, configura una contraseña de aplicación de Google y agrega:
+
+```env
+GMAIL_USER=tu-correo@gmail.com
+GMAIL_APP_PASSWORD=tu-app-password
+SMTP_FROM_NAME=Compas Marine
+```
+
+También puedes usar un SMTP compatible:
+
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=tu-correo@gmail.com
+SMTP_PASS=tu-app-password
+SMTP_FROM=tu-correo@gmail.com
+SMTP_FROM_NAME=Compas Marine
+```
+
 El endpoint de prueba push está apagado por defecto:
 
 ```env

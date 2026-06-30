@@ -1,4 +1,4 @@
-const APP_CACHE = 'compas-marine-app-v2';
+const APP_CACHE = 'compas-marine-app-v3';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -77,6 +77,8 @@ self.addEventListener('push', (event) => {
       body: payload.body,
       icon: '/pwa-icon.svg',
       badge: '/pwa-icon.svg',
+      tag: payload.tag,
+      renotify: Boolean(payload.tag),
       data: {
         url: payload.url || '/'
       }

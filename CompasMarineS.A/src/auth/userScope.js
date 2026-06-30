@@ -1,10 +1,18 @@
 import { getDocumentEntityIds } from '../controldoc/fields';
 
 export function isAdminUser(user) {
-  return (user?.rol || '').toString().trim().toLowerCase() === 'admin';
+  if (!user) return false;
+
+  if (user.rol_id !== undefined && user.rol_id !== null) {
+    return [2, 10, 11, 13].includes(Number(user.rol_id));
+  }
+
+  const roleName = (user?.rol || user?.role || '').toString().trim().toLowerCase();
+  return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName) || roleName.includes('admin');
 }
 
 export function getUserSnapshotKey(user) {
+  if (isAdminUser(user)) return null;
   return user?.id ? `user:${user.id}` : null;
 }
 
