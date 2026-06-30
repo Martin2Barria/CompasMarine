@@ -13,6 +13,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [usersError, setUsersError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
   
   // Paginación para no congelar el navegador
   const [visibleCount, setVisibleCount] = useState(50);
@@ -30,10 +31,10 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
 
   const isSupremo = Number(adminUser?.rol_id) === 10;
 
-  // Reiniciar paginación al buscar o cambiar pestaña
+  // Reiniciar paginación al cambiar pestaña
   useEffect(() => {
     setVisibleCount(50);
-  }, [searchQuery, activeTab]);
+  }, [activeTab]);
 
   // --- LÓGICA DE PROGRESO ANIMADO ---
   const startProgressTicker = (initialPercent = 10) => {
@@ -58,7 +59,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
         setSyncStatus('success');
         setMessage(data.message || 'Sincronización completada con éxito.');
         onLoadingProgress?.({ percent: 100, done: true });
-        if (activeTab === 'usuarios') fetchUsers(); // Refrescar si estamos viendo usuarios
+        if (activeTab === 'usuarios') fetchUsers(); 
       } else {
         throw new Error(data.error || 'Fallo desconocido');
       }
@@ -115,7 +116,6 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     }
   };
 
-  // Cargar usuarios al entrar a cualquiera de las dos pestañas (porque Mantenimiento ahora necesita la lista de roles/usuarios para las acciones masivas)
   useEffect(() => {
     fetchUsers();
   }, []);
@@ -263,10 +263,12 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
   };
 
   // Filtrado y Paginación de usuarios
-  const filteredUsers = users.filter(u => 
-    u.nombre.toLowerCase().includes(searchQuery.toLowerCase()) || 
-    u.email.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredUsers = users.filter(u => {
+    const q = searchQuery.toLowerCase();
+    return u.nombre.toLowerCase().includes(q) || 
+           (u.email && u.email.toLowerCase().includes(q)) ||
+           (u.rut && u.rut.toLowerCase().includes(q));
+  });
   
   const usersToRender = filteredUsers.slice(0, visibleCount);
 
@@ -378,41 +380,41 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
               </div>
             </div>
 
-            {/* ZONA DE PELIGRO (SOLO SUPREMO) */}
+            {/* ZONA DE PELIGRO (SOLO SUPREMO) - AHORA EN MANTENIMIENTO */}
             {isSupremo && (
-              <div className="bg-red-50 p-4 md:p-5 rounded-2xl shadow-sm border border-red-200 space-y-4 mt-6">
-                <div className="flex items-center gap-3 border-b border-red-200 pb-3">
-                  <div className="bg-red-100 p-2 rounded-xl text-red-600">
+              <div className="bg-[#111827] p-4 md:p-5 rounded-2xl shadow-lg border border-red-900/50 space-y-4 mt-6">
+                <div className="flex items-center gap-3 border-b border-gray-800 pb-3">
+                  <div className="bg-red-500/20 p-2 rounded-xl text-red-500">
                     <AlertTriangle className="w-5 h-5" />
                   </div>
-                  <h3 className="font-bold text-red-800 text-base md:text-lg">Acciones Masivas (Peligro)</h3>
+                  <h3 className="font-bold text-white text-base md:text-lg">Acciones Masivas (Peligro)</h3>
                 </div>
 
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                   <div className="flex-1">
-                    <h4 className="font-bold text-red-800 text-sm">Degradar a todos a "Usuario"</h4>
-                    <p className="text-xs text-red-600 mt-1">Revoca permisos de administrador a terceros y asigna el rol básico a todos.</p>
+                    <h4 className="font-bold text-red-400 text-sm">Degradar a todos a "Usuario"</h4>
+                    <p className="text-xs text-gray-400 mt-1">Revoca permisos de administrador a terceros y asigna el rol básico a todos.</p>
                   </div>
                   <button 
                     onClick={handleAssignAllAsUser} 
                     disabled={loadingUsers || roles.length === 0} 
-                    className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-sm transition-colors shrink-0 w-full sm:w-auto disabled:opacity-50"
+                    className="bg-red-600 hover:bg-red-500 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-sm transition-colors shrink-0 w-full sm:w-auto disabled:opacity-50"
                   >
                     Degradar a Usuario
                   </button>
                 </div>
 
-                <div className="w-full h-px bg-red-200/50"></div>
+                <div className="w-full h-px bg-gray-800"></div>
 
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                   <div className="flex-1">
-                    <h4 className="font-bold text-red-800 text-sm">Restablecer todas las claves</h4>
-                    <p className="text-xs text-red-600 mt-1">Fuerza a todos los usuarios activos a usar su RUT como contraseña inicial.</p>
+                    <h4 className="font-bold text-red-400 text-sm">Restablecer todas las claves</h4>
+                    <p className="text-xs text-gray-400 mt-1">Fuerza a todos los usuarios activos a usar su RUT como contraseña inicial.</p>
                   </div>
                   <button 
                     onClick={handleResetAllPasswords} 
                     disabled={loadingUsers || users.length === 0} 
-                    className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-sm transition-colors shrink-0 w-full sm:w-auto disabled:opacity-50"
+                    className="bg-red-600 hover:bg-red-500 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-sm transition-colors shrink-0 w-full sm:w-auto disabled:opacity-50"
                   >
                     Claves a RUT
                   </button>
@@ -432,22 +434,68 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
               </div>
             ) : (
               <>
-                {/* Buscador */}
-                <div className="relative bg-white rounded-xl shadow-sm border border-gray-200 focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                  <input 
-                    type="text" 
-                    placeholder="Buscar usuario por nombre o correo..." 
-                    className="w-full bg-transparent pl-10 pr-4 py-3 text-sm focus:outline-none" 
-                    value={searchQuery} 
-                    onChange={(e) => setSearchQuery(e.target.value)} 
-                  />
+                {/* BUSCADOR OSCURO PREMIUM (ESTILO AUTOCOMPLETADO) */}
+                <div className="relative mb-6">
+                  <div className="relative bg-[#0f172a] rounded-xl shadow-md border border-gray-800 focus-within:border-[#921E30] focus-within:ring-1 focus-within:ring-[#921E30] transition-all z-20">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input 
+                      type="text" 
+                      placeholder="Buscar usuario por nombre, RUT o correo..." 
+                      className="w-full bg-transparent pl-11 pr-10 py-3.5 text-sm text-white focus:outline-none placeholder-gray-500" 
+                      value={searchQuery} 
+                      onChange={(e) => {
+                        setSearchQuery(e.target.value);
+                        setIsAutocompleteOpen(true);
+                      }} 
+                      onFocus={() => setIsAutocompleteOpen(true)}
+                    />
+                    {searchQuery && (
+                      <button 
+                        type="button" 
+                        onClick={() => { setSearchQuery(''); setIsAutocompleteOpen(false); }}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400 hover:text-white transition-colors z-30"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Resultados Autocompletado */}
+                  {isAutocompleteOpen && searchQuery && filteredUsers.length > 0 && (
+                    <div className="absolute left-0 right-0 top-full mt-2 z-30 bg-[#0f172a] rounded-xl shadow-2xl border border-gray-800 max-h-64 overflow-y-auto scrollable-content">
+                      {filteredUsers.slice(0, 8).map((user) => (
+                        <button
+                          key={user.id}
+                          type="button"
+                          onClick={() => {
+                            setSearchQuery(user.nombre); // Al hacer clic, filtra la lista de abajo
+                            setIsAutocompleteOpen(false);
+                          }}
+                          className="w-full text-left px-4 py-3 hover:bg-gray-800 border-b border-gray-800/50 last:border-b-0 transition-colors"
+                        >
+                          <p className="text-sm font-semibold text-white truncate">{user.nombre}</p>
+                          <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-gray-400">
+                            <span className="font-semibold text-[#ef4444]">
+                              RUT: {user.rut || 'Sin RUT'}
+                            </span>
+                            <span className="truncate">Email: {user.email || 'Sin email'}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {isAutocompleteOpen && searchQuery && filteredUsers.length === 0 && !loadingUsers && (
+                    <div className="absolute left-0 right-0 top-full mt-2 z-30 bg-[#0f172a] rounded-xl shadow-2xl border border-gray-800 p-4 text-sm text-gray-400 text-center">
+                      No se encontraron usuarios con esos datos.
+                    </div>
+                  )}
                 </div>
 
                 {loadingUsers ? (
                   <div className="flex flex-col items-center justify-center py-12 text-gray-400">
                     <RefreshCw className="w-6 h-6 animate-spin text-[#921E30] mb-2" />
-                    <p className="text-xs font-medium uppercase tracking-wider">Procesando Usuarios...</p>
+                    <p className="text-xs font-medium uppercase tracking-wider">Cargando Usuarios...</p>
                   </div>
                 ) : (
                   <div className="space-y-3">

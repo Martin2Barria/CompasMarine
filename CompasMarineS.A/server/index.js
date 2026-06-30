@@ -580,8 +580,9 @@ async function handleGetUsers(req, res) {
       SELECT 
         e.external_id, 
         COALESCE(u.id, e.external_id) as id, 
+        e.rut,
         e.nombre, 
-        e.email, 
+        e.email,
         IF(u.id IS NOT NULL, 1, 0) as activo, 
         r.id as rol_id, 
         r.nombre as rol_nombre
