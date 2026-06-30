@@ -29,7 +29,6 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
   }, []);
 
   const isSupremo = Number(adminUser?.rol_id) === 10;
-  const isGestor = Number(adminUser?.rol_id) === 11;
 
   // Reiniciar paginación al buscar o cambiar pestaña
   useEffect(() => {
@@ -59,6 +58,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
         setSyncStatus('success');
         setMessage(data.message || 'Sincronización completada con éxito.');
         onLoadingProgress?.({ percent: 100, done: true });
+        if (activeTab === 'usuarios') fetchUsers(); // Refrescar si estamos viendo usuarios
       } else {
         throw new Error(data.error || 'Fallo desconocido');
       }
@@ -115,11 +115,10 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     }
   };
 
+  // Cargar usuarios al entrar a cualquiera de las dos pestañas (porque Mantenimiento ahora necesita la lista de roles/usuarios para las acciones masivas)
   useEffect(() => {
-    if (activeTab === 'usuarios') {
-      fetchUsers();
-    }
-  }, [activeTab]);
+    fetchUsers();
+  }, []);
 
   const handleRoleChange = async (userId, newRoleId) => {
     if (!isSupremo) return alert("Acción denegada: Solo el Admin Supremo puede cambiar roles.");
@@ -164,7 +163,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     }
   };
 
-  // --- ACCIÓN MASIVA: DEGRADAR A TODOS A USUARIO ---
+  // --- ACCIONES MASIVAS (ZONA DE PELIGRO) ---
   const handleAssignAllAsUser = async () => {
     if (!isSupremo) return alert("Acción denegada: Solo el Admin Supremo puede ejecutar esta acción masiva.");
 
@@ -215,8 +214,52 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     }
 
     onLoadingProgress?.({ percent: 100, done: true });
+    setLoadingUsers(false);
     alert(`✅ Operación masiva completada. Se actualizaron ${completed} usuarios al rol "Usuario".`);
     fetchUsers();
+  };
+
+  const handleResetAllPasswords = async () => {
+    if (!isSupremo) return alert("Acción denegada: Solo el Admin Supremo puede ejecutar esta acción masiva.");
+
+    // Solo podemos resetear contraseñas de usuarios que YA tienen una cuenta creada en MySQL (activo === 1)
+    const targetUsers = users.filter(u => String(u.id) !== String(adminUser?.id) && u.activo === 1);
+
+    if (targetUsers.length === 0) {
+      alert("No hay usuarios activos en el sistema para restablecer sus contraseñas.");
+      return;
+    }
+
+    if (!window.confirm(
+      `⚠️ ATENCIÓN PELIGRO ⚠️\n\n` +
+      `Vas a restablecer la contraseña de TODOS los usuarios activos (${targetUsers.length} personas).\n` +
+      `Su nueva contraseña volverá a ser su RUT.\n\n` +
+      `Tú (${adminUser?.nombre}) no te verás afectado.\n\n` +
+      `¿Estás absolutamente seguro de continuar?`
+    )) return;
+
+    onLoadingProgress?.({ percent: 10 });
+    setLoadingUsers(true);
+
+    let completed = 0;
+    
+    for (const u of targetUsers) {
+      try {
+        await fetch('/api/admin/users/reset-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: u.id })
+        });
+      } catch (e) {
+        console.error(`Error reseteando clave de ${u.id}:`, e);
+      }
+      completed++;
+      onLoadingProgress?.({ percent: 10 + Math.floor((completed / targetUsers.length) * 80) });
+    }
+
+    onLoadingProgress?.({ percent: 100, done: true });
+    setLoadingUsers(false);
+    alert(`✅ Reseteo masivo completado. Se forzó la contraseña a RUT a ${completed} usuarios.`);
   };
 
   // Filtrado y Paginación de usuarios
@@ -302,7 +345,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
               <div className="sm:pl-11 pt-1">
                 <button 
                   onClick={handleSyncUsers}
-                  disabled={syncStatus === 'loading'}
+                  disabled={syncStatus === 'loading' || loadingUsers}
                   className="w-full bg-[#394049] hover:bg-gray-800 active:scale-[0.99] text-white font-bold py-3 px-4 rounded-xl transition shadow-sm disabled:opacity-50 flex justify-center items-center gap-2 text-xs md:text-sm min-h-[44px]"
                 >
                   {syncStatus === 'loading' ? (
@@ -327,13 +370,55 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
               <div className="sm:pl-11 pt-1">
                 <button 
                   onClick={handleSetupDb}
-                  disabled={dbStatus === 'loading'}
+                  disabled={dbStatus === 'loading' || loadingUsers}
                   className="w-full bg-white border-2 border-gray-200 hover:border-purple-300 text-gray-700 font-bold py-3 px-4 rounded-xl transition active:scale-[0.99] flex justify-center items-center gap-2 text-xs md:text-sm min-h-[44px]"
                 >
                   Verificar Tablas
                 </button>
               </div>
             </div>
+
+            {/* ZONA DE PELIGRO (SOLO SUPREMO) */}
+            {isSupremo && (
+              <div className="bg-red-50 p-4 md:p-5 rounded-2xl shadow-sm border border-red-200 space-y-4 mt-6">
+                <div className="flex items-center gap-3 border-b border-red-200 pb-3">
+                  <div className="bg-red-100 p-2 rounded-xl text-red-600">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <h3 className="font-bold text-red-800 text-base md:text-lg">Acciones Masivas (Peligro)</h3>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex-1">
+                    <h4 className="font-bold text-red-800 text-sm">Degradar a todos a "Usuario"</h4>
+                    <p className="text-xs text-red-600 mt-1">Revoca permisos de administrador a terceros y asigna el rol básico a todos.</p>
+                  </div>
+                  <button 
+                    onClick={handleAssignAllAsUser} 
+                    disabled={loadingUsers || roles.length === 0} 
+                    className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-sm transition-colors shrink-0 w-full sm:w-auto disabled:opacity-50"
+                  >
+                    Degradar a Usuario
+                  </button>
+                </div>
+
+                <div className="w-full h-px bg-red-200/50"></div>
+
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex-1">
+                    <h4 className="font-bold text-red-800 text-sm">Restablecer todas las claves</h4>
+                    <p className="text-xs text-red-600 mt-1">Fuerza a todos los usuarios activos a usar su RUT como contraseña inicial.</p>
+                  </div>
+                  <button 
+                    onClick={handleResetAllPasswords} 
+                    disabled={loadingUsers || users.length === 0} 
+                    className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-sm transition-colors shrink-0 w-full sm:w-auto disabled:opacity-50"
+                  >
+                    Claves a RUT
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -347,27 +432,6 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
               </div>
             ) : (
               <>
-                {/* ACCIÓN MASIVA (SOLO SUPREMO) */}
-                {isSupremo && (
-                  <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm mb-2 animate-fade-in">
-                    <div>
-                      <h3 className="text-red-800 font-bold text-sm flex items-center gap-2">
-                        <AlertTriangle className="w-4 h-4" /> Acción Masiva
-                      </h3>
-                      <p className="text-xs text-red-600 mt-1 max-w-sm">
-                        Asigna el rol "Usuario" a todos en el sistema (excepto a ti). Revoca permisos de administrador a terceros con un clic.
-                      </p>
-                    </div>
-                    <button 
-                      onClick={handleAssignAllAsUser}
-                      disabled={loadingUsers || roles.length === 0}
-                      className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2.5 px-4 rounded-lg shadow-sm transition-colors shrink-0 w-full sm:w-auto disabled:opacity-50"
-                    >
-                      Degradar a "Usuario"
-                    </button>
-                  </div>
-                )}
-
                 {/* Buscador */}
                 <div className="relative bg-white rounded-xl shadow-sm border border-gray-200 focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -388,7 +452,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
                 ) : (
                   <div className="space-y-3">
                     {usersToRender.map(user => (
-                      <div key={user.id} className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm space-y-3">
+                      <div key={user.id} className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm space-y-3 hover:shadow-md transition">
                         <div className="flex justify-between items-start">
                           <div className="min-w-0 pr-2">
                             <h4 className="font-bold text-gray-800 text-sm truncate">{user.nombre}</h4>
