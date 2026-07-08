@@ -239,6 +239,9 @@ export const ViewDocumentos = ({ currentUser }) => {
 
   const [visibleCount, setVisibleCount] = useState(50);
 
+  // Guía visual
+  const [showGuideDocs, setShowGuideDocs] = useState(true);
+
   const isAdmin = currentUser ? hasAdminRole(currentUser) : false;
   const snapshotOwnerKey = getUserSnapshotKey(currentUser);
 
@@ -429,6 +432,26 @@ export const ViewDocumentos = ({ currentUser }) => {
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
         {/* Trasladadas las clases de estructura y espaciado aquí para envolver el contenido y respetar el tema global sin cortes */}
         <div className="p-4 md:p-6 max-w-7xl mx-auto w-full space-y-4">
+          
+          {/* Guía breve para Mis Documentos */}
+          {showGuideDocs && (
+            <div 
+              onClick={() => setShowGuideDocs(false)}
+              className="bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 p-2.5 rounded-lg text-xs font-medium flex items-center justify-between cursor-pointer transition-all hover:bg-zinc-200 dark:hover:bg-zinc-800 select-none"
+              title="Haz clic para descartar"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="shrink-0">ℹ️</span>
+                <span className="leading-snug break-words">
+                  {isAdmin 
+                    ? '📁 Filtra por tipo de documento, usuario o estado para encontrar rápidamente. Supervisa documentos próximos a vencer (< 60 días) y revisa firmas pendientes. Descarga o visualiza documentos directamente.'
+                    : '📄 Revisa aquí todos tus documentos. Usa los filtros para encontrar rápidamente lo que necesitas. Descarga copias o visualiza detalles en el portal de ControlDoc.'}
+                </span>
+              </div>
+              <span className="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold ml-2 shrink-0">✕</span>
+            </div>
+          )}
+
           <div className="flex flex-col gap-4">
             {totalDocumentsWithoutBlocked > 0 && (
               <span className="text-[11px] md:text-xs bg-gray-200 text-gray-600 px-3 py-1.5 rounded-full font-bold shadow-sm inline-flex items-center w-fit">

@@ -235,6 +235,9 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   
+  // Guías visuales
+  const [showGuideInicio, setShowGuideInicio] = useState(true);
+  
   const snapshotOwnerKey = getUserSnapshotKey(currentUser);
 
   const processData = useCallback((docs, entities, types) => {
@@ -611,6 +614,27 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
             <div className="bg-yellow-50 text-yellow-800 p-4 mx-4 sm:mx-6 mt-4 rounded-xl text-xs font-medium border border-yellow-200 shadow-sm max-w-6xl md:mx-auto">
                 {serverNotice}
             </div>
+        )}
+
+        {/* Guía breve para la sección Inicio */}
+        {showGuideInicio && (
+          <div className="p-4 sm:p-6 pb-2 max-w-6xl mx-auto w-full">
+            <div 
+              onClick={() => setShowGuideInicio(false)}
+              className="bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 p-2.5 rounded-lg text-xs font-medium flex items-center justify-between cursor-pointer transition-all hover:bg-zinc-200 dark:hover:bg-zinc-800 select-none"
+              title="Haz clic para descartar"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="shrink-0">ℹ️</span>
+                <span className="leading-snug break-words">
+                  {isAdminUser 
+                    ? '📊 Visualiza el cumplimiento documentario de toda la flota. Busca un tripulante para ver sus documentos específicos, monitorea vencimientos próximos y supervisa el estado general de cumplimiento.'
+                    : '📋 Aquí ves el estado de todos tus documentos vigentes. Los documentos en rojo (🔴) requieren atención urgente. Revisa fechas de vencimiento y descarga copias si es necesario.'}
+                </span>
+              </div>
+              <span className="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold ml-2 shrink-0">✕</span>
+            </div>
+          </div>
         )}
 
         {isAdminUser && (

@@ -10,6 +10,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
   const [testStatus, setTestStatus] = useState('idle');
   const [emailStatus, setEmailStatus] = useState('idle');
   const [alerts, setAlerts] = useState([]);
+  const [showGuideNotif, setShowGuideNotif] = useState(true);
   const snapshotOwnerKey = getUserSnapshotKey(currentUser);
 
   useEffect(() => {
@@ -93,6 +94,21 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
       
       {/* Contenedor Principal */}
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50 p-4 max-w-4xl mx-auto w-full space-y-4">
+        
+        {/* Guía breve para Notificaciones */}
+        {showGuideNotif && (
+          <div 
+            onClick={() => setShowGuideNotif(false)}
+            className="bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 p-2.5 rounded-lg text-xs font-medium flex items-center justify-between cursor-pointer transition-all hover:bg-zinc-200 dark:hover:bg-zinc-800 select-none"
+            title="Haz clic para descartar"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="shrink-0">ℹ️</span>
+              <span className="leading-snug break-words">🔔 Activa notificaciones push para recibir alertas cuando documentos estén próximos a vencer. Prueba con una notificación de prueba. Los usuarios pueden recibir resúmenes diarios por correo.</span>
+            </div>
+            <span className="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold ml-2 shrink-0">✕</span>
+          </div>
+        )}
         
         {/* Card: Configuración de Alertas PWA */}
         <div className="bg-white rounded-2xl p-4 md:p-5 shadow-sm relative overflow-hidden border border-gray-100">

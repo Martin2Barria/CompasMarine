@@ -21,6 +21,9 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
   // Identificador del Admin actual
   const [adminUser, setAdminUser] = useState(null);
 
+  // Guía visual
+  const [showGuideAdmin, setShowGuideAdmin] = useState(true);
+
   // Cargar perfil del Admin al iniciar
   useEffect(() => {
     fetch('/api/auth/me')
@@ -313,6 +316,21 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
 
       {/* Contenedor Principal */}
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 p-4 md:p-6 max-w-3xl mx-auto w-full">
+        
+        {/* Guía breve para Panel Admin */}
+        {showGuideAdmin && (
+          <div 
+            onClick={() => setShowGuideAdmin(false)}
+            className="bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 p-2.5 rounded-lg text-xs font-medium flex items-center justify-between cursor-pointer transition-all hover:bg-zinc-200 dark:hover:bg-zinc-800 select-none mb-4"
+            title="Haz clic para descartar"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="shrink-0">⚠️</span>
+              <span className="leading-snug break-words">Sincroniza usuarios desde ControlDoc, configura la base de datos y gestiona roles y permisos. Todas estas operaciones requieren permisos de administrador especiales.</span>
+            </div>
+            <span className="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold ml-2 shrink-0">✕</span>
+          </div>
+        )}
         
         {/* PESTAÑA 1: MANTENIMIENTO DEL SISTEMA */}
         {activeTab === 'sistema' && (
