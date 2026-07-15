@@ -211,6 +211,13 @@ export default function App() {
           <BottomNav currentView={currentView} setCurrentView={handleViewChange} currentUser={currentUser} />
         </div>
 
+        {/* Atribución de autoría integrada directamente en JSX */}
+        <div className="fixed bottom-24 left-0 right-0 flex justify-center z-40 pointer-events-none">
+          <span className="bg-white/90 dark:bg-zinc-900/90 backdrop-blur-sm px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shadow-[0_2px_10px_rgba(0,0,0,0.05)] border border-gray-100 dark:border-zinc-800">
+            Desarrollado [IngeniaSur]
+          </span>
+        </div>
+
         {/* Se subió un poco el cartel de PWA para que no pise los botones en celulares */}
         <PwaInstallPrompt className="absolute left-4 right-4 bottom-28 z-40" />
       </div>

@@ -173,7 +173,7 @@ export const Login = ({ onLoginSuccess, onLoadingProgress }) => {
             <div className="divider-line"></div>
           </div>
           
-          <p className="footer-note">Compas Marine &copy; 2026 &middot; Gestión Documental</p>
+          <p className="footer-note">Compas Marine / Desarrollado por IngeniaSur &copy; 2026 &middot; Gestión Documental</p>
         </div>
       </div>
     </main>
