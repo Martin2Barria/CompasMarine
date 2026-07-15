@@ -202,13 +202,13 @@ Variables habituales observadas en codigo:
 SERVER_PORT=8787
 SERVER_HOST=0.0.0.0
 NODE_ENV=production
-APP_ALLOWED_ORIGINS=https://tu-dominio
+APP_ALLOWED_ORIGINS=https://compasmarine-production.up.railway.app/
 
 # MySQL
 MYSQLHOST=127.0.0.1
 MYSQLPORT=3306
 MYSQLUSER=root
-MYSQLPASSWORD=tu_password
+MYSQLPASSWORD=pedirla
 MYSQLDATABASE=compas_marine_db
 
 # ControlDoc
