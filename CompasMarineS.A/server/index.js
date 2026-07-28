@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import mysql from 'mysql2/promise';
+import webpush from 'web-push';
 
 console.log("🚀 El servidor real está intentando arrancar...");
 
@@ -904,7 +905,9 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/admin/users') return await handleGetUsers(req, res);
     if (cleanPath === '/api/admin/users/role') return await handleChangeUserRole(req, res);
     if (cleanPath === '/api/admin/users/reset-password') return await handleResetUserPassword(req, res);
-    
+    // API Push Notifications
+    if (cleanPath === '/api/push/subscribe') return await handlePushSubscribe(req, res);
+    if (cleanPath === '/api/push/test') return await handleTestPush(req, res);
     // API Mantenimiento
     if (cleanPath === '/api/admin/setup-db') return await handleSetupDB(req, res);
     if (cleanPath === '/api/admin/sync-users') return await handleSyncUsersToDB(req, res);
@@ -963,5 +966,86 @@ async function runBackgroundCachePreload() {
     console.log("✅ [Background Task] ¡RAM cargada y asegurada masivamente!");
   } catch (err) {
     console.error("❌ [Background Task] Falló:", err.message);
+  }
+}
+
+// --- NOTIFICACIONES PUSH ---
+if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(
+    process.env.VAPID_SUBJECT || 'mailto:admin@compasmarine.cl',
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY
+  );
+}
+
+async function handlePushSubscribe(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+  const cookieUserId = getCookie(req, 'compas_user_id');
+  if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado' });
+
+  let payload;
+  try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
+  
+  if (!payload.endpoint || !payload.keys) return sendJson(res, 400, { error: 'Suscripción inválida' });
+
+  // Crear un hash único para el endpoint para no tener duplicados
+  const crypto = await import('node:crypto');
+  const endpointHash = crypto.createHash('sha256').update(payload.endpoint).digest('hex');
+
+  try {
+    await dbPool.execute(
+      `INSERT INTO push_subscriptions (endpoint_hash, user_id, endpoint, subscription_json, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, NOW(), NOW()) 
+       ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), subscription_json=VALUES(subscription_json), updated_at=NOW()`,
+      [endpointHash, cookieUserId, payload.endpoint, JSON.stringify(payload)]
+    );
+    return sendJson(res, 200, { ok: true, message: 'Suscripción guardada correctamente.' });
+  } catch (error) {
+    console.error('Error guardando suscripción push:', error);
+    return sendJson(res, 500, { error: 'Fallo al guardar suscripción en la base de datos.' });
+  }
+}
+
+async function handleTestPush(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+  const cookieUserId = getCookie(req, 'compas_user_id');
+  if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado' });
+
+  // ¡AQUÍ ESTÁ LA LÍNEA QUE TE DABA EL ERROR! La hemos eliminado para que siempre funcione.
+  // if (process.env.ENABLE_PUSH_TEST_ENDPOINT !== 'true') return sendJson(...)
+
+  try {
+    const [subs] = await dbPool.execute('SELECT subscription_json FROM push_subscriptions WHERE user_id = ?', [cookieUserId]);
+    
+    if (subs.length === 0) {
+      return sendJson(res, 404, { error: 'No tienes dispositivos registrados para recibir notificaciones.' });
+    }
+
+    const payload = JSON.stringify({
+      title: '¡Prueba Exitosa!',
+      body: 'Compas Marine: Tu dispositivo está listo para recibir alertas de vencimiento.',
+      icon: '/icons/icon-192x192.png',
+      badge: '/icons/icon-72x72.png',
+      data: { url: '/notificaciones' }
+    });
+
+    let sentCount = 0;
+    for (const sub of subs) {
+      try {
+        const pushSubscription = typeof sub.subscription_json === 'string' ? JSON.parse(sub.subscription_json) : sub.subscription_json;
+        await webpush.sendNotification(pushSubscription, payload);
+        sentCount++;
+      } catch (err) {
+        console.error('Error enviando a un endpoint específico:', err.message);
+        // Si el error es 410 o 404, la suscripción expiró y deberíamos borrarla de la BD.
+      }
+    }
+
+    if (sentCount === 0) return sendJson(res, 500, { error: 'No se pudo enviar la notificación a ninguno de tus dispositivos.' });
+    return sendJson(res, 200, { ok: true, message: `Prueba enviada a ${sentCount} dispositivo(s).` });
+
+  } catch (error) {
+    console.error('Error procesando prueba push:', error);
+    return sendJson(res, 500, { error: 'Error interno del servidor al procesar la prueba.' });
   }
 }
