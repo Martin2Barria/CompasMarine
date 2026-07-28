@@ -883,10 +883,9 @@ async function handleSyncUsersToDB(req, res) {
 const server = createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-   let cleanPath = requestUrl.pathname.replace(/\/$/, '');
+    let cleanPath = requestUrl.pathname.replace(/\/$/, '');
     
-
-// Si la ruta viene de cPanel, transformamos el prefijo para que coincida con tus rutas /api/
+    // Si la ruta viene de cPanel, transformamos el prefijo para que coincida con tus rutas /api/
     if (cleanPath.startsWith('/backendapi')) {
       cleanPath = cleanPath.replace('/backendapi', '/api');
     }
@@ -901,38 +900,42 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/auth/reset-password') return await handleResetPassword(req, res);
     if (cleanPath === '/api/auth/me') return await handleAuthMe(req, res);
     
+    // API Push Notifications (Soportar ambas variantes de rutas)
+    if (cleanPath === '/api/push/subscribe' || cleanPath === '/api/notifications/subscribe') return await handlePushSubscribe(req, res);
+    if (cleanPath === '/api/push/test' || cleanPath === '/api/notifications/test') return await handleTestPush(req, res);
+    
     // API Gestión de Usuarios
     if (cleanPath === '/api/admin/users') return await handleGetUsers(req, res);
     if (cleanPath === '/api/admin/users/role') return await handleChangeUserRole(req, res);
     if (cleanPath === '/api/admin/users/reset-password') return await handleResetUserPassword(req, res);
-    // API Push Notifications
-    if (cleanPath === '/api/push/subscribe') return await handlePushSubscribe(req, res);
-    if (cleanPath === '/api/push/test') return await handleTestPush(req, res);
+    
     // API Mantenimiento
     if (cleanPath === '/api/admin/setup-db') return await handleSetupDB(req, res);
     if (cleanPath === '/api/admin/sync-users') return await handleSyncUsersToDB(req, res);
     
-    if (cleanPath === '/api/controldoc/documents/sync') { 
+    if (cleanPath === '/api/controldoc/documents/sync') {  
         if (!requireSameOriginRequest(req, res)) return;
         if (!getCookie(req, 'compas_user_id')) return sendJson(res, 401, { error: 'No autorizado' });
-        serverCache.documents.expiresAt = 0; 
-        serverCache.entities.expiresAt = 0; 
-        serverCache.documentTypes.expiresAt = 0; 
+        serverCache.documents.expiresAt = 0;  
+        serverCache.entities.expiresAt = 0;  
+        serverCache.documentTypes.expiresAt = 0;  
         
-        runBackgroundCachePreload(); 
+        runBackgroundCachePreload();  
         
-        return sendJson(res, 200, { 
-            ok: true, 
-            message: 'Actualizando datos. Tu pantalla seguirá mostrando los últimos datos vigentes mientras descargamos las novedades.' 
-        }); 
+        return sendJson(res, 200, {  
+            ok: true,  
+            message: 'Actualizando datos. Tu pantalla seguirá mostrando los últimos datos vigentes mientras descargamos las novedades.'  
+        });  
     }
     
     if (controlDocRoutes.has(cleanPath)) {
       return await proxyControlDocRequest(req, res, cleanPath);
     }
-
     if (cleanPath.startsWith('/api/')) return sendJson(res, 404, { error: 'Ruta API no encontrada' });
-
+    // API Push Notifications (Soportar ambas variantes de rutas)
+    if (cleanPath === '/api/push/vapid-public-key' || cleanPath === '/api/notifications/vapid-public-key') return sendJson(res, 200, { publicKey: process.env.VAPID_PUBLIC_KEY || '' });
+    if (cleanPath === '/api/push/subscribe' || cleanPath === '/api/notifications/subscribe') return await handlePushSubscribe(req, res);
+    if (cleanPath === '/api/push/test' || cleanPath === '/api/notifications/test') return await handleTestPush(req, res);
     serveStaticFile(res, requestUrl);
   } catch (error) {
     console.error("Error global en el servidor:", error);

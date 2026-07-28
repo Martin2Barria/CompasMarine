@@ -10,7 +10,7 @@ export async function enablePushNotifications() {
     throw new Error('Permiso de notificaciones denegado.');
   }
 
-  const publicKeyResponse = await fetch(getApiUrl('/notifications/vapid-public-key'), {
+  const publicKeyResponse = await fetch(getApiUrl('/admin/vapid-public-key'), {
     credentials: 'same-origin'
   });
   const { publicKey } = await publicKeyResponse.json();
@@ -34,7 +34,7 @@ export async function enablePushNotifications() {
     applicationServerKey: urlBase64ToUint8Array(publicKey)
   });
 
-  await fetch(getApiUrl('/notifications/subscriptions'), {
+  await fetch(getApiUrl('/admin/push-subscriptions'), {
     method: 'POST',
     credentials: 'same-origin',
     headers: {
@@ -76,7 +76,7 @@ export async function showAppNotification({ title, body, url = '/', tag }) {
 }
 
 export async function sendTestPushNotification() {
-  const response = await fetch(getApiUrl('/notifications/test'), {
+  const response = await fetch(getApiUrl('/admin/push-test'), {
     method: 'POST',
     credentials: 'same-origin',
     headers: {
