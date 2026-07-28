@@ -6,6 +6,8 @@ import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import mysql from 'mysql2/promise';
 
+console.log("🚀 El servidor real está intentando arrancar...");
+
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const appRoot = resolve(__dirname, '..');
 const distDir = resolve(appRoot, 'dist');
@@ -850,7 +852,10 @@ async function handleSyncUsersToDB(req, res) {
   
   try {
     const credentials = resolveControlDocCredentials(null);
-    const allEntities = await fetchAllControlDocPages('/api/v1/abstract/entities', credentials);
+    
+    // LA MAGIA AQUÍ: Leemos desde la memoria RAM (serveWithSWR) en lugar de saturar la API
+    const allEntities = await serveWithSWR('entities', '/api/v1/abstract/entities', credentials);
+    
     let insertados = 0;
     for (const entity of allEntities) {
       if (!entity.id) continue;
@@ -858,22 +863,35 @@ async function handleSyncUsersToDB(req, res) {
       const nombre = entity.name || entity.full_name || 'Sin Nombre';
       const rut = entity.identifier || entity.rut || null;
       let emailRaw = entity.custom_fields?.correo_electronico_personal || entity.email || '';
-      await dbPool.execute(`INSERT INTO entidades_api (external_id, nombre, rut, email, data_json) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE nombre=VALUES(nombre), rut=VALUES(rut), email=VALUES(email)`, [external_id, nombre, rut, emailRaw.trim().toLowerCase() || null, JSON.stringify(entity)]);
+      
+      await dbPool.execute(
+        `INSERT INTO entidades_api (external_id, nombre, rut, email, data_json) VALUES (?, ?, ?, ?, ?) 
+         ON DUPLICATE KEY UPDATE nombre=VALUES(nombre), rut=VALUES(rut), email=VALUES(email)`, 
+        [external_id, nombre, rut, emailRaw.trim().toLowerCase() || null, JSON.stringify(entity)]
+      );
       insertados++;
     }
-    sendJson(res, 200, { ok: true, message: `Sincronizados ${insertados} usuarios.` });
+    
+    sendJson(res, 200, { ok: true, message: `¡Éxito! Sincronizados ${insertados} usuarios reales.` });
   } catch (error) {
     console.error('Error sincronizando usuarios:', error.message);
-    sendJson(res, 500, { error: 'Fallo al sincronizar' });
+    sendJson(res, 500, { error: 'Fallo al sincronizar: ' + error.message });
   }
 }
-
 // --- SERVIDOR PRINCIPAL ---
 const server = createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const cleanPath = requestUrl.pathname.replace(/\/$/, '');
+   let cleanPath = requestUrl.pathname.replace(/\/$/, '');
+    
 
+// Si la ruta viene de cPanel, transformamos el prefijo para que coincida con tus rutas /api/
+    if (cleanPath.startsWith('/backendapi')) {
+      cleanPath = cleanPath.replace('/backendapi', '/api');
+    }
+    
+    // Si la ruta queda vacía (ej: entró a /backendapi/)
+    if (!cleanPath) cleanPath = '/';
     if (cleanPath === '/api/health') return sendJson(res, 200, { ok: true });
     if (cleanPath === '/api/auth/register') return sendJson(res, 403, { error: 'Deshabilitado' });
     if (cleanPath === '/api/auth/login') return await handleLogin(req, res);

@@ -57,7 +57,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     setSyncStatus('loading');
     setMessage('Descargando usuarios desde ControlDoc. Esto puede tomar un minuto...');
     try {
-      const res = await fetch(getApiUrl('/admin/sync-users'));
+      const res = await fetch(getApiUrl('/admin/sync-users?_t=' + Date.now()));
       const data = await res.json();
       if (res.ok) {
         setSyncStatus('success');
