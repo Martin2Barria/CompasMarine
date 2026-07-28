@@ -16,6 +16,9 @@ import { ViewNotificaciones } from './Views/ViewNotificaciones';
 import { ViewAdmin } from './Views/ViewPanelAdmin';
 import { isAdminUser } from './auth/userScope';
 
+// <-- IMPORTACIÓN CORREGIDA AQUÍ -->
+import { getApiUrl } from './config/api'; 
+
 const getInitialDarkMode = () => {
   if (typeof window === 'undefined') return false;
   const stored = window.localStorage.getItem('theme');
@@ -76,7 +79,8 @@ export default function App() {
   useEffect(() => {
     let isCancelled = false;
 
-    fetch('/api/auth/me', { credentials: 'same-origin' })
+    // <-- RUTA CORREGIDA AQUÍ -->
+    fetch(getApiUrl('/auth/me'), { credentials: 'same-origin' })
       .then((response) => response.ok ? response.json() : null)
       .then((data) => {
         if (isCancelled || !data?.user) return;
@@ -100,7 +104,8 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', {
+      // <-- RUTA CORREGIDA AQUÍ -->
+      await fetch(getApiUrl('/auth/logout'), {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },

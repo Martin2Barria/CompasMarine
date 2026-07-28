@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Search, User, Clock, PenTool, Globe, ShieldAlert, KeyRound, Eye, EyeOff, RotateCcw } from 'lucide-react';
-
-// --- STUBS INTEGRADOS ---
-const getApiUrl = (path) => path.startsWith('http') ? path : `/api${path}`;
+import { getApiUrl } from '../config/api'; // <-- IMPORTACIÓN CORREGIDA
 
 const isControlDocSnapshotFresh = (snapshot, maxAgeMs) => {
   if (!snapshot || !snapshot.savedAt) return false;

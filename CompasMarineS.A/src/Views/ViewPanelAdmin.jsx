@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { ShieldAlert, Database, RefreshCw, Users, ServerCrash, CheckCircle2, Search, Key, UserCog, AlertTriangle } from 'lucide-react';
+import { getApiUrl } from '../config/api'; // <-- IMPORTACIÓN CORREGIDA
 
 export const ViewAdmin = ({ onLoadingProgress }) => {
   const [activeTab, setActiveTab] = useState('sistema'); // 'sistema' o 'usuarios'
@@ -26,7 +27,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
 
   // Cargar perfil del Admin al iniciar
   useEffect(() => {
-    fetch('/api/auth/me')
+    fetch(getApiUrl('/auth/me'))
       .then(res => res.ok ? res.json() : null)
       .then(data => { if (data?.user) setAdminUser(data.user); })
       .catch(() => {});
@@ -56,7 +57,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     setSyncStatus('loading');
     setMessage('Descargando usuarios desde ControlDoc. Esto puede tomar un minuto...');
     try {
-      const res = await fetch('/api/admin/sync-users');
+      const res = await fetch(getApiUrl('/admin/sync-users'));
       const data = await res.json();
       if (res.ok) {
         setSyncStatus('success');
@@ -81,7 +82,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     const progressTimer = startProgressTicker(16);
     setDbStatus('loading');
     try {
-      const res = await fetch('/api/admin/setup-db');
+      const res = await fetch(getApiUrl('/admin/setup-db'));
       const data = await res.json();
       if (res.ok) {
         setDbStatus('success');
@@ -105,7 +106,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     setUsersError('');
     onLoadingProgress?.({ percent: 30 });
     try {
-      const res = await fetch('/api/admin/users');
+      const res = await fetch(getApiUrl('/admin/users'));
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Error al obtener usuarios. (Revisa tus permisos)');
       setUsers(data.users || []);
@@ -132,7 +133,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
       const user = users.find(u => u.id === userId);
       const needsAccount = user ? user.activo === 0 : false;
 
-      const res = await fetch('/api/admin/users/role', {
+      const res = await fetch(getApiUrl('/admin/users/role'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId, roleId: newRoleId, needsAccount })
@@ -151,7 +152,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     if (!window.confirm(`ATENCIÓN: ¿Restablecer la contraseña de "${userName}"?\n\nSu nueva contraseña será su RUT (solo números y la letra K).`)) return;
     onLoadingProgress?.({ percent: 40 });
     try {
-      const res = await fetch('/api/admin/users/reset-password', {
+      const res = await fetch(getApiUrl('/admin/users/reset-password'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId })
@@ -204,7 +205,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     
     for (const u of targetUsers) {
       try {
-        await fetch('/api/admin/users/role', {
+        await fetch(getApiUrl('/admin/users/role'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId: u.id, roleId: defaultRoleId, needsAccount: u.activo === 0 })
@@ -248,7 +249,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     
     for (const u of targetUsers) {
       try {
-        await fetch('/api/admin/users/reset-password', {
+        await fetch(getApiUrl('/admin/users/reset-password'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId: u.id })

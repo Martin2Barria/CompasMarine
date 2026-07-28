@@ -1,8 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Eye, Tag, Download, User as UserIcon } from 'lucide-react';
-
-// --- STUBS Y DEPENDENCIAS INTEGRADAS ---
-const getApiUrl = (path) => path.startsWith('http') ? path : `/api${path}`;
+import { getApiUrl } from '../config/api'; // <-- IMPORTACIÓN CORREGIDA
 
 const getUserSnapshotKey = (user) => user?.id ? `user_${user.id}` : 'global';
 const SNAPSHOT_FRESH_MS = 15 * 60 * 1000;
@@ -103,7 +101,6 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById, showEntityName = t
           </h3>
         </div>
 
-        {/* Corrección para Modo Oscuro en contenedor interno de la tarjeta */}
         <div className="space-y-1.5 mb-3 bg-gray-50 p-2.5 rounded-xl border border-gray-100">
           {showEntityName && (
             <div className="text-xs text-gray-600 flex items-center min-w-0">
@@ -285,8 +282,8 @@ export const ViewDocumentos = ({ currentUser }) => {
           const separator = url.includes('?') ? '&' : '?';
           const bypassUrl = `${url}${separator}_t=${Date.now()}`;
           const response = await fetch(bypassUrl, { 
-             method: 'GET', credentials: 'same-origin', cache: 'no-store',
-             headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+              method: 'GET', credentials: 'same-origin', cache: 'no-store',
+              headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
           });
           if (response.status === 401) throw new Error("Acceso denegado. Por favor, inicia sesión.");
           if (response.status === 502) throw new Error("El servidor está procesando datos masivos. Por favor, espera 1 minuto.");
@@ -419,8 +416,6 @@ export const ViewDocumentos = ({ currentUser }) => {
   const handleClearSelection = () => { setSearchTerm(''); setIsAutocompleteOpen(false); };
 
   return (
-    /*contenedores*/
-    /* Agregado bg-gray-50 al contenedor raíz para heredar correctamente el tema de fondo de extremo a extremo */
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in w-full bg-gray-50">
       <div className="bg-[#394049] p-4 md:p-5 flex items-center justify-between flex-shrink-0 shadow-md">
         <h2 className="text-white text-lg md:text-xl font-semibold flex items-center">
@@ -428,12 +423,9 @@ export const ViewDocumentos = ({ currentUser }) => {
         </h2>
       </div>
 
-      {/* Corregido: El contenedor <main> ahora mantiene bg-gray-50 a ancho completo */}
       <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
-        {/* Trasladadas las clases de estructura y espaciado aquí para envolver el contenido y respetar el tema global sin cortes */}
         <div className="p-4 md:p-6 max-w-7xl mx-auto w-full space-y-4">
           
-          {/* Guía breve para Mis Documentos */}
           {showGuideDocs && (
             <div 
               onClick={() => setShowGuideDocs(false)}
@@ -458,7 +450,6 @@ export const ViewDocumentos = ({ currentUser }) => {
                  Mostrando {documentsToRender.length} de {processedDocuments.length} (Total: {totalDocumentsWithoutBlocked} documentos)
               </span>
             )}
-
           </div>
 
           {cacheNotice && (

@@ -1,4 +1,4 @@
-const API_BASE_URL = (process.env.APP_API_BASE_URL || 'https://compasmarine-production.up.railway.app/api')
+const API_BASE_URL = (process.env.APP_API_BASE_URL || 'https://compasmarinenotificaciones.com/backendapi/api')
   .replace(/\/+$/, '');
 
 const endpoints = [

@@ -1,4 +1,5 @@
-const DEFAULT_API_BASE_URL = '/api';
+// Cambia '/api' por '/backendapi'
+const DEFAULT_API_BASE_URL = '/backendapi';
 
 export const API_BASE_URL = (
   import.meta.env.VITE_APP_API_BASE_URL || DEFAULT_API_BASE_URL
