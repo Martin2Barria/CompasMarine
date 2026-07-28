@@ -968,11 +968,17 @@ async function runBackgroundCachePreload() {
     console.error("❌ [Background Task] Falló:", err.message);
   }
 }
-
 // --- NOTIFICACIONES PUSH ---
 if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+  let vapidSubject = process.env.VAPID_SUBJECT || 'mailto:admin@compasmarine.cl';
+  
+  // Forzamos el mailto: por si falta en la variable de entorno
+  if (!vapidSubject.startsWith('mailto:') && !vapidSubject.startsWith('http')) {
+    vapidSubject = 'mailto:' + vapidSubject;
+  }
+
   webpush.setVapidDetails(
-    process.env.VAPID_SUBJECT || 'mailto:admin@compasmarine.cl',
+    vapidSubject,
     process.env.VAPID_PUBLIC_KEY,
     process.env.VAPID_PRIVATE_KEY
   );
@@ -988,7 +994,6 @@ async function handlePushSubscribe(req, res) {
   
   if (!payload.endpoint || !payload.keys) return sendJson(res, 400, { error: 'Suscripción inválida' });
 
-  // Crear un hash único para el endpoint para no tener duplicados
   const crypto = await import('node:crypto');
   const endpointHash = crypto.createHash('sha256').update(payload.endpoint).digest('hex');
 
@@ -1010,9 +1015,6 @@ async function handleTestPush(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
   const cookieUserId = getCookie(req, 'compas_user_id');
   if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado' });
-
-  // ¡AQUÍ ESTÁ LA LÍNEA QUE TE DABA EL ERROR! La hemos eliminado para que siempre funcione.
-  // if (process.env.ENABLE_PUSH_TEST_ENDPOINT !== 'true') return sendJson(...)
 
   try {
     const [subs] = await dbPool.execute('SELECT subscription_json FROM push_subscriptions WHERE user_id = ?', [cookieUserId]);
@@ -1037,7 +1039,6 @@ async function handleTestPush(req, res) {
         sentCount++;
       } catch (err) {
         console.error('Error enviando a un endpoint específico:', err.message);
-        // Si el error es 410 o 404, la suscripción expiró y deberíamos borrarla de la BD.
       }
     }
 
