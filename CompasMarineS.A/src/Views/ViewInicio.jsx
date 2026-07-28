@@ -393,7 +393,8 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const detailEmpresa = formatInfoValue(getEntityFieldValue(displayEntity, ['empresa', 'company', 'organization', 'razon_social']));
   const rawContractDate = getEntityFieldValue(displayEntity, ['fecha_contrato', 'contract_date', 'hired_at', 'fecha_ingreso']);
   const detailFechaContrato = rawContractDate ? formatDate(rawContractDate) : 'No informado';
-  const profileEmail = currentUser?.email || getEntityEmail(displayEntity);
+// Si es un admin viendo a otra persona, muestra el de la persona. Si no, muestra el propio.
+  const profileEmail = (isAdminUser && selectedEntity) ? getEntityEmail(displayEntity) : (currentUser?.email || getEntityEmail(displayEntity));
   const profileCorporateEmail = getEntityCorporateEmail(displayEntity);
   const profilePhone = getEntityPhone(displayEntity);
 
