@@ -17,6 +17,8 @@ La app usa `/api` como base por defecto. En desarrollo, Vite proxya esas llamada
 npm run dev:api
 ```
 
+La sesión permanece iniciada al recargar o volver a abrir la aplicación durante 30 días por defecto. Se puede cambiar con `SESSION_MAX_AGE_SECONDS` y se elimina al cerrar sesión.
+
 Variables importantes:
 
 ```env
@@ -43,25 +45,21 @@ VAPID_PUBLIC_KEY=
 VAPID_PRIVATE_KEY=
 ```
 
-Para enviar resúmenes por correo usando Gmail, configura una contraseña de aplicación de Google y agrega:
+## Correos automáticos con Resend
+
+El backend usa el SDK oficial de Resend. Configura estas variables en el entorno del servidor:
 
 ```env
-GMAIL_USER=tu-correo@gmail.com
-GMAIL_APP_PASSWORD=tu-app-password
-SMTP_FROM_NAME=Compas Marine
+# Reemplaza re_xxxxxxxxx por tu clave real de Resend.
+RESEND_API_KEY=re_xxxxxxxxx
+RESEND_FROM=onboarding@resend.dev
 ```
 
-También puedes usar un SMTP compatible:
+Los correos automáticos se envían únicamente a usuarios activos registrados en MySQL con rol `12` (pruebas cerradas). Como parche temporal, cada usuario recibe como máximo dos correos-resumen por revisión: uno con todos sus documentos de la categoría de 60 días y otro con todos los de la categoría de 30 días. Los avisos de 1 día no se envían por correo en este flujo. Cada documento y umbral enviado se registra en `email_notification_events` y no vuelve a enviarse para ese mismo registro.
 
-```env
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=465
-SMTP_SECURE=true
-SMTP_USER=tu-correo@gmail.com
-SMTP_PASS=tu-app-password
-SMTP_FROM=tu-correo@gmail.com
-SMTP_FROM_NAME=Compas Marine
-```
+Las notificaciones push mantienen sus propios intervalos: 60 días cada 5 días, 30 días cada día y 1 día o menos cada 6 horas.
+
+Al entrar un usuario compatible, la aplicación intenta solicitar el permiso y registrar automáticamente el dispositivo. Si el navegador bloquea o no completa la activación, la vista Notificaciones muestra el botón `Activar notificaciones`; sólo cuando existe una suscripción activa muestra `Probar push`. Los avisos entregados se respaldan en `push_notification_history` con su contenido y fecha para mostrarlos en esa vista. Al cerrar sesión, la suscripción del dispositivo se elimina para no mezclar avisos entre usuarios.
 
 El endpoint de prueba push está apagado por defecto:
 

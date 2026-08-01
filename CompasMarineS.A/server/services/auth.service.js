@@ -3,42 +3,10 @@ import bcrypt from 'bcryptjs';
 import { dbPool } from '../config/db.js';
 import { sendJson, readRequestBody, getCookie } from '../utils/http.js';
 import { requireSameOriginRequest } from '../utils/security.js';
+import { buildClearSessionCookie, buildSessionCookie } from '../utils/session.js';
 
 const PASSWORD_RESET_TOKEN_TTL = 10 * 60 * 1000;
 const passwordResetTokens = new Map();
-
-function isSecureRequest(req) {
-  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
-  const hostHeader = String(req.headers['x-forwarded-host'] || req.headers.host || '').toLowerCase();
-  const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(hostHeader);
-  return process.env.NODE_ENV === 'production' || forwardedProto === 'https' || (hostHeader && !isLocalHost);
-}
-
-function buildSessionCookie(req, userId) {
-  const cookieParts = [
-    `compas_user_id=${encodeURIComponent(userId)}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax'
-  ];
-
-  if (isSecureRequest(req)) cookieParts.push('Secure');
-  return cookieParts.join('; ');
-}
-
-function buildClearSessionCookie(req) {
-  const cookieParts = [
-    'compas_user_id=',
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    'Max-Age=0',
-    'Expires=Thu, 01 Jan 1970 00:00:00 GMT'
-  ];
-
-  if (isSecureRequest(req)) cookieParts.push('Secure');
-  return cookieParts.join('; ');
-}
 
 function createPasswordResetToken(email, userId) {
   const now = Date.now();
@@ -255,6 +223,7 @@ export async function handleAuthMe(req, res) {
     `, [cookieUserId]);
     
     if (userRows.length === 0) return sendJson(res, 401, { error: 'Usuario no encontrado o inactivo' });
+    res.setHeader('Set-Cookie', buildSessionCookie(req, cookieUserId));
     return sendJson(res, 200, { user: userRows[0] });
   } catch {
     return sendJson(res, 500, { error: 'Error interno' });

@@ -9,7 +9,7 @@ Compas Marine es una aplicacion web tipo SPA (React + Vite + Tailwind) con capac
 - Consumir y filtrar datos de ControlDoc desde el backend.
 - Persistir datos locales en MySQL para autenticacion, roles y cache operacional.
 - Soportar uso offline principalmente mediante cache del navegador (Service Worker, LocalStorage e IndexedDB).
-- Gestionar alertas push (VAPID) y envio de correos SMTP en escenarios controlados.
+- Gestionar alertas push (VAPID) y envio de correos con Resend en escenarios controlados.
 
 ## 2. Arquitectura Real de Alto Nivel
 
@@ -137,13 +137,15 @@ El esquema en database/schema.sql incluye:
 - respaldos_documentos
 - push_subscriptions
 - push_notification_events
+- push_notification_history
+- email_notification_events
 - sync_logs
 
 Aspectos relevantes:
 
 - FK con ON DELETE CASCADE y ON DELETE RESTRICT donde corresponde.
 - Campos JSON para metadatos flexibles.
-- Tablas de push para suscripciones y cooldown de eventos.
+- Tablas de push para suscripciones, cooldown de eventos e historial visible de envíos confirmados.
 
 ## 6. PWA, Offline y Service Worker
 
@@ -183,15 +185,20 @@ Umbrales observados en reglas actuales:
 
 ### 7.2 Scheduler
 
-- Existe logica de scheduler en notifications.service.js.
-- El scheduler es invocable desde funciones exportadas.
-- Debe ser activado explicitamente por el runtime para ejecutar periodicamente.
+- El scheduler se activa al iniciar `server/index.js`.
+- Push: 60 días cada 5 días, 30 días cada día y 1 día o menos cada 6 horas.
+- Cada push confirmado se registra en `push_notification_history` y se consulta desde `/api/notifications/push-history` para respaldarlo en la vista Notificaciones.
+- La aplicación intenta activar la suscripción al iniciar una sesión. Los navegadores que exigen interacción manual dejan disponible el botón `Activar notificaciones`.
+- Email Resend: una sola vez por documento y umbral para usuarios activos con rol `12`.
+- La revisión del scheduler de email ocurre cada hora por defecto y se puede cambiar con `EMAIL_NOTIFICATION_SCHEDULER_INTERVAL_MS`. Como parche temporal, se agrupan los documentos de cada usuario en un correo para la categoría de 60 días y otro para la de 30 días. Cada documento/umbral se registra para evitar duplicados.
 
-### 7.3 Correo SMTP
+### 7.3 Correo Resend
 
-- Implementado con cliente SMTP sobre TLS (sin nodemailer).
-- Variables soportadas: SMTP_* y fallback GMAIL_*.
-- Endpoint de envio de alertas por correo con restricciones de rol.
+- Implementado con el SDK oficial `resend`, ejecutado únicamente en el backend.
+- La API key se configura con `RESEND_API_KEY`; no debe exponerse en el frontend.
+- El envío automático está restringido a usuarios activos con rol `12`.
+- Umbrales de email del parche temporal: 60 y 30 días; cada categoría genera un solo resumen por usuario y cada documento/umbral se envía una sola vez.
+- Los envíos quedan registrados en `email_notification_events` y se consultan desde `/api/notifications/email-history`.
 
 ## 8. Variables de Entorno
 
@@ -222,14 +229,10 @@ VAPID_SUBJECT=mailto:soporte@compasmarine.cl
 VAPID_PUBLIC_KEY=clave_publica
 VAPID_PRIVATE_KEY=clave_privada
 
-# SMTP
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=465
-SMTP_SECURE=true
-SMTP_USER=alertas@compasmarine.cl
-SMTP_PASS=app_password
-SMTP_FROM=alertas@compasmarine.cl
-SMTP_FROM_NAME=Compas Marine Alertas
+# Resend
+# Reemplaza re_xxxxxxxxx por tu clave real.
+RESEND_API_KEY=re_xxxxxxxxx
+RESEND_FROM=onboarding@resend.dev
 ```
 
 Nota:

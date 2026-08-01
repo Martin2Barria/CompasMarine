@@ -1,4 +1,4 @@
-const APP_CACHE = 'compas-marine-app-v3';
+const APP_CACHE = 'compas-marine-app-v4';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -72,7 +72,7 @@ self.addEventListener('push', (event) => {
     }
   }
 
-  event.waitUntil(
+  event.waitUntil(Promise.all([
     self.registration.showNotification(payload.title, {
       body: payload.body,
       icon: '/pwa-icon.svg',
@@ -82,8 +82,14 @@ self.addEventListener('push', (event) => {
       data: {
         url: payload.url || '/'
       }
+    }),
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      clientList.forEach((client) => client.postMessage({
+        type: 'compas:push-received',
+        url: payload.url || '/'
+      }));
     })
-  );
+  ]));
 });
 
 self.addEventListener('notificationclick', (event) => {
@@ -94,8 +100,8 @@ self.addEventListener('notificationclick', (event) => {
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
       const existingClient = clientList.find((client) => client.url.includes(self.location.origin));
       if (existingClient) {
-        existingClient.focus();
-        return;
+        existingClient.postMessage({ type: 'compas:navigate', url: targetUrl });
+        return existingClient.focus();
       }
 
       return self.clients.openWindow(targetUrl);

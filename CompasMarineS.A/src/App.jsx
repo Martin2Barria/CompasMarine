@@ -15,6 +15,7 @@ import { ViewDocumentos } from './Views/ViewDocumentos';
 import { ViewNotificaciones } from './Views/ViewNotificaciones';
 import { ViewAdmin } from './Views/ViewPanelAdmin';
 import { isAdminUser } from './auth/userScope';
+import { disablePushNotifications, enablePushNotifications } from './pwa/pushNotifications';
 
 // <-- IMPORTACIÓN CORREGIDA AQUÍ -->
 import { getApiUrl } from './config/api'; 
@@ -26,9 +27,11 @@ const getInitialDarkMode = () => {
   return window.matchMedia('(prefers-color-scheme: dark)').matches;
 };
 
+const getViewFromPath = (pathname = '') => pathname.startsWith('/documentos') ? 'documentos' : 'inicio';
+
 export default function App() {
-  const [currentView, setCurrentView] = useState('inicio');
-  const [visitedViews, setVisitedViews] = useState(() => new Set(['inicio']));
+  const [currentView, setCurrentView] = useState(() => getViewFromPath(window.location.pathname));
+  const [visitedViews, setVisitedViews] = useState(() => new Set([getViewFromPath(window.location.pathname)]));
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
@@ -44,6 +47,32 @@ export default function App() {
 
   const toggleTheme = useCallback(() => {
     setDarkMode((value) => !value);
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated || !currentUser || isAdminUser(currentUser)) return;
+
+    // Al entrar se solicita el permiso pendiente o se revalida la suscripción ya concedida.
+    enablePushNotifications().catch((error) => {
+      console.warn('[Push] No se pudo activar automáticamente:', error.message);
+    });
+  }, [isAuthenticated, currentUser]);
+
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return undefined;
+
+    const handleServiceWorkerMessage = (event) => {
+      if (event.data?.type !== 'compas:navigate') return;
+      const targetUrl = typeof event.data.url === 'string' ? event.data.url : '/';
+      const nextView = getViewFromPath(targetUrl);
+
+      window.history.pushState({}, '', targetUrl);
+      setVisitedViews((views) => new Set([...views, nextView]));
+      setCurrentView(nextView);
+    };
+
+    navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
   }, []);
 
   const reportLoadingProgress = useCallback((next = {}) => {
@@ -104,7 +133,12 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      // <-- RUTA CORREGIDA AQUÍ -->
+      await disablePushNotifications();
+    } catch {
+      // Una suscripción inválida será eliminada por el backend cuando Web Push la rechace.
+    }
+
+    try {
       await fetch(getApiUrl('/auth/logout'), {
         method: 'POST',
         credentials: 'same-origin',
@@ -127,6 +161,11 @@ export default function App() {
     if (nextView === 'notificaciones' && isAdminUser(currentUser)) {
       setCurrentView('inicio');
       return;
+    }
+
+    const nextPath = nextView === 'documentos' ? '/documentos' : '/';
+    if (window.location.pathname !== nextPath) {
+      window.history.replaceState({}, '', nextPath);
     }
 
     setVisitedViews((views) => {

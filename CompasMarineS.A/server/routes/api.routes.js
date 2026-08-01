@@ -4,8 +4,13 @@ import { adminRouter } from './admin.routes.js';
 import { 
   handleDocumentsSync, proxyControlDocRequest, controlDocRoutes 
 } from '../services/controldoc.service.js';
-import { 
-  handlePushSubscription, handlePushTest, handleEmailAlerts, hasVapidConfig 
+import {
+  handlePushSubscription,
+  handlePushTest,
+  handlePushNotificationHistory,
+  handleEmailAlerts,
+  handleEmailNotificationHistory,
+  hasVapidConfig
 } from '../services/notifications.service.js';
 
 export async function apiRouter(req, res, requestUrl) {
@@ -27,11 +32,16 @@ export async function apiRouter(req, res, requestUrl) {
 
   // 3. Rutas directas: Notificaciones
   if (cleanPath === '/api/notifications/vapid-public-key') {
-    return sendJson(res, 200, { publicKey: process.env.VAPID_PUBLIC_KEY || null, ready: hasVapidConfig() });
+    return sendJson(res, 200, {
+      publicKey: hasVapidConfig() ? process.env.VAPID_PUBLIC_KEY : null,
+      ready: hasVapidConfig()
+    });
   }
   if (cleanPath === '/api/notifications/subscriptions') return await handlePushSubscription(req, res);
   if (cleanPath === '/api/notifications/test') return await handlePushTest(req, res);
+  if (cleanPath === '/api/notifications/push-history') return await handlePushNotificationHistory(req, res);
   if (cleanPath === '/api/notifications/email-alerts') return await handleEmailAlerts(req, res);
+  if (cleanPath === '/api/notifications/email-history') return await handleEmailNotificationHistory(req, res);
 
   // 4. Rutas directas: ControlDoc
   if (cleanPath === '/api/controldoc/documents/sync') return await handleDocumentsSync(req, res);

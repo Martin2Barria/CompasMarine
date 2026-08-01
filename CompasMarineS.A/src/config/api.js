@@ -1,5 +1,6 @@
-// Cambia '/api' por '/backendapi'
-const DEFAULT_API_BASE_URL = '/backendapi';
+// Las rutas del servidor comienzan en /api. En desarrollo, Vite las
+// redirige al backend configurado en vite.config.js.
+const DEFAULT_API_BASE_URL = '/api';
 
 export const API_BASE_URL = (
   import.meta.env.VITE_APP_API_BASE_URL || DEFAULT_API_BASE_URL

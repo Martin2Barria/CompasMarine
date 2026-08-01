@@ -10,6 +10,11 @@ const ALERT_RULE_VERSION = 4;
 const MAX_STORED_EVENTS = 800;
 const MAX_STORED_ALERTS = 120;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const NOTIFICATION_COOLDOWNS = Object.freeze({
+  warning: 5 * DAY_MS,
+  critical: DAY_MS,
+  urgent: 6 * 60 * 60 * 1000
+});
 
 export async function runCachedNotificationRules(ownerKey) {
   const snapshotData = await readCurrentSnapshotData(ownerKey);
@@ -65,6 +70,7 @@ export async function evaluateDocumentNotificationRules({
   const sentEvents = readSentEvents();
   const now = Date.now();
   const expiredDocs = records.filter((record) => record.group === 'expired' && shouldNotifyRecord(record, sentEvents, now));
+  const urgentDocs = records.filter((record) => record.group === 'urgent' && shouldNotifyRecord(record, sentEvents, now));
   const criticalDocs = records.filter((record) => record.group === 'critical' && shouldNotifyRecord(record, sentEvents, now));
   const warningDocs = records.filter((record) => record.group === 'warning' && shouldNotifyRecord(record, sentEvents, now));
   const signatureDocs = records.filter((record) => record.group === 'signature' && shouldNotifyRecord(record, sentEvents, now));
@@ -78,6 +84,16 @@ export async function evaluateDocumentNotificationRules({
     tag: 'compas-docs-expired'
   })) {
     markEventsAsSent(expiredDocs.map((item) => item.id));
+    shown += 1;
+  }
+
+  if (await notifyRecordGroup({
+    records: urgentDocs,
+    title: urgentDocs.length === 1 ? 'Documento por expirar' : 'Documentos por expirar',
+    group: 'urgent',
+    tag: 'compas-docs-expiring-1'
+  })) {
+    markEventsAsSent(urgentDocs.map((item) => item.id));
     shown += 1;
   }
 
@@ -135,17 +151,17 @@ export function buildDocumentAlertRecords({ documents = [], documentTypes = [] }
       if (daysRemaining !== null && daysRemaining <= 60) {
         const threshold = daysRemaining < 0
           ? 0
-          : daysRemaining <= 30
-            ? 30
-            : 60;
+          : daysRemaining <= 1
+            ? 1
+            : daysRemaining <= 30
+              ? 30
+              : 60;
 
         const id = buildDocumentEventId(doc, threshold);
-        const severity = threshold === 0 ? 'expired' : threshold === 30 ? 'critical' : 'warning';
-        const group = threshold === 0 ? 'expired' : threshold === 30 ? 'critical' : 'warning';
-        const title = threshold === 0 ? 'Documento vencido' : threshold === 30 ? 'Documento critico' : 'Documento por vencer';
-        const body = threshold === 0
-          ? `${docName} se vencio.`
-          : `${docName} esta por vencer.`;
+        const severity = threshold === 0 ? 'expired' : threshold === 1 ? 'urgent' : threshold === 30 ? 'critical' : 'warning';
+        const group = threshold === 0 ? 'expired' : threshold === 1 ? 'urgent' : threshold === 30 ? 'critical' : 'warning';
+        const title = threshold === 0 ? 'Documento vencido' : threshold === 1 ? 'Documento por expirar' : threshold === 30 ? 'Documento crítico' : 'Documento por vencer';
+        const body = buildDocumentExpirationBody({ docName, threshold, daysRemaining, expirationDate });
 
         records.push({
           id,
@@ -206,6 +222,9 @@ async function notifyRecordGroup({ records, title, group, tag }) {
 
 function getGroupedNotificationBody(count, group) {
   if (group === 'expired') return `${count} documentos estan vencidos. Revisa tus documentos.`;
+  if (group === 'urgent') return `${count} documentos expiran en 1 día o menos. Revisa tus documentos.`;
+  if (group === 'critical') return `${count} documentos vencen dentro de 30 días. Revisa tus documentos.`;
+  if (group === 'warning') return `${count} documentos vencen dentro de 60 días. Revisa tus documentos.`;
   if (group === 'signature') return `${count} documentos tienen firmas pendientes. Revisa tus documentos.`;
   return `${count} documentos estan por vencer. Revisa tus documentos.`;
 }
@@ -254,6 +273,27 @@ function getDaysRemaining(dateString) {
   const diff = expirationDate.getTime() - currentDate.getTime();
 
   return Math.ceil(diff / (1000 * 3600 * 24));
+}
+
+function buildDocumentExpirationBody({ docName, threshold, daysRemaining, expirationDate }) {
+  const formattedDate = formatNotificationDate(expirationDate);
+  const dateSuffix = formattedDate ? `, el ${formattedDate}` : '';
+
+  if (threshold === 0) return `${docName} venció${dateSuffix}.`;
+  if (daysRemaining === 0) return `${docName} vence hoy${dateSuffix}.`;
+  if (daysRemaining === 1) return `${docName} vence mañana${dateSuffix}.`;
+  return `${docName} vence en ${daysRemaining} días${dateSuffix}.`;
+}
+
+function formatNotificationDate(value) {
+  const date = parseControlDocDate(value);
+  if (!date) return '';
+
+  return [
+    String(date.getDate()).padStart(2, '0'),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    date.getFullYear()
+  ].join('/');
 }
 
 function getDocName(doc, documentTypes) {
@@ -322,8 +362,7 @@ function shouldNotifyRecord(record, sentEvents, now) {
 }
 
 function getRecordCooldownMs(record) {
-  if (record.group === 'critical') return DAY_MS;
-  if (record.group === 'warning') return 5 * DAY_MS;
+  if (record.group in NOTIFICATION_COOLDOWNS) return NOTIFICATION_COOLDOWNS[record.group];
   if (record.group === 'signature') return 7 * DAY_MS;
   return null;
 }
@@ -387,9 +426,10 @@ function getAlertRecordsKey(ownerKey) {
 
 function severityRank(severity) {
   if (severity === 'expired') return 0;
-  if (severity === 'critical') return 1;
-  if (severity === 'warning') return 2;
-  if (severity === 'signature') return 3;
+  if (severity === 'urgent') return 1;
+  if (severity === 'critical') return 2;
+  if (severity === 'warning') return 3;
+  if (severity === 'signature') return 4;
   return 4;
 }
 

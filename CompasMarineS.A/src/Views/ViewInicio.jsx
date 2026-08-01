@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Search, User, Clock, PenTool, Globe, ShieldAlert, KeyRound, Eye, EyeOff, RotateCcw } from 'lucide-react';
 import { getApiUrl } from '../config/api'; // <-- IMPORTACIÓN CORREGIDA
+import {
+  getDocumentEntityIds,
+  getDocumentExpirationDate,
+  parseControlDocDate
+} from '../controldoc/fields';
 
 const isControlDocSnapshotFresh = (snapshot, maxAgeMs) => {
   if (!snapshot || !snapshot.savedAt) return false;
@@ -53,12 +58,6 @@ const toArray = (value, fallbackKeys = []) => {
   return dynamicArrayKey ? value[dynamicArrayKey] : [];
 };
 
-const parseControlDocDate = (dateString) => {
-  if (!dateString) return null;
-  const parsed = new Date(dateString);
-  return isNaN(parsed.getTime()) ? null : parsed;
-};
-
 const formatDate = (dateString) => {
   if (!dateString) return 'N/A';
   const parsedDate = parseControlDocDate(dateString);
@@ -66,8 +65,6 @@ const formatDate = (dateString) => {
     ? parsedDate.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' })
     : 'N/A';
 };
-
-const getDocumentExpirationDate = (doc) => doc.expires_at;
 
 const getDaysRemaining = (dateString) => {
   if (!dateString) return null;
@@ -200,12 +197,6 @@ const hasPendingSignature = (doc) => {
   });
 };
 
-const getDocumentEntityIds = (doc) => {
-  if (!doc) return [];
-  const ids = [doc.entity_id, doc.abstract_entity_id, doc.employee_id].filter(id => id !== undefined && id !== null);
-  return [...new Set(ids.map(id => id.toString()))];
-}
-
 // COMPONENTE PRINCIPAL
 export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const [allDocs, setAllDocs] = useState([]);
@@ -237,6 +228,19 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
   const [showGuideInicio, setShowGuideInicio] = useState(true);
   
   const snapshotOwnerKey = getUserSnapshotKey(currentUser);
+
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return undefined;
+
+    const handlePushReceived = (event) => {
+      if (event.data?.type !== 'compas:push-received') return;
+      setSyncStats(null);
+      setRefreshToken((value) => value + 1);
+    };
+
+    navigator.serviceWorker.addEventListener('message', handlePushReceived);
+    return () => navigator.serviceWorker.removeEventListener('message', handlePushReceived);
+  }, []);
 
   const processData = useCallback((docs, entities, types) => {
     const normalizedDocs = toArray(docs, ['documents', 'data', 'items']);
@@ -403,10 +407,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     if (!isAdminUser) return allDocs; 
     if (!selectedUserId) return []; // Admin viendo vista global
     
-    return allDocs.filter(doc => {
-      const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
-      return docEntityId === selectedUserId;
-    });
+    return allDocs.filter((doc) => getDocumentEntityIds(doc).includes(selectedUserId.toString()));
   }, [isAdminUser, selectedUserId, allDocs]);
 
   const selectedPendingSignatures = useMemo(() =>

@@ -3,28 +3,38 @@ import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import webPush from 'web-push';
+import { Resend } from 'resend';
 import { dbPool } from '../config/db.js';
 import { sendJson, readRequestBody, getCookie, requireJsonRequest } from '../utils/http.js';
 import { requireSameOriginRequest, consumeRateLimit } from '../utils/security.js';
-import { escapeHtml, isValidEmail, resolveEmailConfig, sendEmail } from '../utils/email.js';
+import { escapeHtml, isValidEmail } from '../utils/email.js';
 import {
-  getDocumentEntityIds,
-  getDocumentExpirationDate,
-  hasPendingSignature,
-  parseControlDocDate
+  getDocumentEntityIds
 } from '../../src/controldoc/fields.js';
+import {
+  buildPushPayloadForGroup,
+  buildScheduledNotificationRecords,
+  compareEmailRecords,
+  groupEmailRecordsByExpirationThreshold,
+  groupDueRecords,
+  isScheduledNotificationRecordDue,
+  NOTIFICATION_RULE_VERSION
+} from './notification-rules.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const appRoot = resolve(__dirname, '../..');
 const notificationsStorePath = resolve(appRoot, 'server', 'notifications.json');
 const WORKER_NOTIFICATION_ROLE_IDS = [3, 12];
-const SERVER_ALERT_RULE_VERSION = 1;
-const DAY_MS = 24 * 60 * 60 * 1000;
+const SERVER_ALERT_RULE_VERSION = NOTIFICATION_RULE_VERSION;
 const DEFAULT_SCHEDULER_INTERVAL_MS = 60 * 60 * 1000;
+const DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS = 60 * 60 * 1000;
+const RESEND_API_KEY_PLACEHOLDER = 're_xxxxxxxxx';
 const MAX_STORED_SENT_EVENTS = 4000;
 
 let schedulerTimer = null;
+let emailSchedulerTimer = null;
 let schedulerRunning = false;
+let emailSchedulerRunning = false;
 let notificationPersistencePromise = null;
 let notificationPersistenceReady = false;
 
@@ -116,6 +126,42 @@ async function initializeNotificationPersistence() {
     )
   `);
 
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS push_notification_history (
+      event_hash CHAR(64) PRIMARY KEY,
+      user_id INT NOT NULL,
+      event_id VARCHAR(1024) NOT NULL,
+      notification_group VARCHAR(32) NOT NULL,
+      threshold TINYINT NULL,
+      title VARCHAR(255) NOT NULL,
+      body TEXT NOT NULL,
+      doc_name VARCHAR(255) NOT NULL,
+      expiration_date VARCHAR(100) NULL,
+      days_remaining INT NULL,
+      sent_at DATETIME NOT NULL,
+      last_sent_at DATETIME NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_push_notification_history_user_id (user_id),
+      INDEX idx_push_notification_history_last_sent_at (last_sent_at)
+    )
+  `);
+
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS email_notification_events (
+      event_hash CHAR(64) PRIMARY KEY,
+      user_id INT NOT NULL,
+      event_key VARCHAR(1024) NOT NULL,
+      event_id VARCHAR(1024) NOT NULL,
+      threshold TINYINT NOT NULL,
+      provider_id VARCHAR(255) NULL,
+      sent_at DATETIME NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_email_notification_events_user_id (user_id),
+      INDEX idx_email_notification_events_sent_at (sent_at)
+    )
+  `);
+
   await hydrateNotificationsFromDatabase();
   await migrateJsonNotificationStoreToDatabase();
 }
@@ -165,6 +211,7 @@ async function migrateJsonNotificationStoreToDatabase() {
 
   await Promise.all(subscriptions.map((record) => persistPushSubscription(record)));
   await Promise.all(events.map(([eventKey, event]) => persistSentEvent(eventKey, event)));
+  await Promise.all(events.map(([eventKey, event]) => persistPushNotificationHistory(eventKey, event)));
 }
 
 async function persistNotificationState({ removedEndpoints = [] } = {}) {
@@ -173,6 +220,7 @@ async function persistNotificationState({ removedEndpoints = [] } = {}) {
   if (databaseReady) {
     await Promise.all([...pushSubscriptions.values()].map((record) => persistPushSubscription(record)));
     await Promise.all(Object.entries(sentEvents).map(([eventKey, event]) => persistSentEvent(eventKey, event)));
+    await Promise.all(Object.entries(sentEvents).map(([eventKey, event]) => persistPushNotificationHistory(eventKey, event)));
     if (removedEndpoints.length > 0) await deletePushSubscriptions(removedEndpoints);
   }
 
@@ -221,6 +269,69 @@ async function persistSentEvent(eventKey, event) {
   ]);
 }
 
+async function persistPushNotificationHistory(eventKey, event) {
+  const alert = event?.alert;
+  const userId = extractUserIdFromEventKey(eventKey);
+  if (!alert || !userId || !alert.id || !alert.group) return;
+
+  await dbPool.execute(`
+    INSERT INTO push_notification_history
+      (event_hash, user_id, event_id, notification_group, threshold, title, body, doc_name,
+       expiration_date, days_remaining, sent_at, last_sent_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE
+      notification_group = VALUES(notification_group),
+      threshold = VALUES(threshold),
+      title = VALUES(title),
+      body = VALUES(body),
+      doc_name = VALUES(doc_name),
+      expiration_date = VALUES(expiration_date),
+      days_remaining = VALUES(days_remaining),
+      last_sent_at = VALUES(last_sent_at)
+  `, [
+    hashValue(eventKey),
+    userId,
+    String(alert.id).slice(0, 1024),
+    String(alert.group).slice(0, 32),
+    toNullableNumber(alert.threshold),
+    String(alert.title || 'Alerta documental').slice(0, 255),
+    String(alert.body || ''),
+    String(alert.docName || 'Documento').slice(0, 255),
+    String(alert.expirationDate || '').slice(0, 100) || null,
+    toNullableNumber(alert.daysRemaining),
+    toMysqlDateTime(event.sentAt || event.lastSentAt),
+    toMysqlDateTime(event.lastSentAt || event.sentAt)
+  ]);
+}
+
+async function getSentEmailEventIds(userId) {
+  const [rows] = await dbPool.execute(
+    'SELECT event_id FROM email_notification_events WHERE user_id = ?',
+    [userId]
+  );
+  return new Set(rows.map((row) => String(row.event_id || '').trim()).filter(Boolean));
+}
+
+async function markEmailRecordsAsSent({ userId, records, providerId, sentAt }) {
+  const sentDate = toMysqlDateTime(sentAt);
+  await Promise.all(records.map((record) => {
+    const eventKey = buildEmailEventKey(userId, record.id);
+    return dbPool.execute(`
+      INSERT IGNORE INTO email_notification_events
+        (event_hash, user_id, event_key, event_id, threshold, provider_id, sent_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `, [
+      hashValue(eventKey),
+      userId,
+      eventKey,
+      record.id,
+      Number(record.threshold),
+      providerId || null,
+      sentDate
+    ]);
+  }));
+}
+
 async function deletePushSubscriptions(endpoints) {
   const endpointHashes = [...new Set(endpoints.map(hashValue).filter(Boolean))];
   if (endpointHashes.length === 0) return;
@@ -236,6 +347,49 @@ export function hasVapidConfig() {
   return Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
 }
 
+export function resolveResendConfig(env = process.env) {
+  const apiKey = String(env.RESEND_API_KEY || RESEND_API_KEY_PLACEHOLDER).trim();
+  const from = String(env.RESEND_FROM || 'onboarding@resend.dev').trim();
+  const ready = Boolean(apiKey && apiKey !== RESEND_API_KEY_PLACEHOLDER && isValidEmail(from));
+
+  return {
+    ready,
+    apiKey,
+    from,
+    missing: [
+      ...(apiKey === RESEND_API_KEY_PLACEHOLDER ? ['RESEND_API_KEY'] : []),
+      ...(!isValidEmail(from) ? ['RESEND_FROM'] : [])
+    ]
+  };
+}
+
+async function sendResendEmail({ to, subject, text, html, config = resolveResendConfig() }) {
+  if (!config.ready) {
+    throw new Error(`Resend no está configurado. Faltan: ${config.missing.join(', ')}`);
+  }
+
+  const recipient = String(to || '').trim().toLowerCase();
+  if (!isValidEmail(recipient)) throw new Error('El correo destinatario no es válido.');
+
+  const resend = new Resend(config.apiKey);
+  const { data, error } = await resend.emails.send({
+    from: config.from,
+    to: recipient,
+    subject,
+    text,
+    html
+  });
+
+  if (error) throw new Error(error.message || 'Resend rechazó el envío.');
+
+  return {
+    ok: true,
+    provider: 'resend',
+    id: data?.id || null,
+    accepted: [recipient]
+  };
+}
+
 export function configureWebPush() {
   if (!hasVapidConfig()) return;
   webPush.setVapidDetails(
@@ -249,7 +403,7 @@ export async function handlePushSubscription(req, res) {
   if (!requireSameOriginRequest(req, res)) return;
   await tryEnsureNotificationPersistence();
   if (req.method === 'GET') return sendJson(res, 200, { count: pushSubscriptions.size, pushReady: hasVapidConfig() });
-  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' });
+  if (!['POST', 'DELETE'].includes(req.method)) return sendJson(res, 405, { error: 'Method not allowed' });
   if (!requireJsonRequest(req, res)) return;
   if (!consumeRateLimit(req, res, 'push-subscription', 20, 15 * 60 * 1000)) return;
 
@@ -261,6 +415,16 @@ export async function handlePushSubscription(req, res) {
   if (!subscription || !subscription.endpoint) return sendJson(res, 400, { error: 'Invalid push subscription' });
 
   const userId = getCookie(req, 'compas_user_id') || 'demo';
+  if (req.method === 'DELETE') {
+    const storedRecord = pushSubscriptions.get(subscription.endpoint);
+    const canRemove = storedRecord && String(storedRecord.userId) === String(userId);
+    if (canRemove) {
+      pushSubscriptions.delete(subscription.endpoint);
+      await persistNotificationState({ removedEndpoints: [subscription.endpoint] });
+    }
+    return sendJson(res, 200, { ok: true, removed: Boolean(canRemove) });
+  }
+
   const record = {
     userId, endpoint: subscription.endpoint, subscription,
     createdAt: pushSubscriptions.get(subscription.endpoint)?.createdAt || new Date().toISOString(),
@@ -280,12 +444,12 @@ export async function handlePushTest(req, res) {
   if (!consumeRateLimit(req, res, 'push-test', 5, 10 * 60 * 1000)) return;
 
   const userId = getCookie(req, 'compas_user_id') || 'demo';
-  if (!hasVapidConfig()) return sendJson(res, 200, { ok: false, reason: 'VAPID no configurado' });
+  if (!hasVapidConfig()) return sendJson(res, 503, { ok: false, reason: 'VAPID no configurado' });
   configureWebPush();
   await tryEnsureNotificationPersistence();
 
   const records = [...pushSubscriptions.values()].filter(r => r.userId === userId);
-  if (records.length === 0) return sendJson(res, 200, { ok: false, reason: 'Sin subscripciones' });
+  if (records.length === 0) return sendJson(res, 409, { ok: false, reason: 'Sin subscripciones' });
 
   let sent = 0;
   const removedEndpoints = [];
@@ -306,14 +470,17 @@ export async function handlePushTest(req, res) {
 }
 
 export function startNotificationScheduler({ getControlDocData, intervalMs } = {}) {
-  if (schedulerTimer) return { started: false, reason: 'already-running' };
+  if (schedulerTimer || emailSchedulerTimer) return { started: false, reason: 'already-running' };
   if (typeof getControlDocData !== 'function') return { started: false, reason: 'missing-control-doc-provider' };
-  if (!hasVapidConfig()) {
-    console.warn('[Push Scheduler] VAPID no configurado. No se iniciaran push automaticos.');
+  const pushReady = hasVapidConfig();
+  const emailReady = resolveResendConfig().ready;
+
+  if (!pushReady && !emailReady) {
+    console.warn('[Notification Scheduler] VAPID y Resend no configurados. No se iniciaran notificaciones automaticas.');
     return { started: false, reason: 'vapid-missing' };
   }
 
-  configureWebPush();
+  if (pushReady) configureWebPush();
 
   const resolvedIntervalMs = normalizePositiveMs(
     intervalMs || process.env.NOTIFICATION_SCHEDULER_INTERVAL_MS,
@@ -324,19 +491,43 @@ export function startNotificationScheduler({ getControlDocData, intervalMs } = {
     30 * 1000
   );
 
-  const run = () => {
-    runScheduledPushNotifications({ getControlDocData }).catch((error) => {
-      console.error('[Push Scheduler] Error ejecutando notificaciones automaticas:', error.message);
-    });
-  };
+  if (pushReady) {
+    const runPush = () => {
+      runScheduledPushNotifications({ getControlDocData }).catch((error) => {
+        console.error('[Push Scheduler] Error ejecutando notificaciones automaticas:', error.message);
+      });
+    };
 
-  const initialTimer = setTimeout(run, initialDelayMs);
-  initialTimer.unref?.();
-  schedulerTimer = setInterval(run, resolvedIntervalMs);
-  schedulerTimer.unref?.();
+    const initialPushTimer = setTimeout(runPush, initialDelayMs);
+    initialPushTimer.unref?.();
+    schedulerTimer = setInterval(runPush, resolvedIntervalMs);
+    schedulerTimer.unref?.();
+    console.log(`[Push Scheduler] Activo. Intervalo: ${Math.round(resolvedIntervalMs / 60000)} min.`);
+  } else {
+    console.warn('[Push Scheduler] VAPID no configurado. Solo se ejecutaran correos automaticos.');
+  }
 
-  console.log(`[Push Scheduler] Activo. Intervalo: ${Math.round(resolvedIntervalMs / 60000)} min.`);
-  return { started: true, intervalMs: resolvedIntervalMs };
+  if (emailReady) {
+    const emailIntervalMs = normalizePositiveMs(
+      process.env.EMAIL_NOTIFICATION_SCHEDULER_INTERVAL_MS,
+      DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS
+    );
+    const runEmail = () => {
+      runScheduledEmailNotifications({ getControlDocData }).catch((error) => {
+        console.error('[Email Scheduler] Error ejecutando correos automaticos:', error.message);
+      });
+    };
+
+    const initialEmailTimer = setTimeout(runEmail, initialDelayMs);
+    initialEmailTimer.unref?.();
+    emailSchedulerTimer = setInterval(runEmail, emailIntervalMs);
+    emailSchedulerTimer.unref?.();
+    console.log(`[Email Scheduler] Activo para rol 12. Intervalo de revisión: ${Math.round(emailIntervalMs / 60000)} min.`);
+  } else {
+    console.warn('[Email Scheduler] RESEND_API_KEY no configurada. No se enviaran correos automaticos.');
+  }
+
+  return { started: true, pushReady, emailReady, intervalMs: resolvedIntervalMs };
 }
 
 export async function runScheduledPushNotifications({ getControlDocData } = {}) {
@@ -402,6 +593,84 @@ export async function runScheduledPushNotifications({ getControlDocData } = {}) 
   }
 }
 
+export async function runScheduledEmailNotifications({ getControlDocData } = {}) {
+  if (emailSchedulerRunning) return { skipped: true, reason: 'already-running' };
+  if (!resolveResendConfig().ready) return { skipped: true, reason: 'resend-missing' };
+  if (typeof getControlDocData !== 'function') return { skipped: true, reason: 'missing-control-doc-provider' };
+
+  await tryEnsureNotificationPersistence();
+  emailSchedulerRunning = true;
+
+  try {
+    const users = await getEmailNotificationUsers();
+    if (users.length === 0) return { checked: true, sent: 0, users: 0 };
+
+    const controlDocData = await getControlDocData();
+    const documents = toArray(controlDocData?.documents);
+    const entities = toArray(controlDocData?.entities);
+    const documentTypes = toArray(controlDocData?.documentTypes || controlDocData?.document_types);
+    const config = resolveResendConfig();
+    const now = Date.now();
+    let sent = 0;
+
+    for (const user of users) {
+      if (!isValidEmail(user.email)) continue;
+
+      const scopedDocuments = getDocumentsForUser({ documents, entities, user });
+      const sentEventIds = await getSentEmailEventIds(user.id);
+      const dueRecords = buildScheduledNotificationRecords({ documents: scopedDocuments, documentTypes })
+        .filter((record) => !sentEventIds.has(record.id))
+        .sort(compareEmailRecords);
+      const emailGroups = groupEmailRecordsByExpirationThreshold(dueRecords);
+
+      for (const emailGroup of emailGroups) {
+        const alerts = emailGroup.records.map((record) => ({
+          id: record.id,
+          threshold: record.threshold,
+          title: record.title,
+          body: record.body,
+          docName: record.docName,
+          severity: record.group,
+          expirationDate: record.expirationDate,
+          daysRemaining: record.daysRemaining
+        }));
+        const message = buildAlertDigestEmail({
+          alerts,
+          user,
+          notificationGroup: emailGroup.group
+        });
+
+        try {
+          const result = await sendResendEmail({
+            to: user.email,
+            subject: message.subject,
+            text: message.text,
+            html: message.html,
+            config
+          });
+
+          await markEmailRecordsAsSent({
+            userId: user.id,
+            records: emailGroup.records,
+            providerId: result.id,
+            sentAt: now
+          });
+          sent += 1;
+        } catch (error) {
+          console.error(
+            `[Email Scheduler] No se pudo enviar el aviso de ${emailGroup.threshold} dias a ${user.email}:`,
+            error.message
+          );
+        }
+      }
+    }
+
+    return { checked: true, sent, users: users.length };
+  } finally {
+    emailSchedulerRunning = false;
+  }
+}
+
 export async function handleEmailAlerts(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' });
   if (!requireSameOriginRequest(req, res)) return;
@@ -411,8 +680,11 @@ export async function handleEmailAlerts(req, res) {
   let payload;
   try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'Invalid JSON body' }); }
 
-  const alerts = normalizeAlertPayload(payload.alerts);
-  if (alerts.length === 0) return sendJson(res, 400, { error: 'No hay alertas para enviar por correo.' });
+  const alerts = normalizeAlertPayload(payload.alerts)
+    .filter((alert) => [60, 30].includes(alert.threshold));
+  if (alerts.length === 0) {
+    return sendJson(res, 400, { error: 'No hay avisos de expiracion de 60 o 30 dias para enviar.' });
+  }
 
   const userId = getCookie(req, 'compas_user_id');
   if (!userId) return sendJson(res, 401, { error: 'No autorizado' });
@@ -422,9 +694,9 @@ export async function handleEmailAlerts(req, res) {
     const [rows] = await dbPool.execute(`
       SELECT u.id, u.nombre, u.email, r.id as rol_id
       FROM usuarios u
-      LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id
-      LEFT JOIN roles r ON ur.rol_id = r.id
-      WHERE u.id = ? AND u.activo = TRUE
+      INNER JOIN usuarios_roles ur ON u.id = ur.usuario_id
+      INNER JOIN roles r ON ur.rol_id = r.id
+      WHERE u.id = ? AND u.activo = TRUE AND r.id = 12
       LIMIT 1
     `, [userId]);
     user = rows[0] || null;
@@ -443,34 +715,151 @@ export async function handleEmailAlerts(req, res) {
   if (!userEmail) return sendJson(res, 400, { error: 'Correo no resuelto' });
   if (!isValidEmail(userEmail)) return sendJson(res, 400, { error: 'El correo asociado al usuario no es válido.' });
 
-  const emailConfig = resolveEmailConfig();
+  const emailConfig = resolveResendConfig();
   if (!emailConfig.ready) {
     return sendJson(res, 503, {
       ok: false,
-      error: 'Proveedor de email no configurado.',
+      error: 'Resend no está configurado.',
       missing: emailConfig.missing
     });
   }
 
-  try {
-    const message = buildAlertDigestEmail({ alerts, user });
-    const result = await sendEmail({
-      to: userEmail,
-      subject: message.subject,
-      text: message.text,
-      html: message.html,
-      config: emailConfig
-    });
+  await tryEnsureNotificationPersistence();
+  const sentEventIds = await getSentEmailEventIds(userId);
+  const pendingAlerts = alerts.filter((alert) => !sentEventIds.has(alert.id));
+  if (pendingAlerts.length === 0) {
+    return sendJson(res, 200, { ok: true, sent: 0, skipped: alerts.length, reason: 'Los avisos ya fueron enviados.' });
+  }
 
-    return sendJson(res, 202, {
+  const emailGroups = groupEmailRecordsByExpirationThreshold(pendingAlerts);
+  let sent = 0;
+  let recorded = 0;
+  const failedThresholds = [];
+
+  for (const emailGroup of emailGroups) {
+    try {
+      const message = buildAlertDigestEmail({
+        alerts: emailGroup.records,
+        user,
+        notificationGroup: emailGroup.group
+      });
+      const result = await sendResendEmail({
+        to: userEmail,
+        subject: message.subject,
+        text: message.text,
+        html: message.html,
+        config: emailConfig
+      });
+
+      await markEmailRecordsAsSent({
+        userId,
+        records: emailGroup.records.map((alert) => ({
+          id: alert.id,
+          threshold: alert.threshold
+        })),
+        providerId: result.id,
+        sentAt: Date.now()
+      });
+      sent += result.accepted.length;
+      recorded += emailGroup.records.length;
+    } catch (error) {
+      failedThresholds.push(emailGroup.threshold);
+      console.error(
+        `[Email Alerts] No se pudo enviar el aviso de ${emailGroup.threshold} dias a ${userEmail}:`,
+        error.message
+      );
+    }
+  }
+
+  if (sent === 0) {
+    return sendJson(res, 502, {
+      ok: false,
+      error: 'No se pudieron enviar los correos de alertas.',
+      failedThresholds
+    });
+  }
+
+  return sendJson(res, 202, {
+    ok: true,
+    sent,
+    recorded,
+    skipped: alerts.length - pendingAlerts.length,
+    failedThresholds,
+    provider: 'resend',
+    to: userEmail
+  });
+}
+
+export async function handleEmailNotificationHistory(req, res) {
+  if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
+  if (!requireSameOriginRequest(req, res)) return;
+
+  const userId = getCookie(req, 'compas_user_id');
+  if (!userId) return sendJson(res, 401, { error: 'No autorizado' });
+
+  try {
+    await tryEnsureNotificationPersistence();
+    const [rows] = await dbPool.execute(`
+      SELECT event_id, threshold, provider_id, sent_at
+      FROM email_notification_events
+      WHERE user_id = ?
+      ORDER BY sent_at DESC
+      LIMIT 200
+    `, [userId]);
+
+    return sendJson(res, 200, {
       ok: true,
-      sent: result.accepted.length,
-      provider: result.provider,
-      to: userEmail
+      events: rows.map((row) => ({
+        eventId: row.event_id,
+        threshold: Number(row.threshold),
+        providerId: row.provider_id || null,
+        sentAt: toIsoDate(row.sent_at)
+      }))
     });
   } catch (error) {
-    console.error('No se pudo enviar correo de alertas:', error.message);
-    return sendJson(res, 502, { ok: false, error: 'No se pudo enviar el correo de alertas.' });
+    console.error('[Email History] No se pudo consultar el registro:', error.message);
+    return sendJson(res, 500, { ok: false, error: 'No se pudo consultar el registro de correos.' });
+  }
+}
+
+export async function handlePushNotificationHistory(req, res) {
+  if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
+  if (!requireSameOriginRequest(req, res)) return;
+
+  const userId = getCookie(req, 'compas_user_id');
+  if (!userId) return sendJson(res, 401, { error: 'No autorizado' });
+
+  const databaseReady = await tryEnsureNotificationPersistence();
+  if (!databaseReady) {
+    return sendJson(res, 200, {
+      ok: true,
+      source: 'local-fallback',
+      events: getPushNotificationHistoryFromMemory(userId)
+    });
+  }
+
+  try {
+    const [rows] = await dbPool.execute(`
+      SELECT event_id, notification_group, threshold, title, body, doc_name,
+             expiration_date, days_remaining, sent_at, last_sent_at
+      FROM push_notification_history
+      WHERE user_id = ?
+      ORDER BY last_sent_at DESC
+      LIMIT 200
+    `, [userId]);
+
+    return sendJson(res, 200, {
+      ok: true,
+      source: 'database',
+      events: rows.map(normalizePushHistoryRow)
+    });
+  } catch (error) {
+    console.error('[Push History] No se pudo consultar el respaldo:', error.message);
+    return sendJson(res, 200, {
+      ok: true,
+      source: 'local-fallback',
+      events: getPushNotificationHistoryFromMemory(userId)
+    });
   }
 }
 
@@ -531,6 +920,35 @@ async function getSubscribedWorkerUsers(userIds) {
   await hydrateUserRutsFromEntities([...usersById.values()]);
 
   return [...usersById.values()].filter(isWorkerNotificationUser);
+}
+
+async function getEmailNotificationUsers() {
+  const [rows] = await dbPool.execute(`
+    SELECT u.id, u.nombre, u.email, r.id as rol_id, r.nombre as rol
+    FROM usuarios u
+    INNER JOIN usuarios_roles ur ON ur.usuario_id = u.id
+    INNER JOIN roles r ON r.id = ur.rol_id
+    WHERE u.activo = TRUE AND r.id = 12 AND u.email IS NOT NULL AND u.email <> ''
+  `);
+
+  const usersById = new Map();
+  for (const row of rows) {
+    const id = String(row.id);
+    if (!usersById.has(id)) {
+      usersById.set(id, {
+        id: row.id,
+        nombre: row.nombre,
+        email: row.email,
+        roleIds: [12],
+        roleNames: [row.rol || 'UsuarioPrueba'],
+        rut: ''
+      });
+    }
+  }
+
+  const users = [...usersById.values()];
+  await hydrateUserRutsFromEntities(users);
+  return users;
 }
 
 async function hydrateUserRutsFromEntities(users) {
@@ -612,95 +1030,6 @@ function entityMatchesUserRut(entity, userRut) {
   return directValues.some((value) => normalizeRut(value) === userRut);
 }
 
-function buildScheduledNotificationRecords({ documents = [], documentTypes = [] }) {
-  const records = [];
-
-  for (const doc of documents) {
-    const docName = getDocName(doc, documentTypes);
-    if (isInvalidNotificationDocName(docName)) continue;
-
-    const expirationDate = getDocumentExpirationDate(doc);
-    const daysRemaining = getDaysRemaining(expirationDate);
-
-    if (daysRemaining !== null && daysRemaining <= 60) {
-      const threshold = daysRemaining < 0
-        ? 0
-        : daysRemaining <= 30
-          ? 30
-          : 60;
-      const group = threshold === 0 ? 'expired' : threshold === 30 ? 'critical' : 'warning';
-
-      records.push({
-        id: buildDocumentEventId(doc, threshold),
-        ruleVersion: SERVER_ALERT_RULE_VERSION,
-        group,
-        once: threshold === 0,
-        cooldownMs: threshold === 30 ? DAY_MS : threshold === 60 ? 5 * DAY_MS : null,
-        docName,
-        body: threshold === 0 ? `${docName} se vencio.` : `${docName} esta por vencer.`,
-        daysRemaining,
-        expirationDate: expirationDate || '',
-        url: '/documentos'
-      });
-    }
-
-    if (hasPendingSignature(doc)) {
-      records.push({
-        id: buildSignatureEventId(doc),
-        ruleVersion: SERVER_ALERT_RULE_VERSION,
-        group: 'signature',
-        once: false,
-        cooldownMs: 7 * DAY_MS,
-        docName,
-        body: `${docName} tiene una firma pendiente.`,
-        daysRemaining: null,
-        expirationDate: expirationDate || '',
-        url: '/documentos'
-      });
-    }
-  }
-
-  return records.sort((a, b) => groupRank(a.group) - groupRank(b.group) || (a.daysRemaining ?? 9999) - (b.daysRemaining ?? 9999));
-}
-
-function groupDueRecords(records) {
-  const groups = new Map();
-
-  for (const record of records) {
-    if (!groups.has(record.group)) groups.set(record.group, []);
-    groups.get(record.group).push(record);
-  }
-
-  return ['expired', 'critical', 'warning', 'signature']
-    .map((group) => ({ group, records: groups.get(group) || [] }))
-    .filter((item) => item.records.length > 0);
-}
-
-function buildPushPayloadForGroup(user, group) {
-  const count = group.records.length;
-  const firstRecord = group.records[0];
-  const titles = {
-    expired: count === 1 ? 'Documento vencido' : 'Documentos vencidos',
-    critical: count === 1 ? 'Documento critico' : 'Documentos criticos',
-    warning: count === 1 ? 'Documento por vencer' : 'Documentos por vencer',
-    signature: count === 1 ? 'Firma pendiente' : 'Firmas pendientes'
-  };
-
-  const pluralBodies = {
-    expired: `${count} documentos estan vencidos. Revisa tus documentos.`,
-    critical: `${count} documentos estan por vencer. Revisa tus documentos.`,
-    warning: `${count} documentos estan por vencer. Revisa tus documentos.`,
-    signature: `${count} documentos tienen firmas pendientes. Revisa tus documentos.`
-  };
-
-  return {
-    title: titles[group.group] || 'Alerta documental',
-    body: count === 1 ? firstRecord.body : pluralBodies[group.group],
-    url: firstRecord.url || '/documentos',
-    tag: `compas-${group.group}-${user.id}`
-  };
-}
-
 async function sendPushToSubscriptions(records, payload) {
   let sent = 0;
   let removed = 0;
@@ -728,20 +1057,29 @@ async function sendPushToSubscriptions(records, payload) {
 function shouldSendScheduledRecord(userId, record, now) {
   const eventKey = buildSentEventKey(userId, record.id);
   const previous = sentEvents[eventKey];
-  if (!previous) return true;
-  if (record.once) return false;
-
-  const lastSentAt = Date.parse(previous.lastSentAt || previous.sentAt || previous);
-  if (!Number.isFinite(lastSentAt)) return true;
-
-  return now - lastSentAt >= record.cooldownMs;
+  return isScheduledNotificationRecordDue(record, previous, now);
 }
 
 function markScheduledRecordAsSent(userId, record, now) {
-  sentEvents[buildSentEventKey(userId, record.id)] = {
+  const eventKey = buildSentEventKey(userId, record.id);
+  const previous = sentEvents[eventKey];
+  const sentAt = new Date(now).toISOString();
+
+  sentEvents[eventKey] = {
     ruleVersion: SERVER_ALERT_RULE_VERSION,
-    sentAt: new Date(now).toISOString(),
-    lastSentAt: new Date(now).toISOString()
+    sentAt: previous?.sentAt || sentAt,
+    lastSentAt: sentAt,
+    alert: {
+      id: record.id,
+      group: record.group,
+      threshold: toNullableNumber(record.threshold),
+      title: record.title || 'Alerta documental',
+      body: record.body || '',
+      docName: record.docName || 'Documento',
+      expirationDate: record.expirationDate || '',
+      daysRemaining: toNullableNumber(record.daysRemaining),
+      url: record.url || '/documentos'
+    }
   };
 }
 
@@ -765,7 +1103,8 @@ function normalizeSentEvents(value) {
         return [key, {
           ruleVersion: Number(event.ruleVersion) || SERVER_ALERT_RULE_VERSION,
           sentAt: event.sentAt || event.lastSentAt || new Date(0).toISOString(),
-          lastSentAt: event.lastSentAt || event.sentAt || new Date(0).toISOString()
+          lastSentAt: event.lastSentAt || event.sentAt || new Date(0).toISOString(),
+          ...(event.alert && typeof event.alert === 'object' ? { alert: event.alert } : {})
         }];
       })
       .filter(Boolean)
@@ -817,56 +1156,44 @@ function buildSentEventKey(userId, eventId) {
   return `user:${userId}:${eventId}`;
 }
 
-function buildDocumentEventId(doc, threshold) {
-  const docId = doc.id || doc.uuid || [
-    doc.entity_id,
-    doc.document_type_id,
-    doc.label || doc.name || 'documento'
-  ].join('-');
-
-  return `document:${threshold}:${docId}:${getDocumentExpirationDate(doc) || 'sin-fecha'}`;
+function buildEmailEventKey(userId, eventId) {
+  return `email:user:${userId}:${eventId}`;
 }
 
-function buildSignatureEventId(doc) {
-  const docId = doc.id || doc.uuid || [
-    doc.entity_id,
-    doc.document_type_id,
-    doc.label || doc.name || 'documento'
-  ].join('-');
+function getPushNotificationHistoryFromMemory(userId) {
+  const prefix = `user:${userId}:`;
 
-  return `signature:${docId}`;
+  return Object.entries(sentEvents)
+    .filter(([eventKey, event]) => eventKey.startsWith(prefix) && event?.alert)
+    .map(([, event]) => normalizePushHistoryRow({
+      event_id: event.alert.id,
+      notification_group: event.alert.group,
+      threshold: event.alert.threshold,
+      title: event.alert.title,
+      body: event.alert.body,
+      doc_name: event.alert.docName,
+      expiration_date: event.alert.expirationDate,
+      days_remaining: event.alert.daysRemaining,
+      sent_at: event.sentAt,
+      last_sent_at: event.lastSentAt
+    }))
+    .sort((a, b) => Date.parse(b.lastSentAt) - Date.parse(a.lastSentAt))
+    .slice(0, 200);
 }
 
-function getDaysRemaining(dateString) {
-  if (!dateString) return null;
-
-  const expirationDate = parseControlDocDate(dateString);
-  if (!expirationDate) return null;
-
-  const currentDate = new Date();
-  currentDate.setHours(0, 0, 0, 0);
-  const diff = expirationDate.getTime() - currentDate.getTime();
-
-  return Math.ceil(diff / DAY_MS);
-}
-
-function getDocName(doc, documentTypes) {
-  const type = documentTypes.find((item) => (
-    item.id?.toString() === doc.document_type_id?.toString()
-  ));
-  const typeName = type?.name || type?.label || '';
-  const docLabel = doc.label || doc.name || '';
-  const combinedName = `${typeName} ${docLabel}`.trim();
-
-  return combinedName || 'Documento sin nombre';
-}
-
-function groupRank(group) {
-  if (group === 'expired') return 0;
-  if (group === 'critical') return 1;
-  if (group === 'warning') return 2;
-  if (group === 'signature') return 3;
-  return 4;
+function normalizePushHistoryRow(row) {
+  return {
+    eventId: String(row.event_id || '').trim(),
+    group: String(row.notification_group || '').trim(),
+    threshold: toNullableNumber(row.threshold),
+    title: String(row.title || 'Alerta documental'),
+    body: String(row.body || ''),
+    docName: String(row.doc_name || 'Documento'),
+    expirationDate: String(row.expiration_date || ''),
+    daysRemaining: toNullableNumber(row.days_remaining),
+    sentAt: toIsoDate(row.sent_at),
+    lastSentAt: toIsoDate(row.last_sent_at)
+  };
 }
 
 function toArray(value) {
@@ -880,6 +1207,12 @@ function toArray(value) {
   return Object.values(value).find((item) => Array.isArray(item)) || [];
 }
 
+function toNullableNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function normalizeText(value) {
   return (value || '').toString().trim().toLowerCase();
 }
@@ -888,48 +1221,52 @@ function normalizeRut(value) {
   return (value || '').toString().replace(/[^0-9kK]/g, '').toLowerCase();
 }
 
-function isInvalidNotificationDocName(docName) {
-  const normalizedName = (docName || '').toString().trim().toLowerCase();
-  return !normalizedName || normalizedName.includes('no hay contenido');
-}
-
 function normalizeAlertPayload(alerts) {
   if (!Array.isArray(alerts)) return [];
 
   return alerts
-    .slice(0, 20)
+    .slice(0, 200)
     .map((alert) => ({
+      id: String(alert?.id || '').trim() || `manual:${hashValue(JSON.stringify(alert || {}))}`,
       title: String(alert?.title || 'Alerta documental').trim(),
       body: String(alert?.body || '').trim(),
       docName: String(alert?.docName || 'Documento').trim(),
       severity: String(alert?.severity || '').trim(),
+      threshold: getAlertThreshold(alert),
       expirationDate: String(alert?.expirationDate || '').trim(),
       daysRemaining: Number.isFinite(Number(alert?.daysRemaining)) ? Number(alert.daysRemaining) : null
     }))
     .filter((alert) => alert.body || alert.docName);
 }
 
-function buildAlertDigestEmail({ alerts, user }) {
+function getAlertThreshold(alert) {
+  const threshold = Number(alert?.threshold);
+  if ([1, 30, 60].includes(threshold)) return threshold;
+  if (alert?.severity === 'urgent') return 1;
+  if (alert?.severity === 'critical') return 30;
+  return 60;
+}
+
+function buildAlertDigestEmail({ alerts, user, notificationGroup = '' }) {
+  const orderedAlerts = [...alerts].sort(compareEmailRecords);
   const userName = user?.nombre || user?.email || 'Usuario';
-  const expiredCount = alerts.filter((alert) => alert.severity === 'expired').length;
-  const criticalCount = alerts.filter((alert) => alert.severity === 'critical').length;
-  const warningCount = alerts.filter((alert) => alert.severity === 'warning').length;
-  const subject = `Compas Marine: ${alerts.length} alerta${alerts.length === 1 ? '' : 's'} documental${alerts.length === 1 ? '' : 'es'}`;
+  const groupLabel = getNotificationGroupLabel(notificationGroup);
+  const subject = `Compas Marine: ${orderedAlerts.length} alerta${orderedAlerts.length === 1 ? '' : 's'} documental${orderedAlerts.length === 1 ? '' : 'es'}${groupLabel ? ` - ${groupLabel}` : ''}`;
+  const summary = groupLabel
+    ? `Tienes ${orderedAlerts.length} documento${orderedAlerts.length === 1 ? '' : 's'} en la categoria "${groupLabel}".`
+    : `Tienes ${orderedAlerts.length} alerta${orderedAlerts.length === 1 ? '' : 's'} documental${orderedAlerts.length === 1 ? '' : 'es'} en Compas Marine.`;
 
   const textLines = [
     `Hola ${userName},`,
     '',
-    `Tienes ${alerts.length} alerta${alerts.length === 1 ? '' : 's'} documental${alerts.length === 1 ? '' : 'es'} en Compas Marine.`,
-    `Vencidas/bloqueadas: ${expiredCount}`,
-    `Criticas (30 dias): ${criticalCount}`,
-    `Por vencer (60 dias): ${warningCount}`,
+    summary,
     '',
-    ...alerts.map((alert, index) => `${index + 1}. ${alert.docName}: ${alert.body}`),
+    ...orderedAlerts.map((alert, index) => `${index + 1}. ${alert.docName}: ${alert.body}`),
     '',
     'Ingresa a la app de Compas Marine para revisar el detalle.'
   ];
 
-  const rows = alerts.map((alert) => `
+  const rows = orderedAlerts.map((alert) => `
     <tr>
       <td style="padding:10px;border-bottom:1px solid #e5e7eb;font-weight:700;color:#394049;">${escapeHtml(alert.docName)}</td>
       <td style="padding:10px;border-bottom:1px solid #e5e7eb;color:#4b5563;">${escapeHtml(alert.body)}</td>
@@ -940,7 +1277,7 @@ function buildAlertDigestEmail({ alerts, user }) {
   const html = `
     <div style="font-family:Arial,sans-serif;line-height:1.45;color:#394049;max-width:680px;margin:0 auto;">
       <h2 style="margin:0 0 12px;color:#921E30;">Alertas documentales</h2>
-      <p>Hola <strong>${escapeHtml(userName)}</strong>, tienes <strong>${alerts.length}</strong> alerta${alerts.length === 1 ? '' : 's'} documental${alerts.length === 1 ? '' : 'es'} en Compas Marine.</p>
+      <p>Hola <strong>${escapeHtml(userName)}</strong>, ${escapeHtml(summary)}</p>
       <table style="width:100%;border-collapse:collapse;margin:18px 0;border:1px solid #e5e7eb;">
         <thead>
           <tr style="background:#f3f4f6;text-align:left;">
@@ -964,7 +1301,15 @@ function buildAlertDigestEmail({ alerts, user }) {
 
 function getSeverityLabel(severity) {
   if (severity === 'expired') return 'Vencido';
+  if (severity === 'urgent') return 'Expira pronto';
   if (severity === 'critical') return 'Critico';
   if (severity === 'warning') return 'Por vencer';
   return 'Alerta';
+}
+
+function getNotificationGroupLabel(group) {
+  if (group === 'urgent') return 'expira en 1 día';
+  if (group === 'critical') return 'aviso de 30 días';
+  if (group === 'warning') return 'aviso de 60 días';
+  return '';
 }

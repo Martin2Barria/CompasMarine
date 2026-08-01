@@ -5,9 +5,7 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import mysql from 'mysql2/promise';
-import webpush from 'web-push';
-
-console.log("🚀 El servidor real está intentando arrancar...");
+import { buildClearSessionCookie, buildSessionCookie } from './utils/session.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const appRoot = resolve(__dirname, '..');
@@ -31,6 +29,15 @@ function loadEnvFiles(fileNames) {
   }
 }
 loadEnvFiles(['.env.server.local', '.env.server', '.env.local', '.env']);
+
+const {
+  handlePushSubscription,
+  handlePushTest,
+  handlePushNotificationHistory,
+  handleEmailAlerts,
+  handleEmailNotificationHistory,
+  startNotificationScheduler
+} = await import('./services/notifications.service.js');
 
 function parseJsonEnv(key) {
   if (!process.env[key]) return null;
@@ -100,39 +107,6 @@ function readRequestBody(req) {
 function getCookie(req, cookieName) {
   const match = (req.headers.cookie || '').split(';').map(c => c.trim()).find(c => c.startsWith(`${cookieName}=`));
   return match ? decodeURIComponent(match.slice(cookieName.length + 1)) : '';
-}
-
-function isSecureRequest(req) {
-  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
-  const hostHeader = String(req.headers['x-forwarded-host'] || req.headers.host || '').toLowerCase();
-  const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(hostHeader);
-  return process.env.NODE_ENV === 'production' || forwardedProto === 'https' || (hostHeader && !isLocalHost);
-}
-
-function buildSessionCookie(req, userId) {
-  const cookieParts = [
-    `compas_user_id=${encodeURIComponent(userId)}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax'
-  ];
-
-  if (isSecureRequest(req)) cookieParts.push('Secure');
-  return cookieParts.join('; ');
-}
-
-function buildClearSessionCookie(req) {
-  const cookieParts = [
-    'compas_user_id=',
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    'Max-Age=0',
-    'Expires=Thu, 01 Jan 1970 00:00:00 GMT'
-  ];
-
-  if (isSecureRequest(req)) cookieParts.push('Secure');
-  return cookieParts.join('; ');
 }
 
 function requireSameOriginRequest(req, res) {
@@ -462,7 +436,9 @@ async function proxyControlDocRequest(req, res, cleanPath) {
       try {
         const [rows] = await dbPool.execute('SELECT rut FROM entidades_api WHERE email = ?', [userEmail]);
         if (rows.length > 0) dbRut = (rows[0].rut || '').replace(/[^0-9kK]/g, '').toLowerCase();
-      } catch (error) {}
+      } catch {
+        dbRut = '';
+      }
 
       const allEntities = await serveWithSWR('entities', controlDocRoutes.get('/api/controldoc/entities'), credentials);
       
@@ -549,7 +525,7 @@ async function handleLogin(req, res) {
     sendJson(res, 401, { error: 'Credenciales incorrectas.' });
   } catch (error) {
     console.error('Error en login:', error.message);
-    sendJson(res, 200, { error: 'Error ignorado', ok: false });
+    sendJson(res, 500, { error: 'No se pudo iniciar sesión.', ok: false });
   }
 }
 
@@ -650,6 +626,7 @@ async function handleAuthMe(req, res) {
   try {
     const [rows] = await dbPool.execute(`SELECT u.id, u.nombre, u.email, r.nombre as rol, r.id as rol_id FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id WHERE u.id = ? AND u.activo = TRUE`, [userId]);
     if (rows.length === 0) return sendJson(res, 401, { error: 'Inactivo' });
+    res.setHeader('Set-Cookie', buildSessionCookie(req, userId));
     sendJson(res, 200, { user: rows[0] });
   } catch { sendJson(res, 500, { error: 'Error interno' }); }
 }
@@ -833,6 +810,7 @@ async function handleSetupDB(req, res) {
     await dbPool.query(`CREATE TABLE IF NOT EXISTS entidades_api (id INT AUTO_INCREMENT PRIMARY KEY, external_id VARCHAR(100) NOT NULL UNIQUE, rut VARCHAR(50), nombre VARCHAR(255), email VARCHAR(150), data_json JSON)`);
     await dbPool.query(`CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint_hash CHAR(64) PRIMARY KEY, user_id INT NULL, endpoint TEXT NOT NULL, subscription_json JSON NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, INDEX idx_push_subscriptions_user_id (user_id))`);
     await dbPool.query(`CREATE TABLE IF NOT EXISTS push_notification_events (event_hash CHAR(64) PRIMARY KEY, user_id INT NULL, event_key TEXT NOT NULL, event_id TEXT NOT NULL, rule_version INT NOT NULL DEFAULT 1, sent_at DATETIME NOT NULL, last_sent_at DATETIME NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, INDEX idx_push_notification_events_user_id (user_id))`);
+    await dbPool.query(`CREATE TABLE IF NOT EXISTS email_notification_events (event_hash CHAR(64) PRIMARY KEY, user_id INT NOT NULL, event_key VARCHAR(1024) NOT NULL, event_id VARCHAR(1024) NOT NULL, threshold TINYINT NOT NULL, provider_id VARCHAR(255) NULL, sent_at DATETIME NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_email_notification_events_user_id (user_id), INDEX idx_email_notification_events_sent_at (sent_at))`);
     await dbPool.query(`INSERT IGNORE INTO roles (nombre) VALUES ('Admin Supremo'), ('Admin Gestor'), ('Admin'), ('Usuario')`);
     
     const [adminCheck] = await dbPool.execute('SELECT id FROM usuarios WHERE email = "admin@compasmarine.cl"');
@@ -853,10 +831,7 @@ async function handleSyncUsersToDB(req, res) {
   
   try {
     const credentials = resolveControlDocCredentials(null);
-    
-    // LA MAGIA AQUÍ: Leemos desde la memoria RAM (serveWithSWR) en lugar de saturar la API
-    const allEntities = await serveWithSWR('entities', '/api/v1/abstract/entities', credentials);
-    
+    const allEntities = await fetchAllControlDocPages('/api/v1/abstract/entities', credentials);
     let insertados = 0;
     for (const entity of allEntities) {
       if (!entity.id) continue;
@@ -864,34 +839,22 @@ async function handleSyncUsersToDB(req, res) {
       const nombre = entity.name || entity.full_name || 'Sin Nombre';
       const rut = entity.identifier || entity.rut || null;
       let emailRaw = entity.custom_fields?.correo_electronico_personal || entity.email || '';
-      
-      await dbPool.execute(
-        `INSERT INTO entidades_api (external_id, nombre, rut, email, data_json) VALUES (?, ?, ?, ?, ?) 
-         ON DUPLICATE KEY UPDATE nombre=VALUES(nombre), rut=VALUES(rut), email=VALUES(email)`, 
-        [external_id, nombre, rut, emailRaw.trim().toLowerCase() || null, JSON.stringify(entity)]
-      );
+      await dbPool.execute(`INSERT INTO entidades_api (external_id, nombre, rut, email, data_json) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE nombre=VALUES(nombre), rut=VALUES(rut), email=VALUES(email)`, [external_id, nombre, rut, emailRaw.trim().toLowerCase() || null, JSON.stringify(entity)]);
       insertados++;
     }
-    
-    sendJson(res, 200, { ok: true, message: `¡Éxito! Sincronizados ${insertados} usuarios reales.` });
+    sendJson(res, 200, { ok: true, message: `Sincronizados ${insertados} usuarios.` });
   } catch (error) {
     console.error('Error sincronizando usuarios:', error.message);
-    sendJson(res, 500, { error: 'Fallo al sincronizar: ' + error.message });
+    sendJson(res, 500, { error: 'Fallo al sincronizar' });
   }
 }
+
 // --- SERVIDOR PRINCIPAL ---
 const server = createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    let cleanPath = requestUrl.pathname.replace(/\/$/, '');
-    
-    // Si la ruta viene de cPanel, transformamos el prefijo para que coincida con tus rutas /api/
-    if (cleanPath.startsWith('/backendapi')) {
-      cleanPath = cleanPath.replace('/backendapi', '/api');
-    }
-    
-    // Si la ruta queda vacía (ej: entró a /backendapi/)
-    if (!cleanPath) cleanPath = '/';
+    const cleanPath = requestUrl.pathname.replace(/\/$/, '');
+
     if (cleanPath === '/api/health') return sendJson(res, 200, { ok: true });
     if (cleanPath === '/api/auth/register') return sendJson(res, 403, { error: 'Deshabilitado' });
     if (cleanPath === '/api/auth/login') return await handleLogin(req, res);
@@ -899,10 +862,21 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/auth/verify-reset-identity') return await handleVerifyResetIdentity(req, res);
     if (cleanPath === '/api/auth/reset-password') return await handleResetPassword(req, res);
     if (cleanPath === '/api/auth/me') return await handleAuthMe(req, res);
-    
-    // API Push Notifications (Soportar ambas variantes de rutas)
-    if (cleanPath === '/api/push/subscribe' || cleanPath === '/api/notifications/subscribe') return await handlePushSubscribe(req, res);
-    if (cleanPath === '/api/push/test' || cleanPath === '/api/notifications/test') return await handleTestPush(req, res);
+
+    // API de notificaciones (push y correo Resend)
+    if (cleanPath === '/api/notifications/vapid-public-key') {
+      return sendJson(res, 200, {
+        publicKey: process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY
+          ? process.env.VAPID_PUBLIC_KEY
+          : null,
+        ready: Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY)
+      });
+    }
+    if (cleanPath === '/api/notifications/subscriptions') return await handlePushSubscription(req, res);
+    if (cleanPath === '/api/notifications/test') return await handlePushTest(req, res);
+    if (cleanPath === '/api/notifications/push-history') return await handlePushNotificationHistory(req, res);
+    if (cleanPath === '/api/notifications/email-alerts') return await handleEmailAlerts(req, res);
+    if (cleanPath === '/api/notifications/email-history') return await handleEmailNotificationHistory(req, res);
     
     // API Gestión de Usuarios
     if (cleanPath === '/api/admin/users') return await handleGetUsers(req, res);
@@ -913,29 +887,27 @@ const server = createServer(async (req, res) => {
     if (cleanPath === '/api/admin/setup-db') return await handleSetupDB(req, res);
     if (cleanPath === '/api/admin/sync-users') return await handleSyncUsersToDB(req, res);
     
-    if (cleanPath === '/api/controldoc/documents/sync') {  
+    if (cleanPath === '/api/controldoc/documents/sync') { 
         if (!requireSameOriginRequest(req, res)) return;
         if (!getCookie(req, 'compas_user_id')) return sendJson(res, 401, { error: 'No autorizado' });
-        serverCache.documents.expiresAt = 0;  
-        serverCache.entities.expiresAt = 0;  
-        serverCache.documentTypes.expiresAt = 0;  
+        serverCache.documents.expiresAt = 0; 
+        serverCache.entities.expiresAt = 0; 
+        serverCache.documentTypes.expiresAt = 0; 
         
-        runBackgroundCachePreload();  
+        runBackgroundCachePreload(); 
         
-        return sendJson(res, 200, {  
-            ok: true,  
-            message: 'Actualizando datos. Tu pantalla seguirá mostrando los últimos datos vigentes mientras descargamos las novedades.'  
-        });  
+        return sendJson(res, 200, { 
+            ok: true, 
+            message: 'Actualizando datos. Tu pantalla seguirá mostrando los últimos datos vigentes mientras descargamos las novedades.' 
+        }); 
     }
     
     if (controlDocRoutes.has(cleanPath)) {
       return await proxyControlDocRequest(req, res, cleanPath);
     }
+
     if (cleanPath.startsWith('/api/')) return sendJson(res, 404, { error: 'Ruta API no encontrada' });
-    // API Push Notifications (Soportar ambas variantes de rutas)
-    if (cleanPath === '/api/push/vapid-public-key' || cleanPath === '/api/notifications/vapid-public-key') return sendJson(res, 200, { publicKey: process.env.VAPID_PUBLIC_KEY || '' });
-    if (cleanPath === '/api/push/subscribe' || cleanPath === '/api/notifications/subscribe') return await handlePushSubscribe(req, res);
-    if (cleanPath === '/api/push/test' || cleanPath === '/api/notifications/test') return await handleTestPush(req, res);
+
     serveStaticFile(res, requestUrl);
   } catch (error) {
     console.error("Error global en el servidor:", error);
@@ -950,6 +922,7 @@ server.listen(port, host, () => {
   console.log(`🔍 [Config] Múltiples Empresas Detectadas (IDs): [ ${creds.entityTypeIds.join(', ')} ]`);
 
   setTimeout(runBackgroundCachePreload, 5000);
+  startNotificationScheduler({ getControlDocData: getNotificationControlDocData });
 });
 
 // --- TAREA FANTASMA (BACKGROUND WORKER) ---
@@ -971,85 +944,14 @@ async function runBackgroundCachePreload() {
     console.error("❌ [Background Task] Falló:", err.message);
   }
 }
-// --- NOTIFICACIONES PUSH ---
-if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-  let vapidSubject = process.env.VAPID_SUBJECT || 'mailto:admin@compasmarine.cl';
-  
-  // Forzamos el mailto: por si falta en la variable de entorno
-  if (!vapidSubject.startsWith('mailto:') && !vapidSubject.startsWith('http')) {
-    vapidSubject = 'mailto:' + vapidSubject;
-  }
 
-  webpush.setVapidDetails(
-    vapidSubject,
-    process.env.VAPID_PUBLIC_KEY,
-    process.env.VAPID_PRIVATE_KEY
-  );
-}
+async function getNotificationControlDocData() {
+  const credentials = resolveControlDocCredentials(null);
+  const [documentTypes, entities, documents] = await Promise.all([
+    serveWithSWR('documentTypes', '/api/v1/abstract/document_types', credentials),
+    serveWithSWR('entities', '/api/v1/abstract/entities', credentials),
+    serveWithSWR('documents', '/api/v1/abstract/documents', credentials)
+  ]);
 
-async function handlePushSubscribe(req, res) {
-  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
-  const cookieUserId = getCookie(req, 'compas_user_id');
-  if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado' });
-
-  let payload;
-  try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
-  
-  if (!payload.endpoint || !payload.keys) return sendJson(res, 400, { error: 'Suscripción inválida' });
-
-  const crypto = await import('node:crypto');
-  const endpointHash = crypto.createHash('sha256').update(payload.endpoint).digest('hex');
-
-  try {
-    await dbPool.execute(
-      `INSERT INTO push_subscriptions (endpoint_hash, user_id, endpoint, subscription_json, created_at, updated_at) 
-       VALUES (?, ?, ?, ?, NOW(), NOW()) 
-       ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), subscription_json=VALUES(subscription_json), updated_at=NOW()`,
-      [endpointHash, cookieUserId, payload.endpoint, JSON.stringify(payload)]
-    );
-    return sendJson(res, 200, { ok: true, message: 'Suscripción guardada correctamente.' });
-  } catch (error) {
-    console.error('Error guardando suscripción push:', error);
-    return sendJson(res, 500, { error: 'Fallo al guardar suscripción en la base de datos.' });
-  }
-}
-
-async function handleTestPush(req, res) {
-  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
-  const cookieUserId = getCookie(req, 'compas_user_id');
-  if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado' });
-
-  try {
-    const [subs] = await dbPool.execute('SELECT subscription_json FROM push_subscriptions WHERE user_id = ?', [cookieUserId]);
-    
-    if (subs.length === 0) {
-      return sendJson(res, 404, { error: 'No tienes dispositivos registrados para recibir notificaciones.' });
-    }
-
-    const payload = JSON.stringify({
-      title: '¡Prueba Exitosa!',
-      body: 'Compas Marine: Tu dispositivo está listo para recibir alertas de vencimiento.',
-      icon: '/icons/icon-192x192.png',
-      badge: '/icons/icon-72x72.png',
-      data: { url: '/notificaciones' }
-    });
-
-    let sentCount = 0;
-    for (const sub of subs) {
-      try {
-        const pushSubscription = typeof sub.subscription_json === 'string' ? JSON.parse(sub.subscription_json) : sub.subscription_json;
-        await webpush.sendNotification(pushSubscription, payload);
-        sentCount++;
-      } catch (err) {
-        console.error('Error enviando a un endpoint específico:', err.message);
-      }
-    }
-
-    if (sentCount === 0) return sendJson(res, 500, { error: 'No se pudo enviar la notificación a ninguno de tus dispositivos.' });
-    return sendJson(res, 200, { ok: true, message: `Prueba enviada a ${sentCount} dispositivo(s).` });
-
-  } catch (error) {
-    console.error('Error procesando prueba push:', error);
-    return sendJson(res, 500, { error: 'Error interno del servidor al procesar la prueba.' });
-  }
+  return { documentTypes, entities, documents };
 }

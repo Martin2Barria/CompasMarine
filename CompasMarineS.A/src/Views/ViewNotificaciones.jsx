@@ -1,29 +1,101 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { X, Hand, AlertTriangle, Clock, BellRing, Loader2, Send, Mail } from 'lucide-react';
-import { enablePushNotifications, sendEmailAlertDigest, sendTestPushNotification } from '../pwa/pushNotifications';
-import { getCachedNotificationRecords, runCachedNotificationRules } from '../pwa/notificationRules';
+import {
+  enablePushNotifications,
+  fetchEmailNotificationHistory,
+  fetchPushNotificationHistory,
+  getNotificationPermissionState,
+  getPushNotificationStatus,
+  PUSH_STATUS_CHANGED_EVENT,
+  sendTestPushNotification
+} from '../pwa/pushNotifications';
+import { getCachedNotificationRecords } from '../pwa/notificationRules';
 import { getUserSnapshotKey } from '../auth/userScope';
 
 export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) => {
   const [notificationStatus, setNotificationStatus] = useState('idle');
   const [notificationMessage, setNotificationMessage] = useState('');
   const [testStatus, setTestStatus] = useState('idle');
-  const [emailStatus, setEmailStatus] = useState('idle');
   const [alerts, setAlerts] = useState([]);
   const [showGuideNotif, setShowGuideNotif] = useState(true);
+  const [pushStatus, setPushStatus] = useState({
+    supported: getNotificationPermissionState() !== 'unsupported',
+    permission: getNotificationPermissionState(),
+    active: false
+  });
   const snapshotOwnerKey = getUserSnapshotKey(currentUser);
+  const permissionState = pushStatus.permission;
+  const canTestPush = pushStatus.active && permissionState === 'granted';
 
-  useEffect(() => {
-    let isCancelled = false;
+  const loadAlertHistory = useCallback(async () => {
+    const [records, emailEvents, pushEvents] = await Promise.all([
+      getCachedNotificationRecords(snapshotOwnerKey),
+      fetchEmailNotificationHistory().catch(() => []),
+      fetchPushNotificationHistory().catch(() => [])
+    ]);
+    const recordsById = new Map(records.map((record) => [record.id, record]));
 
-    getCachedNotificationRecords(snapshotOwnerKey).then((records) => {
-      if (!isCancelled) setAlerts(records);
+    pushEvents.forEach((event) => {
+      if (!event.eventId) return;
+      const previous = recordsById.get(event.eventId) || {};
+      recordsById.set(event.eventId, {
+        id: event.eventId,
+        type: event.group === 'signature' ? 'signature' : 'document',
+        severity: event.group,
+        group: event.group,
+        threshold: event.threshold,
+        title: event.title,
+        body: event.body,
+        docName: event.docName,
+        expirationDate: event.expirationDate,
+        daysRemaining: event.daysRemaining,
+        createdAt: event.sentAt,
+        ...previous,
+        pushSentAt: event.lastSentAt || event.sentAt
+      });
     });
 
-    return () => {
-      isCancelled = true;
-    };
+    const sentByEventId = new Map(emailEvents.map((event) => [event.eventId, event.sentAt]));
+    const mergedRecords = [...recordsById.values()]
+      .map((record) => ({
+        ...record,
+        emailSentAt: sentByEventId.get(record.id) || record.emailSentAt || null
+      }))
+      .sort((a, b) => getAlertRecordTime(b) - getAlertRecordTime(a));
+
+    setAlerts(mergedRecords);
   }, [snapshotOwnerKey]);
+
+  const refreshPushStatus = useCallback(async () => {
+    setPushStatus(await getPushNotificationStatus());
+  }, []);
+
+  useEffect(() => {
+    void loadAlertHistory();
+    void refreshPushStatus();
+
+    const handleStatusChanged = (event) => {
+      if (event.detail) setPushStatus((current) => ({ ...current, ...event.detail }));
+      else void refreshPushStatus();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void refreshPushStatus();
+    };
+    const handleServiceWorkerMessage = (event) => {
+      if (event.data?.type !== 'compas:push-received') return;
+      window.setTimeout(() => void loadAlertHistory(), 800);
+    };
+
+    window.addEventListener(PUSH_STATUS_CHANGED_EVENT, handleStatusChanged);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    navigator.serviceWorker?.addEventListener('message', handleServiceWorkerMessage);
+
+    return () => {
+      window.removeEventListener(PUSH_STATUS_CHANGED_EVENT, handleStatusChanged);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      navigator.serviceWorker?.removeEventListener('message', handleServiceWorkerMessage);
+    };
+  }, [loadAlertHistory, refreshPushStatus]);
 
   const handleEnableNotifications = async () => {
     setNotificationStatus('loading');
@@ -32,29 +104,15 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
     onLoadingProgress?.({ percent: 14 });
 
     try {
-      const mode = await enablePushNotifications();
+      await enablePushNotifications();
       onLoadingProgress?.({ percent: 72 });
-      const summary = await runCachedNotificationRules(snapshotOwnerKey);
-      const nextAlerts = await getCachedNotificationRecords(snapshotOwnerKey);
-      setAlerts(nextAlerts);
-      try {
-        if (Number(currentUser?.rol_id) === 12 && nextAlerts.length > 0) {
-          await sendEmailAlertDigest(nextAlerts);
-          setEmailStatus('sent');
-        }
-      } catch (emailError) {
-        setEmailStatus('error');
-        console.warn('No se pudo enviar correo de alertas:', emailError);
-      }
+      await Promise.all([refreshPushStatus(), loadAlertHistory()]);
       onLoadingProgress?.({ percent: 100, done: true });
       setNotificationStatus('enabled');
-      setNotificationMessage(
-        `${mode === 'push' ? 'Avisos push activos.' : 'Avisos locales activos.'} ${
-          summary.shown > 0 ? 'Se enviaron avisos pendientes.' : 'Reglas revisadas.'
-        }`
-      );
+      setNotificationMessage('Avisos push activos en este celular. Llegarán aunque la app esté cerrada o el teléfono esté bloqueado, según la configuración del sistema.');
     } catch (error) {
       onLoadingProgress?.({ active: false });
+      await refreshPushStatus();
       setNotificationStatus('error');
       setNotificationMessage(error.message);
     }
@@ -74,6 +132,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
     } catch (error) {
       onLoadingProgress?.({ active: false });
       setTestStatus('error');
+      setPushStatus((current) => ({ ...current, active: false }));
       setNotificationMessage(error.message);
     }
   };
@@ -104,7 +163,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
           >
             <div className="flex items-center gap-2 min-w-0">
               <span className="shrink-0">ℹ️</span>
-              <span className="leading-snug break-words">🔔 Activa notificaciones push para recibir alertas cuando documentos estén próximos a vencer. Prueba con una notificación de prueba. Los usuarios pueden recibir resúmenes diarios por correo.</span>
+                <span className="leading-snug break-words">🔔 Activa las notificaciones push de este celular para recibir alertas aunque la app esté cerrada. El sistema revisa 60 días cada 5 días, 30 días cada día y 1 día cada 6 horas.</span>
             </div>
             <span className="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold ml-2 shrink-0">✕</span>
           </div>
@@ -119,28 +178,24 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
             </div>
             <div className="flex-1 w-full">
               <h4 className="font-bold text-gray-800 text-sm md:text-base mb-1">Avisos de documentos</h4>
-              <p className="text-xs text-gray-400 mb-3.5 leading-normal">Mantente al día con los vencimientos importantes activando las alertas push en tu dispositivo.</p>
+              <p className="text-xs text-gray-400 mb-3.5 leading-normal">
+                Al entrar a la aplicación se intenta activar este celular. Si el navegador exige una acción manual, usa el botón de activación.
+              </p>
               
-              <div className="flex flex-col sm:flex-row gap-2 w-full">
+              <div className="w-full">
                 <button
-                  onClick={handleEnableNotifications}
-                  disabled={notificationStatus === 'loading'}
-                  className="bg-[#394049] text-white text-xs px-5 py-2.5 rounded-xl font-bold shadow-sm hover:bg-gray-700 active:bg-gray-800 transition disabled:opacity-70 flex items-center justify-center min-h-[40px] sm:min-h-0"
+                  onClick={canTestPush ? handleSendTestNotification : handleEnableNotifications}
+                  disabled={testStatus === 'loading' || notificationStatus === 'loading'}
+                  className={`w-full sm:w-auto text-white text-xs px-5 py-2.5 rounded-xl font-bold shadow-sm transition disabled:opacity-70 flex items-center justify-center min-h-[40px] sm:min-h-0 ${canTestPush ? 'bg-[#921E30] hover:bg-red-800 active:bg-red-900' : 'bg-[#394049] hover:bg-gray-700 active:bg-gray-800'}`}
                 >
-                  {notificationStatus === 'loading' && <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />}
-                  Activar avisos
-                </button>
-                <button
-                  onClick={handleSendTestNotification}
-                  disabled={testStatus === 'loading'}
-                  className="bg-[#921E30] text-white text-xs px-5 py-2.5 rounded-xl font-bold shadow-sm hover:bg-red-800 active:bg-red-900 transition disabled:opacity-70 flex items-center justify-center min-h-[40px] sm:min-h-0"
-                >
-                  {testStatus === 'loading' ? (
+                  {testStatus === 'loading' || notificationStatus === 'loading' ? (
                     <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
-                  ) : (
+                  ) : canTestPush ? (
                     <Send className="w-3.5 h-3.5 mr-2" />
+                  ) : (
+                    <BellRing className="w-3.5 h-3.5 mr-2" />
                   )}
-                  Probar push
+                  {canTestPush ? 'Probar push' : 'Activar notificaciones'}
                 </button>
               </div>
 
@@ -149,10 +204,9 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
                   {notificationMessage}
                 </p>
               )}
-              {emailStatus !== 'idle' && (
-                <p className={`text-xs mt-2.5 flex items-center gap-1.5 font-medium ${emailStatus === 'sent' ? 'text-green-700' : 'text-amber-700'}`}>
-                  <Mail className="w-3.5 h-3.5 shrink-0" />
-                  <span>{emailStatus === 'sent' ? 'Resumen enviado al correo del usuario.' : 'Correo pendiente: falta configurar proveedor de email.'}</span>
+              {permissionState === 'denied' && (
+                <p className="text-xs text-amber-700 bg-amber-50 mt-3 p-2.5 rounded-lg leading-relaxed">
+                  El navegador bloqueó el permiso. Abre los ajustes del sitio desde el ícono de candado o configuración de la barra de direcciones, permite “Notificaciones” y vuelve a pulsar este botón. Una web no puede activar un permiso bloqueado sin tu autorización.
                 </p>
               )}
             </div>
@@ -186,6 +240,16 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
                         </span>
                       </div>
                       <div className="mt-3.5 pt-1 border-t border-gray-200/40">
+                        {alert.emailSentAt && (
+                          <p className="text-[10px] text-green-700 font-semibold mb-2 flex items-center gap-1">
+                            <Mail className="w-3 h-3" /> Correo enviado por el sistema
+                          </p>
+                        )}
+                        {alert.pushSentAt && (
+                          <p className="text-[10px] text-blue-700 font-semibold mb-2 flex items-center gap-1">
+                            <BellRing className="w-3 h-3" /> Notificación enviada el {formatNotificationTimestamp(alert.pushSentAt)}
+                          </p>
+                        )}
                         <button
                           onClick={() => setView('documentos')}
                           className="w-full sm:w-auto text-center text-xs bg-[#921E30] text-white px-5 py-2 rounded-xl font-bold shadow-sm hover:bg-red-800 active:bg-red-900 transition min-h-[36px] sm:min-h-0"
@@ -226,13 +290,34 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
 
 function getSeverityLabel(severity) {
   if (severity === 'expired') return 'Vencido';
+  if (severity === 'urgent') return 'Expira pronto';
   if (severity === 'signature') return 'Firma pendiente';
   return 'Por vencer';
 }
 
 function getSeverityClass(severity) {
   if (severity === 'expired') return 'severity-pill-red border';
+  if (severity === 'urgent') return 'severity-pill-red border';
   if (severity === 'critical') return 'severity-pill-orange border';
   if (severity === 'signature') return 'severity-pill-amber border';
   return 'severity-pill-amber border';
+}
+
+function getAlertRecordTime(record) {
+  const value = record?.pushSentAt || record?.emailSentAt || record?.createdAt;
+  const parsed = Date.parse(value || '');
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatNotificationTimestamp(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'fecha no disponible';
+
+  return date.toLocaleString('es-CL', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
 }

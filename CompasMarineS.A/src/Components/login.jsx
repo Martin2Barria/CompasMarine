@@ -40,7 +40,7 @@ export const Login = ({ onLoginSuccess, onLoadingProgress }) => {
       const data = await response.json();
       onLoadingProgress?.({ percent: 88 });
 
-      if (!response.ok) {
+      if (!response.ok || !data.ok || !data.user) {
         throw new Error(data.error || 'Credenciales incorrectas. Intenta nuevamente.');
       }
 

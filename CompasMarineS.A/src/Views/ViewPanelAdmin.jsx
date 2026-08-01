@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { ShieldAlert, Database, RefreshCw, Users, ServerCrash, CheckCircle2, Search, Key, UserCog, AlertTriangle } from 'lucide-react';
 import { getApiUrl } from '../config/api'; // <-- IMPORTACIÓN CORREGIDA
 
@@ -57,7 +57,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     setSyncStatus('loading');
     setMessage('Descargando usuarios desde ControlDoc. Esto puede tomar un minuto...');
     try {
-      const res = await fetch(getApiUrl('/admin/sync-users?_t=' + Date.now()));
+      const res = await fetch(getApiUrl('/admin/sync-users'));
       const data = await res.json();
       if (res.ok) {
         setSyncStatus('success');
@@ -101,7 +101,7 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
   };
 
   // --- GESTIÓN DE USUARIOS ---
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     setLoadingUsers(true);
     setUsersError('');
     onLoadingProgress?.({ percent: 30 });
@@ -118,11 +118,11 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
     } finally {
       setLoadingUsers(false);
     }
-  };
+  }, [onLoadingProgress]);
 
   useEffect(() => {
     fetchUsers();
-  }, []);
+  }, [fetchUsers]);
 
   const handleRoleChange = async (userId, newRoleId) => {
     if (!isSupremo) return alert("Acción denegada: Solo el Admin Supremo puede cambiar roles.");
