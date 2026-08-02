@@ -30,14 +30,13 @@ function loadEnvFiles(fileNames) {
 }
 loadEnvFiles(['.env.server.local', '.env.server', '.env.local', '.env']);
 
-const {
-  handlePushSubscription,
-  handlePushTest,
-  handlePushNotificationHistory,
-  handleEmailAlerts,
-  handleEmailNotificationHistory,
-  startNotificationScheduler
-} = await import('./services/notifications.service.js');
+// --- CARGA DE VARIABLES DE ENTORNO ---
+// ... (tu lógica de loadEnvFiles) ...
+loadEnvFiles(['.env.server.local', '.env.server', '.env.local', '.env']);
+
+// NUEVO: Declaramos la variable, pero la llenaremos más tarde.
+let notificationsService = null;
+
 
 function parseJsonEnv(key) {
   if (!process.env[key]) return null;
@@ -872,11 +871,11 @@ const server = createServer(async (req, res) => {
         ready: Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY)
       });
     }
-    if (cleanPath === '/api/notifications/subscriptions') return await handlePushSubscription(req, res);
-    if (cleanPath === '/api/notifications/test') return await handlePushTest(req, res);
-    if (cleanPath === '/api/notifications/push-history') return await handlePushNotificationHistory(req, res);
-    if (cleanPath === '/api/notifications/email-alerts') return await handleEmailAlerts(req, res);
-    if (cleanPath === '/api/notifications/email-history') return await handleEmailNotificationHistory(req, res);
+if (cleanPath === '/api/notifications/subscriptions') return await notificationsService.handlePushSubscription(req, res);
+    if (cleanPath === '/api/notifications/test') return await notificationsService.handlePushTest(req, res);
+    if (cleanPath === '/api/notifications/push-history') return await notificationsService.handlePushNotificationHistory(req, res);
+    if (cleanPath === '/api/notifications/email-alerts') return await notificationsService.handleEmailAlerts(req, res);
+    if (cleanPath === '/api/notifications/email-history') return await notificationsService.handleEmailNotificationHistory(req, res);
     
     // API Gestión de Usuarios
     if (cleanPath === '/api/admin/users') return await handleGetUsers(req, res);
@@ -915,14 +914,18 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, host, () => {
+server.listen(port, host, async () => { // <-- Agregamos async aquí
   console.log(`✅ Servidor Compas Marine encendido en http://${host}:${port}`);
   
   const creds = resolveControlDocCredentials(null);
   console.log(`🔍 [Config] Múltiples Empresas Detectadas (IDs): [ ${creds.entityTypeIds.join(', ')} ]`);
 
+  // NUEVO: Cargamos el módulo de notificaciones de forma segura después de que la app ya arrancó
+  notificationsService = await import('./services/notifications.service.js');
+  
+  // Y ahora sí inicializamos el scheduler
+  notificationsService.startNotificationScheduler({ getControlDocData: getNotificationControlDocData });
   setTimeout(runBackgroundCachePreload, 5000);
-  startNotificationScheduler({ getControlDocData: getNotificationControlDocData });
 });
 
 // --- TAREA FANTASMA (BACKGROUND WORKER) ---
