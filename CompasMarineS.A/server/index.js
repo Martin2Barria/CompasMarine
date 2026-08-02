@@ -9,7 +9,8 @@ import { buildClearSessionCookie, buildSessionCookie } from './utils/session.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const appRoot = resolve(__dirname, '..');
-const distDir = resolve(appRoot, 'dist');
+// Apuntamos directamente a la carpeta public_html de tu cPanel
+const distDir = '/home/chzlmxby/public_html';
 
 // --- CARGA DE VARIABLES DE ENTORNO ---
 function loadEnvFiles(fileNames) {
@@ -853,17 +854,18 @@ const server = createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const cleanPath = requestUrl.pathname.replace(/\/$/, '');
+// --- RUTAS FLEXIBLES CON .endsWith() ---
+    
+    if (cleanPath.endsWith('/api/health')) return sendJson(res, 200, { ok: true });
+    if (cleanPath.endsWith('/api/auth/register')) return sendJson(res, 403, { error: 'Deshabilitado' });
+    if (cleanPath.endsWith('/api/auth/login')) return await handleLogin(req, res);
+    if (cleanPath.endsWith('/api/auth/logout')) return await handleLogout(req, res);
+    if (cleanPath.endsWith('/api/auth/verify-reset-identity')) return await handleVerifyResetIdentity(req, res);
+    if (cleanPath.endsWith('/api/auth/reset-password')) return await handleResetPassword(req, res);
+    if (cleanPath.endsWith('/api/auth/me')) return await handleAuthMe(req, res);
 
-    if (cleanPath === '/api/health') return sendJson(res, 200, { ok: true });
-    if (cleanPath === '/api/auth/register') return sendJson(res, 403, { error: 'Deshabilitado' });
-    if (cleanPath === '/api/auth/login') return await handleLogin(req, res);
-    if (cleanPath === '/api/auth/logout') return await handleLogout(req, res);
-    if (cleanPath === '/api/auth/verify-reset-identity') return await handleVerifyResetIdentity(req, res);
-    if (cleanPath === '/api/auth/reset-password') return await handleResetPassword(req, res);
-    if (cleanPath === '/api/auth/me') return await handleAuthMe(req, res);
-
-    // API de notificaciones (push y correo Resend)
-    if (cleanPath === '/api/notifications/vapid-public-key') {
+    // API de notificaciones
+    if (cleanPath.endsWith('/api/notifications/vapid-public-key')) {
       return sendJson(res, 200, {
         publicKey: process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY
           ? process.env.VAPID_PUBLIC_KEY
@@ -871,11 +873,13 @@ const server = createServer(async (req, res) => {
         ready: Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY)
       });
     }
-if (cleanPath === '/api/notifications/subscriptions') return await notificationsService.handlePushSubscription(req, res);
-    if (cleanPath === '/api/notifications/test') return await notificationsService.handlePushTest(req, res);
-    if (cleanPath === '/api/notifications/push-history') return await notificationsService.handlePushNotificationHistory(req, res);
-    if (cleanPath === '/api/notifications/email-alerts') return await notificationsService.handleEmailAlerts(req, res);
-    if (cleanPath === '/api/notifications/email-history') return await notificationsService.handleEmailNotificationHistory(req, res);
+    
+    // Recuerda que 'notificationsService' viene de la corrección anterior del import
+    if (cleanPath.endsWith('/api/notifications/subscriptions')) return await notificationsService.handlePushSubscription(req, res);
+    if (cleanPath.endsWith('/api/notifications/test')) return await notificationsService.handlePushTest(req, res);
+    if (cleanPath.endsWith('/api/notifications/push-history')) return await notificationsService.handlePushNotificationHistory(req, res);
+    if (cleanPath.endsWith('/api/notifications/email-alerts')) return await notificationsService.handleEmailAlerts(req, res);
+    if (cleanPath.endsWith('/api/notifications/email-history')) return await notificationsService.handleEmailNotificationHistory(req, res);
     
     // API Gestión de Usuarios
     if (cleanPath === '/api/admin/users') return await handleGetUsers(req, res);
