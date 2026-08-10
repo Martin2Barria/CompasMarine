@@ -47,13 +47,14 @@ VAPID_PRIVATE_KEY=
 
 ## Correos automáticos con Resend
 
-El backend usa el SDK oficial de Resend. Configura estas variables en el entorno del servidor:
+El backend usa el SDK oficial de Resend. Configura la API key en el entorno del servidor:
 
 ```env
 # Reemplaza re_xxxxxxxxx por tu clave real de Resend.
 RESEND_API_KEY=re_xxxxxxxxx
-RESEND_FROM=onboarding@resend.dev
 ```
+
+El remitente está fijado en el backend como `noreply@compasmarinenotificaciones.com`, correspondiente al dominio verificado en Resend.
 
 Los correos automáticos se envían únicamente a usuarios activos registrados en MySQL con rol `12` (pruebas cerradas). Como parche temporal, cada usuario recibe como máximo dos correos-resumen por revisión: uno con todos sus documentos de la categoría de 60 días y otro con todos los de la categoría de 30 días. Los avisos de 1 día no se envían por correo en este flujo. Cada documento y umbral enviado se registra en `email_notification_events` y no vuelve a enviarse para ese mismo registro.
 

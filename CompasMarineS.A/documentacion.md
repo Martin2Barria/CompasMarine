@@ -232,8 +232,9 @@ VAPID_PRIVATE_KEY=clave_privada
 # Resend
 # Reemplaza re_xxxxxxxxx por tu clave real.
 RESEND_API_KEY=re_xxxxxxxxx
-RESEND_FROM=onboarding@resend.dev
 ```
+
+El remitente de Resend está fijado en el backend como `noreply@compasmarinenotificaciones.com`, correspondiente al dominio verificado.
 
 Nota:
 

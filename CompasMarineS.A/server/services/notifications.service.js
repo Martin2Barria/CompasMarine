@@ -29,6 +29,7 @@ const SERVER_ALERT_RULE_VERSION = NOTIFICATION_RULE_VERSION;
 const DEFAULT_SCHEDULER_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS = 60 * 60 * 1000;
 const RESEND_API_KEY_PLACEHOLDER = 're_xxxxxxxxx';
+const RESEND_FROM_ADDRESS = 'noreply@compasmarinenotificaciones.com';
 const MAX_STORED_SENT_EVENTS = 4000;
 
 let schedulerTimer = null;
@@ -349,16 +350,13 @@ export function hasVapidConfig() {
 
 export function resolveResendConfig(env = process.env) {
   const apiKey = String(env.RESEND_API_KEY || RESEND_API_KEY_PLACEHOLDER).trim();
-  const from = String(env.RESEND_FROM || 'onboarding@resend.dev').trim();
-  const ready = Boolean(apiKey && apiKey !== RESEND_API_KEY_PLACEHOLDER && isValidEmail(from));
+  const ready = Boolean(apiKey && apiKey !== RESEND_API_KEY_PLACEHOLDER);
 
   return {
     ready,
     apiKey,
-    from,
     missing: [
-      ...(apiKey === RESEND_API_KEY_PLACEHOLDER ? ['RESEND_API_KEY'] : []),
-      ...(!isValidEmail(from) ? ['RESEND_FROM'] : [])
+      ...(apiKey === RESEND_API_KEY_PLACEHOLDER ? ['RESEND_API_KEY'] : [])
     ]
   };
 }
@@ -373,7 +371,7 @@ async function sendResendEmail({ to, subject, text, html, config = resolveResend
 
   const resend = new Resend(config.apiKey);
   const { data, error } = await resend.emails.send({
-    from: config.from,
+    from: RESEND_FROM_ADDRESS,
     to: recipient,
     subject,
     text,

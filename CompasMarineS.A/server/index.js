@@ -9,8 +9,7 @@ import { buildClearSessionCookie, buildSessionCookie } from './utils/session.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const appRoot = resolve(__dirname, '..');
-// Apuntamos directamente a la carpeta public_html de tu cPanel
-const distDir = '/home/chzlmxby/public_html';
+const distDir = resolve(appRoot, 'dist');
 
 // --- CARGA DE VARIABLES DE ENTORNO ---
 function loadEnvFiles(fileNames) {
@@ -31,13 +30,14 @@ function loadEnvFiles(fileNames) {
 }
 loadEnvFiles(['.env.server.local', '.env.server', '.env.local', '.env']);
 
-// --- CARGA DE VARIABLES DE ENTORNO ---
-// ... (tu lógica de loadEnvFiles) ...
-loadEnvFiles(['.env.server.local', '.env.server', '.env.local', '.env']);
-
-// NUEVO: Declaramos la variable, pero la llenaremos más tarde.
-let notificationsService = null;
-
+const {
+  handlePushSubscription,
+  handlePushTest,
+  handlePushNotificationHistory,
+  handleEmailAlerts,
+  handleEmailNotificationHistory,
+  startNotificationScheduler
+} = await import('./services/notifications.service.js');
 
 function parseJsonEnv(key) {
   if (!process.env[key]) return null;
@@ -854,18 +854,17 @@ const server = createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const cleanPath = requestUrl.pathname.replace(/\/$/, '');
-// --- RUTAS FLEXIBLES CON .endsWith() ---
-    
-    if (cleanPath.endsWith('/api/health')) return sendJson(res, 200, { ok: true });
-    if (cleanPath.endsWith('/api/auth/register')) return sendJson(res, 403, { error: 'Deshabilitado' });
-    if (cleanPath.endsWith('/api/auth/login')) return await handleLogin(req, res);
-    if (cleanPath.endsWith('/api/auth/logout')) return await handleLogout(req, res);
-    if (cleanPath.endsWith('/api/auth/verify-reset-identity')) return await handleVerifyResetIdentity(req, res);
-    if (cleanPath.endsWith('/api/auth/reset-password')) return await handleResetPassword(req, res);
-    if (cleanPath.endsWith('/api/auth/me')) return await handleAuthMe(req, res);
 
-    // API de notificaciones
-    if (cleanPath.endsWith('/api/notifications/vapid-public-key')) {
+    if (cleanPath === '/api/health') return sendJson(res, 200, { ok: true });
+    if (cleanPath === '/api/auth/register') return sendJson(res, 403, { error: 'Deshabilitado' });
+    if (cleanPath === '/api/auth/login') return await handleLogin(req, res);
+    if (cleanPath === '/api/auth/logout') return await handleLogout(req, res);
+    if (cleanPath === '/api/auth/verify-reset-identity') return await handleVerifyResetIdentity(req, res);
+    if (cleanPath === '/api/auth/reset-password') return await handleResetPassword(req, res);
+    if (cleanPath === '/api/auth/me') return await handleAuthMe(req, res);
+
+    // API de notificaciones (push y correo Resend)
+    if (cleanPath === '/api/notifications/vapid-public-key') {
       return sendJson(res, 200, {
         publicKey: process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY
           ? process.env.VAPID_PUBLIC_KEY
@@ -873,13 +872,11 @@ const server = createServer(async (req, res) => {
         ready: Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY)
       });
     }
-    
-    // Recuerda que 'notificationsService' viene de la corrección anterior del import
-    if (cleanPath.endsWith('/api/notifications/subscriptions')) return await notificationsService.handlePushSubscription(req, res);
-    if (cleanPath.endsWith('/api/notifications/test')) return await notificationsService.handlePushTest(req, res);
-    if (cleanPath.endsWith('/api/notifications/push-history')) return await notificationsService.handlePushNotificationHistory(req, res);
-    if (cleanPath.endsWith('/api/notifications/email-alerts')) return await notificationsService.handleEmailAlerts(req, res);
-    if (cleanPath.endsWith('/api/notifications/email-history')) return await notificationsService.handleEmailNotificationHistory(req, res);
+    if (cleanPath === '/api/notifications/subscriptions') return await handlePushSubscription(req, res);
+    if (cleanPath === '/api/notifications/test') return await handlePushTest(req, res);
+    if (cleanPath === '/api/notifications/push-history') return await handlePushNotificationHistory(req, res);
+    if (cleanPath === '/api/notifications/email-alerts') return await handleEmailAlerts(req, res);
+    if (cleanPath === '/api/notifications/email-history') return await handleEmailNotificationHistory(req, res);
     
     // API Gestión de Usuarios
     if (cleanPath === '/api/admin/users') return await handleGetUsers(req, res);
@@ -918,18 +915,14 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, host, async () => { // <-- Agregamos async aquí
+server.listen(port, host, () => {
   console.log(`✅ Servidor Compas Marine encendido en http://${host}:${port}`);
   
   const creds = resolveControlDocCredentials(null);
   console.log(`🔍 [Config] Múltiples Empresas Detectadas (IDs): [ ${creds.entityTypeIds.join(', ')} ]`);
 
-  // NUEVO: Cargamos el módulo de notificaciones de forma segura después de que la app ya arrancó
-  notificationsService = await import('./services/notifications.service.js');
-  
-  // Y ahora sí inicializamos el scheduler
-  notificationsService.startNotificationScheduler({ getControlDocData: getNotificationControlDocData });
   setTimeout(runBackgroundCachePreload, 5000);
+  startNotificationScheduler({ getControlDocData: getNotificationControlDocData });
 });
 
 // --- TAREA FANTASMA (BACKGROUND WORKER) ---
