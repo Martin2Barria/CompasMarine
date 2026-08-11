@@ -11,7 +11,7 @@ export function SyncProgressOverlay({ active, percent }) {
           style={{ width: `${safePercent}%` }}
         />
       </div>
-      <div className="absolute right-2 top-1 text-[10px] font-semibold text-gray-500 dark:text-gray-300 bg-white/85 dark:bg-gray-900/90 px-1.5 py-0.5 rounded shadow-sm">
+      <div className="absolute right-2 top-1 text-[10px] font-semibold text-gray-500 bg-white/85 px-1.5 py-0.5 rounded shadow-sm">
         {safePercent}%
       </div>
     </div>
