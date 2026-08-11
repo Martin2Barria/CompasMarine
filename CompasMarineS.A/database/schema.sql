@@ -209,25 +209,3 @@ CREATE TABLE sync_logs (
 
     creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-USE ompas_marine_db; -- Asegúrate de que este sea el nombre real de tu BD
-
--- 1. Insertar los Roles con sus IDs originales (según tu imagen)
-INSERT INTO roles (id, nombre, descripcion) VALUES 
-(2, 'Lector Global', 'lector global'),
-(3, 'Usuario', 'Tripulante / Usuario estándar'),
-(10, 'Admin Supremo', 'administrador con facultades de pruebas técnicas'),
-(11, 'Admin Gestor', 'puede cambiar contraseñas'),
-(12, 'UsuarioPrueba Notificaciones', 'probar notificaciones con ciertos usuarios');
-
--- 2. Crear los Usuarios Administradores
--- La contraseña para ambos será: Compas2026* (Cámbiala al entrar)
--- El hash de 'Compas2026*' es: $2a$12$7kP.L5X8hR6H6vFjL3zSre0C8/1A1m8v7yH5X1W8H4yZ5m6O7R9S2
-
-INSERT INTO usuarios (id, nombre, email, password_hash, activo) VALUES 
-(1, 'Super Administrador', 'superadmin@compasmarine.cl', '$2a$12$7kP.L5X8hR6H6vFjL3zSre0C8/1A1m8v7yH5X1W8H4yZ5m6O7R9S2', 1),
-(2, 'Admin Compas', 'admin@compasmarine.cl', '$2a$12$7kP.L5X8hR6H6vFjL3zSre0C8/1A1m8v7yH5X1W8H4yZ5m6O7R9S2', 1);
-
--- 3. Asignar el rol de 'Admin Supremo' (ID 10) a los dos usuarios
-INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES 
-(1, 10),
-(2, 10);

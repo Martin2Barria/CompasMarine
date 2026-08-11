@@ -190,14 +190,14 @@ Umbrales observados en reglas actuales:
 - Cada push confirmado se registra en `push_notification_history` y se consulta desde `/api/notifications/push-history` para respaldarlo en la vista Notificaciones.
 - La aplicación intenta activar la suscripción al iniciar una sesión. Los navegadores que exigen interacción manual dejan disponible el botón `Activar notificaciones`.
 - Email Resend: una sola vez por documento y umbral para usuarios activos con rol `12`.
-- La revisión del scheduler de email ocurre cada hora por defecto y se puede cambiar con `EMAIL_NOTIFICATION_SCHEDULER_INTERVAL_MS`. Como parche temporal, se agrupan los documentos de cada usuario en un correo para la categoría de 60 días y otro para la de 30 días. Cada documento/umbral se registra para evitar duplicados.
+- La revisión del scheduler de email ocurre cada hora por defecto y se puede cambiar con `EMAIL_NOTIFICATION_SCHEDULER_INTERVAL_MS`. Como parche temporal, se agrupan los documentos de cada usuario en un correo para la categoría de 60 días, otro para la de 30 días y otro para los documentos vencidos. Cada documento/umbral se registra para evitar duplicados.
 
 ### 7.3 Correo Resend
 
 - Implementado con el SDK oficial `resend`, ejecutado únicamente en el backend.
 - La API key se configura con `RESEND_API_KEY`; no debe exponerse en el frontend.
 - El envío automático está restringido a usuarios activos con rol `12`.
-- Umbrales de email del parche temporal: 60 y 30 días; cada categoría genera un solo resumen por usuario y cada documento/umbral se envía una sola vez.
+- Umbrales de email del parche temporal: 60 días, 30 días y vencido (`0`); cada categoría genera un solo resumen por usuario y cada documento/umbral se envía una sola vez.
 - Los envíos quedan registrados en `email_notification_events` y se consultan desde `/api/notifications/email-history`.
 
 ## 8. Variables de Entorno
