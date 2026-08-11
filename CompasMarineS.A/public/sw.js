@@ -3,6 +3,7 @@ const APP_SHELL = [
   '/',
   '/index.html',
   '/manifest.webmanifest',
+  '/favicon.svg',
   '/pwa-icon.svg',
   '/pwa-maskable-icon.svg'
 ];

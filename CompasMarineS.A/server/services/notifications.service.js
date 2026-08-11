@@ -29,12 +29,14 @@ const SERVER_ALERT_RULE_VERSION = NOTIFICATION_RULE_VERSION;
 const DEFAULT_SCHEDULER_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS = 60 * 60 * 1000;
 const RESEND_API_KEY_PLACEHOLDER = 're_xxxxxxxxx';
+const RESEND_FROM_ADDRESS = 'noreply@compasmarinenotificaciones.com';
 const MAX_STORED_SENT_EVENTS = 4000;
 
 let schedulerTimer = null;
 let emailSchedulerTimer = null;
 let schedulerRunning = false;
 let emailSchedulerRunning = false;
+let emailSchedulerLastRun = null;
 let notificationPersistencePromise = null;
 let notificationPersistenceReady = false;
 
@@ -349,18 +351,34 @@ export function hasVapidConfig() {
 
 export function resolveResendConfig(env = process.env) {
   const apiKey = String(env.RESEND_API_KEY || RESEND_API_KEY_PLACEHOLDER).trim();
-  const from = String(env.RESEND_FROM || 'onboarding@resend.dev').trim();
-  const ready = Boolean(apiKey && apiKey !== RESEND_API_KEY_PLACEHOLDER && isValidEmail(from));
+  const ready = Boolean(apiKey && apiKey !== RESEND_API_KEY_PLACEHOLDER);
 
   return {
     ready,
     apiKey,
-    from,
     missing: [
-      ...(apiKey === RESEND_API_KEY_PLACEHOLDER ? ['RESEND_API_KEY'] : []),
-      ...(!isValidEmail(from) ? ['RESEND_FROM'] : [])
+      ...(apiKey === RESEND_API_KEY_PLACEHOLDER ? ['RESEND_API_KEY'] : [])
     ]
   };
+}
+
+export function getEmailSchedulerStatus() {
+  const config = resolveResendConfig();
+  return {
+    ready: config.ready,
+    from: RESEND_FROM_ADDRESS,
+    started: Boolean(emailSchedulerTimer),
+    running: emailSchedulerRunning,
+    lastRun: emailSchedulerLastRun
+  };
+}
+
+function recordEmailSchedulerRun(result) {
+  emailSchedulerLastRun = {
+    ...result,
+    checkedAt: new Date().toISOString()
+  };
+  return result;
 }
 
 async function sendResendEmail({ to, subject, text, html, config = resolveResendConfig() }) {
@@ -373,7 +391,7 @@ async function sendResendEmail({ to, subject, text, html, config = resolveResend
 
   const resend = new Resend(config.apiKey);
   const { data, error } = await resend.emails.send({
-    from: config.from,
+    from: RESEND_FROM_ADDRESS,
     to: recipient,
     subject,
     text,
@@ -512,10 +530,13 @@ export function startNotificationScheduler({ getControlDocData, intervalMs } = {
       process.env.EMAIL_NOTIFICATION_SCHEDULER_INTERVAL_MS,
       DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS
     );
-    const runEmail = () => {
-      runScheduledEmailNotifications({ getControlDocData }).catch((error) => {
+    const runEmail = async () => {
+      try {
+        const result = await runScheduledEmailNotifications({ getControlDocData });
+        console.log('[Email Scheduler] Revisión completada:', JSON.stringify(result));
+      } catch (error) {
         console.error('[Email Scheduler] Error ejecutando correos automaticos:', error.message);
-      });
+      }
     };
 
     const initialEmailTimer = setTimeout(runEmail, initialDelayMs);
@@ -595,15 +616,21 @@ export async function runScheduledPushNotifications({ getControlDocData } = {}) 
 
 export async function runScheduledEmailNotifications({ getControlDocData } = {}) {
   if (emailSchedulerRunning) return { skipped: true, reason: 'already-running' };
-  if (!resolveResendConfig().ready) return { skipped: true, reason: 'resend-missing' };
-  if (typeof getControlDocData !== 'function') return { skipped: true, reason: 'missing-control-doc-provider' };
+  if (!resolveResendConfig().ready) {
+    return recordEmailSchedulerRun({ skipped: true, reason: 'resend-missing' });
+  }
+  if (typeof getControlDocData !== 'function') {
+    return recordEmailSchedulerRun({ skipped: true, reason: 'missing-control-doc-provider' });
+  }
 
   await tryEnsureNotificationPersistence();
   emailSchedulerRunning = true;
 
   try {
     const users = await getEmailNotificationUsers();
-    if (users.length === 0) return { checked: true, sent: 0, users: 0 };
+    if (users.length === 0) {
+      return recordEmailSchedulerRun({ checked: true, sent: 0, failed: 0, users: 0, reason: 'no-eligible-users' });
+    }
 
     const controlDocData = await getControlDocData();
     const documents = toArray(controlDocData?.documents);
@@ -612,16 +639,30 @@ export async function runScheduledEmailNotifications({ getControlDocData } = {})
     const config = resolveResendConfig();
     const now = Date.now();
     let sent = 0;
+    let failed = 0;
+    let invalidEmails = 0;
+    let unmatchedUsers = 0;
+    let pendingRecords = 0;
+    let queuedEmails = 0;
 
     for (const user of users) {
-      if (!isValidEmail(user.email)) continue;
+      if (!isValidEmail(user.email)) {
+        invalidEmails += 1;
+        continue;
+      }
 
       const scopedDocuments = getDocumentsForUser({ documents, entities, user });
+      if (scopedDocuments.length === 0) {
+        unmatchedUsers += 1;
+        continue;
+      }
       const sentEventIds = await getSentEmailEventIds(user.id);
       const dueRecords = buildScheduledNotificationRecords({ documents: scopedDocuments, documentTypes })
         .filter((record) => !sentEventIds.has(record.id))
         .sort(compareEmailRecords);
       const emailGroups = groupEmailRecordsByExpirationThreshold(dueRecords);
+      pendingRecords += emailGroups.reduce((total, group) => total + group.records.length, 0);
+      queuedEmails += emailGroups.length;
 
       for (const emailGroup of emailGroups) {
         const alerts = emailGroup.records.map((record) => ({
@@ -657,6 +698,7 @@ export async function runScheduledEmailNotifications({ getControlDocData } = {})
           });
           sent += 1;
         } catch (error) {
+          failed += 1;
           console.error(
             `[Email Scheduler] No se pudo enviar el aviso de ${emailGroup.threshold} dias a ${user.email}:`,
             error.message
@@ -665,7 +707,21 @@ export async function runScheduledEmailNotifications({ getControlDocData } = {})
       }
     }
 
-    return { checked: true, sent, users: users.length };
+    return recordEmailSchedulerRun({
+      checked: true,
+      sent,
+      failed,
+      users: users.length,
+      invalidEmails,
+      unmatchedUsers,
+      pendingRecords,
+      queuedEmails,
+      documents: documents.length,
+      entities: entities.length
+    });
+  } catch (error) {
+    recordEmailSchedulerRun({ checked: false, sent: 0, failed: 1, reason: 'run-error' });
+    throw error;
   } finally {
     emailSchedulerRunning = false;
   }

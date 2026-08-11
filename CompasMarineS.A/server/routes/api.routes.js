@@ -10,6 +10,7 @@ import {
   handlePushNotificationHistory,
   handleEmailAlerts,
   handleEmailNotificationHistory,
+  getEmailSchedulerStatus,
   hasVapidConfig
 } from '../services/notifications.service.js';
 
@@ -17,7 +18,13 @@ export async function apiRouter(req, res, requestUrl) {
   const cleanPath = requestUrl.pathname.replace(/\/$/, ''); // Limpiamos slashes finales
 
   // 1. Health Check
-  if (cleanPath === '/api/health') return sendJson(res, 200, { ok: true, status: 'blindado' });
+  if (cleanPath === '/api/health') {
+    return sendJson(res, 200, {
+      ok: true,
+      status: 'blindado',
+      email: getEmailSchedulerStatus()
+    });
+  }
 
   // 2. Sub-Enrutadores (Delegan la responsabilidad)
   if (cleanPath.startsWith('/api/auth')) {

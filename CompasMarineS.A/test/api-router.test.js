@@ -14,7 +14,10 @@ test('apiRouter conserva health check y fallback 404', async () => {
   const healthResponse = response();
   await apiRouter({ method: 'GET', headers: {} }, healthResponse, new URL('http://localhost/api/health'));
   assert.equal(healthResponse.status, 200);
-  assert.equal(JSON.parse(healthResponse.body).ok, true);
+  const healthPayload = JSON.parse(healthResponse.body);
+  assert.equal(healthPayload.ok, true);
+  assert.equal(healthPayload.email.from, 'noreply@compasmarinenotificaciones.com');
+  assert.equal(typeof healthPayload.email.ready, 'boolean');
 
   const notFoundResponse = response();
   await apiRouter({ method: 'GET', headers: {} }, notFoundResponse, new URL('http://localhost/api/not-found'));
