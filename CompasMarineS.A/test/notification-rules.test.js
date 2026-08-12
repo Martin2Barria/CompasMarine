@@ -84,20 +84,23 @@ test('ordena un correo-resumen por umbral y luego por días restantes', () => {
   ]);
 });
 
-test('agrupa los correos por usuario en un lote de 60 dias y otro de 30 dias', () => {
+test('agrupa los correos por usuario en lotes de 60 dias, 30 dias y vencidos', () => {
   const records = [
     { id: '30-a', threshold: 30, group: 'critical', daysRemaining: 12 },
     { id: '1-a', threshold: 1, group: 'urgent', daysRemaining: 1 },
+    { id: 'expired-b', threshold: 0, group: 'expired', daysRemaining: -8 },
     { id: '60-b', threshold: 60, group: 'warning', daysRemaining: 55 },
     { id: '60-a', threshold: 60, group: 'warning', daysRemaining: 40 },
-    { id: '30-b', threshold: 30, group: 'critical', daysRemaining: 25 }
+    { id: '30-b', threshold: 30, group: 'critical', daysRemaining: 25 },
+    { id: 'expired-a', threshold: 0, group: 'expired', daysRemaining: -2 }
   ];
 
   const groups = groupEmailRecordsByExpirationThreshold(records);
 
-  assert.deepEqual(groups.map((group) => group.threshold), [60, 30]);
+  assert.deepEqual(groups.map((group) => group.threshold), [60, 30, 0]);
   assert.deepEqual(groups[0].records.map((record) => record.id), ['60-a', '60-b']);
   assert.deepEqual(groups[1].records.map((record) => record.id), ['30-a', '30-b']);
+  assert.deepEqual(groups[2].records.map((record) => record.id), ['expired-b', 'expired-a']);
   assert.equal(groups.flatMap((group) => group.records).some((record) => record.threshold === 1), false);
 });
 

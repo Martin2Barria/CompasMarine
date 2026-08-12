@@ -58,7 +58,7 @@ El remitente está fijado en el backend como `noreply@compasmarinenotificaciones
 
 El estado del scheduler se puede comprobar en `GET /api/health`, dentro de la propiedad `email`. La respuesta indica si Resend está configurado, si el scheduler arrancó y el resultado de su última revisión, sin exponer la API key. Un administrador también puede forzar una revisión inmediata mediante `POST /api/admin/notifications/email-run`.
 
-Los correos automáticos se envían únicamente a usuarios activos registrados en MySQL con rol `12` (pruebas cerradas). Como parche temporal, cada usuario recibe como máximo dos correos-resumen por revisión: uno con todos sus documentos de la categoría de 60 días y otro con todos los de la categoría de 30 días. Los avisos de 1 día no se envían por correo en este flujo. Cada documento y umbral enviado se registra en `email_notification_events` y no vuelve a enviarse para ese mismo registro.
+Los correos automáticos se envían únicamente a usuarios activos registrados en MySQL con rol `12` (pruebas cerradas). Como parche temporal, cada usuario recibe como máximo tres correos-resumen por revisión: uno con todos sus documentos de la categoría de 60 días, otro con los de 30 días y otro con los documentos ya vencidos. Los avisos de 1 día no se envían por correo en este flujo. Cada documento y umbral enviado se registra en `email_notification_events` y no vuelve a enviarse para ese mismo registro.
 
 Las notificaciones push mantienen sus propios intervalos: 60 días cada 5 días, 30 días cada día y 1 día o menos cada 6 horas.
 

@@ -737,9 +737,9 @@ export async function handleEmailAlerts(req, res) {
   try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'Invalid JSON body' }); }
 
   const alerts = normalizeAlertPayload(payload.alerts)
-    .filter((alert) => [60, 30].includes(alert.threshold));
+    .filter((alert) => [60, 30, 0].includes(alert.threshold));
   if (alerts.length === 0) {
-    return sendJson(res, 400, { error: 'No hay avisos de expiracion de 60 o 30 dias para enviar.' });
+    return sendJson(res, 400, { error: 'No hay avisos de expiracion de 60, 30 dias o documentos vencidos para enviar.' });
   }
 
   const userId = getCookie(req, 'compas_user_id');
@@ -1296,8 +1296,12 @@ function normalizeAlertPayload(alerts) {
 }
 
 function getAlertThreshold(alert) {
-  const threshold = Number(alert?.threshold);
-  if ([1, 30, 60].includes(threshold)) return threshold;
+  const rawThreshold = alert?.threshold;
+  const threshold = rawThreshold === null || rawThreshold === undefined || rawThreshold === ''
+    ? Number.NaN
+    : Number(rawThreshold);
+  if ([0, 1, 30, 60].includes(threshold)) return threshold;
+  if (alert?.severity === 'expired') return 0;
   if (alert?.severity === 'urgent') return 1;
   if (alert?.severity === 'critical') return 30;
   return 60;
@@ -1364,6 +1368,7 @@ function getSeverityLabel(severity) {
 }
 
 function getNotificationGroupLabel(group) {
+  if (group === 'expired') return 'documentos vencidos';
   if (group === 'urgent') return 'expira en 1 día';
   if (group === 'critical') return 'aviso de 30 días';
   if (group === 'warning') return 'aviso de 60 días';

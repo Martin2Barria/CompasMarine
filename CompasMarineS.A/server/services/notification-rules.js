@@ -13,8 +13,8 @@ export const NOTIFICATION_RULES = Object.freeze({
   urgent: { threshold: 1, cooldownMs: 6 * 60 * 60 * 1000 }
 });
 
-const EMAIL_NOTIFICATION_ORDER = ['warning', 'critical', 'urgent'];
-export const EMAIL_EXPIRATION_THRESHOLDS = Object.freeze([60, 30]);
+const EMAIL_NOTIFICATION_ORDER = ['warning', 'critical', 'expired', 'urgent'];
+export const EMAIL_EXPIRATION_THRESHOLDS = Object.freeze([60, 30, 0]);
 
 export function buildScheduledNotificationRecords({ documents = [], documentTypes = [] }) {
   const records = [];
@@ -140,7 +140,7 @@ export function groupEmailRecordsByExpirationThreshold(records = []) {
   return EMAIL_EXPIRATION_THRESHOLDS
     .map((threshold) => ({
       threshold,
-      group: threshold === 60 ? 'warning' : 'critical',
+      group: threshold === 60 ? 'warning' : threshold === 30 ? 'critical' : 'expired',
       records: groupedRecords.get(threshold)
     }))
     .filter((item) => item.records.length > 0);
