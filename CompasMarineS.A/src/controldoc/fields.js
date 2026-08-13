@@ -1,4 +1,5 @@
 const normalizeValue = (value) => (value || '').toString().trim().toLowerCase();
+const DAY_MS = 24 * 60 * 60 * 1000;
 const normalizeFieldKey = (value) =>
   (value || '')
     .toString()
@@ -92,6 +93,34 @@ const DOCUMENT_EXPIRATION_DATE_KEYS = [
   'vencimiento',
   'vigencia_hasta',
   'vigencia hasta'
+];
+
+const DOCUMENT_ISSUE_DATE_KEYS = [
+  'issued_at',
+  'issuedAt',
+  'issued_on',
+  'issuedOn',
+  'issue_date',
+  'issueDate',
+  'date_of_issue',
+  'dateOfIssue',
+  'emission_date',
+  'emissionDate',
+  'fecha_emision',
+  'fecha emisión',
+  'fecha_de_emision',
+  'fecha de emisión',
+  'fecha_expedicion',
+  'fecha expedición',
+  'fecha_de_expedicion',
+  'fecha de expedición'
+];
+
+const DOCUMENT_REGISTRATION_DATE_KEYS = [
+  'created_at',
+  'createdAt',
+  'created_on',
+  'createdOn'
 ];
 
 const DOCUMENT_STATUS_KEYS = [
@@ -207,6 +236,14 @@ export function getDocumentExpirationDate(doc) {
   return getNestedFieldValue(doc, DOCUMENT_EXPIRATION_DATE_KEYS);
 }
 
+export function getDocumentIssueDate(doc) {
+  return getNestedFieldValue(doc, DOCUMENT_ISSUE_DATE_KEYS);
+}
+
+export function getDocumentRegistrationDate(doc) {
+  return getNestedFieldValue(doc, DOCUMENT_REGISTRATION_DATE_KEYS);
+}
+
 export function getDocumentStatusText(doc) {
   return normalizeValue(getNestedFieldValue(doc, DOCUMENT_STATUS_KEYS));
 }
@@ -272,23 +309,69 @@ export function parseControlDocDate(value) {
   if (localDate) {
     const [, day, month, rawYear] = localDate;
     const year = rawYear.length === 2 ? `20${rawYear}` : rawYear;
-    const parsed = new Date(Number(year), Number(month) - 1, Number(day));
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
+    return buildCalendarDate(Number(year), Number(month), Number(day));
   }
 
   const isoDate = rawValue.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:\s|T|$)/);
   if (isoDate) {
     const [, year, month, day] = isoDate;
-    const parsed = new Date(Number(year), Number(month) - 1, Number(day));
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
+    return buildCalendarDate(Number(year), Number(month), Number(day));
   }
 
   const parsed = new Date(rawValue);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+export function getCalendarDaysRemaining(value, now = new Date()) {
+  const expirationDate = parseControlDocDate(value);
+  const currentDate = now instanceof Date ? now : new Date(now);
+
+  if (!expirationDate || Number.isNaN(currentDate.getTime())) return null;
+
+  const expirationDay = Date.UTC(
+    expirationDate.getFullYear(),
+    expirationDate.getMonth(),
+    expirationDate.getDate()
+  );
+  const currentDay = Date.UTC(
+    currentDate.getFullYear(),
+    currentDate.getMonth(),
+    currentDate.getDate()
+  );
+
+  return Math.round((expirationDay - currentDay) / DAY_MS);
+}
+
+function buildCalendarDate(year, month, day) {
+  const parsed = new Date(year, month - 1, day);
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+  return parsed;
+}
+
 export function isBlockedDocument(doc) {
   return hasBlockedDocumentStatus(doc);
+}
+
+export function compareExpirationUrgency(a, b) {
+  const rawDaysA = a?.daysRemaining;
+  const rawDaysB = b?.daysRemaining;
+  const daysA = rawDaysA === null || rawDaysA === undefined || rawDaysA === '' ? Number.NaN : Number(rawDaysA);
+  const daysB = rawDaysB === null || rawDaysB === undefined || rawDaysB === '' ? Number.NaN : Number(rawDaysB);
+  const safeDaysA = Number.isFinite(daysA) ? daysA : Number.MAX_SAFE_INTEGER;
+  const safeDaysB = Number.isFinite(daysB) ? daysB : Number.MAX_SAFE_INTEGER;
+
+  return (safeDaysA - safeDaysB)
+    || String(a?.displayName || a?.name || '').localeCompare(
+      String(b?.displayName || b?.name || ''),
+      'es'
+    );
 }
 
 export function hasPendingSignature(doc) {

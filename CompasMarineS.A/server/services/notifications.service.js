@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import webPush from 'web-push';
 import { Resend } from 'resend';
 import { dbPool } from '../config/db.js';
-import { sendJson, readRequestBody, getCookie, requireJsonRequest } from '../utils/http.js';
+import { sendJson, readRequestBody, requireJsonRequest } from '../utils/http.js';
+import { getSessionUserId } from '../utils/session.js';
 import { requireSameOriginRequest, consumeRateLimit } from '../utils/security.js';
 import { escapeHtml, isValidEmail } from '../utils/email.js';
 import {
@@ -29,7 +30,7 @@ const SERVER_ALERT_RULE_VERSION = NOTIFICATION_RULE_VERSION;
 const DEFAULT_SCHEDULER_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS = 60 * 60 * 1000;
 const RESEND_API_KEY_PLACEHOLDER = 're_xxxxxxxxx';
-const RESEND_FROM_ADDRESS = 'noreply@compasmarinenotificaciones.com';
+const RESEND_FROM_ADDRESS = 'Compas Marine Notificaciones <notificaciones@compasmarinenotificaciones.com>';
 const MAX_STORED_SENT_EVENTS = 4000;
 
 let schedulerTimer = null;
@@ -131,6 +132,7 @@ async function initializeNotificationPersistence() {
   await dbPool.query(`
     CREATE TABLE IF NOT EXISTS push_notification_history (
       event_hash CHAR(64) PRIMARY KEY,
+      history_id VARCHAR(96) NOT NULL,
       user_id INT NOT NULL,
       event_id VARCHAR(1024) NOT NULL,
       notification_group VARCHAR(32) NOT NULL,
@@ -156,6 +158,12 @@ async function initializeNotificationPersistence() {
       event_key VARCHAR(1024) NOT NULL,
       event_id VARCHAR(1024) NOT NULL,
       threshold TINYINT NOT NULL,
+      notification_group VARCHAR(32) NOT NULL,
+      title VARCHAR(255) NOT NULL,
+      body TEXT NOT NULL,
+      doc_name VARCHAR(255) NOT NULL,
+      expiration_date VARCHAR(100) NULL,
+      days_remaining INT NULL,
       provider_id VARCHAR(255) NULL,
       sent_at DATETIME NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -164,8 +172,82 @@ async function initializeNotificationPersistence() {
     )
   `);
 
+  await ensureNotificationPersistenceColumns();
+
   await hydrateNotificationsFromDatabase();
   await migrateJsonNotificationStoreToDatabase();
+}
+
+async function ensureNotificationPersistenceColumns() {
+  await ensureTableColumn(
+    'push_notification_history',
+    'history_id',
+    'VARCHAR(96) NULL AFTER event_hash'
+  );
+
+  const emailColumns = [
+    ['notification_group', 'VARCHAR(32) NULL AFTER threshold'],
+    ['title', 'VARCHAR(255) NULL AFTER notification_group'],
+    ['body', 'TEXT NULL AFTER title'],
+    ['doc_name', 'VARCHAR(255) NULL AFTER body'],
+    ['expiration_date', 'VARCHAR(100) NULL AFTER doc_name'],
+    ['days_remaining', 'INT NULL AFTER expiration_date']
+  ];
+
+  for (const [columnName, definition] of emailColumns) {
+    await ensureTableColumn('email_notification_events', columnName, definition);
+  }
+
+  await dbPool.query(`
+    UPDATE push_notification_history
+    SET history_id = CONCAT('push:legacy:', event_hash)
+    WHERE history_id IS NULL OR history_id = ''
+  `);
+
+  await dbPool.query(`
+    UPDATE email_notification_events
+    SET
+      notification_group = COALESCE(NULLIF(notification_group, ''), CASE threshold
+        WHEN 60 THEN 'warning'
+        WHEN 30 THEN 'critical'
+        WHEN 1 THEN 'urgent'
+        WHEN 0 THEN 'expired'
+        ELSE 'warning'
+      END),
+      title = COALESCE(NULLIF(title, ''), CASE threshold
+        WHEN 60 THEN 'Documento por vencer'
+        WHEN 30 THEN 'Documento crítico'
+        WHEN 1 THEN 'Documento por expirar'
+        WHEN 0 THEN 'Documento vencido'
+        ELSE 'Alerta documental'
+      END),
+      body = COALESCE(body, ''),
+      doc_name = COALESCE(NULLIF(doc_name, ''), 'Documento')
+    WHERE notification_group IS NULL OR notification_group = ''
+       OR title IS NULL OR title = ''
+       OR body IS NULL
+       OR doc_name IS NULL OR doc_name = ''
+  `);
+}
+
+async function ensureTableColumn(tableName, columnName, definition) {
+  const [rows] = await dbPool.execute(`
+    SELECT 1
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?
+    LIMIT 1
+  `, [tableName, columnName]);
+
+  if (rows.length > 0) return;
+  if (!/^[a-z0-9_]+$/i.test(tableName) || !/^[a-z0-9_]+$/i.test(columnName)) {
+    throw new Error('Identificador de migración inválido.');
+  }
+
+  try {
+    await dbPool.query(`ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` ${definition}`);
+  } catch (error) {
+    if (error?.code !== 'ER_DUP_FIELDNAME') throw error;
+  }
 }
 
 async function hydrateNotificationsFromDatabase() {
@@ -216,17 +298,33 @@ async function migrateJsonNotificationStoreToDatabase() {
   await Promise.all(events.map(([eventKey, event]) => persistPushNotificationHistory(eventKey, event)));
 }
 
-async function persistNotificationState({ removedEndpoints = [] } = {}) {
+async function persistNotificationState({ removedEndpoints = [], historyOccurrences = [] } = {}) {
   const databaseReady = await tryEnsureNotificationPersistence();
 
   if (databaseReady) {
+    const sentEventEntries = mergeSentEventEntries(
+      Object.entries(sentEvents),
+      historyOccurrences
+    );
+    const historyEntries = historyOccurrences.length > 0
+      ? historyOccurrences
+      : sentEventEntries;
+
     await Promise.all([...pushSubscriptions.values()].map((record) => persistPushSubscription(record)));
-    await Promise.all(Object.entries(sentEvents).map(([eventKey, event]) => persistSentEvent(eventKey, event)));
-    await Promise.all(Object.entries(sentEvents).map(([eventKey, event]) => persistPushNotificationHistory(eventKey, event)));
+    await Promise.all(sentEventEntries.map(([eventKey, event]) => persistSentEvent(eventKey, event)));
+    await Promise.all(historyEntries.map(([eventKey, event]) => persistPushNotificationHistory(eventKey, event)));
     if (removedEndpoints.length > 0) await deletePushSubscriptions(removedEndpoints);
   }
 
   saveNotificationsStore();
+}
+
+function mergeSentEventEntries(currentEntries, occurrenceEntries) {
+  const merged = new Map(currentEntries);
+  occurrenceEntries.forEach(([eventKey, event]) => {
+    if (eventKey && event) merged.set(eventKey, event);
+  });
+  return [...merged.entries()];
 }
 
 async function persistPushSubscription(record) {
@@ -275,23 +373,17 @@ async function persistPushNotificationHistory(eventKey, event) {
   const alert = event?.alert;
   const userId = extractUserIdFromEventKey(eventKey);
   if (!alert || !userId || !alert.id || !alert.group) return;
+  const occurredAt = event.lastSentAt || event.sentAt;
+  const historyId = buildPushHistoryId(eventKey, occurredAt);
 
   await dbPool.execute(`
-    INSERT INTO push_notification_history
-      (event_hash, user_id, event_id, notification_group, threshold, title, body, doc_name,
+    INSERT IGNORE INTO push_notification_history
+      (event_hash, history_id, user_id, event_id, notification_group, threshold, title, body, doc_name,
        expiration_date, days_remaining, sent_at, last_sent_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON DUPLICATE KEY UPDATE
-      notification_group = VALUES(notification_group),
-      threshold = VALUES(threshold),
-      title = VALUES(title),
-      body = VALUES(body),
-      doc_name = VALUES(doc_name),
-      expiration_date = VALUES(expiration_date),
-      days_remaining = VALUES(days_remaining),
-      last_sent_at = VALUES(last_sent_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
-    hashValue(eventKey),
+    hashValue(historyId),
+    historyId,
     userId,
     String(alert.id).slice(0, 1024),
     String(alert.group).slice(0, 32),
@@ -301,9 +393,15 @@ async function persistPushNotificationHistory(eventKey, event) {
     String(alert.docName || 'Documento').slice(0, 255),
     String(alert.expirationDate || '').slice(0, 100) || null,
     toNullableNumber(alert.daysRemaining),
-    toMysqlDateTime(event.sentAt || event.lastSentAt),
-    toMysqlDateTime(event.lastSentAt || event.sentAt)
+    toMysqlDateTime(occurredAt),
+    toMysqlDateTime(occurredAt)
   ]);
+}
+
+export function buildPushHistoryId(eventKey, occurredAt) {
+  const normalizedEventKey = String(eventKey || '').trim();
+  const normalizedOccurredAt = toIsoDate(occurredAt);
+  return `push:${hashValue(`${normalizedEventKey}|${normalizedOccurredAt}`)}`;
 }
 
 async function getSentEmailEventIds(userId) {
@@ -318,20 +416,48 @@ async function markEmailRecordsAsSent({ userId, records, providerId, sentAt }) {
   const sentDate = toMysqlDateTime(sentAt);
   await Promise.all(records.map((record) => {
     const eventKey = buildEmailEventKey(userId, record.id);
+    const threshold = Number(record.threshold);
+    const notificationGroup = normalizeNotificationGroup(record, threshold);
     return dbPool.execute(`
       INSERT IGNORE INTO email_notification_events
-        (event_hash, user_id, event_key, event_id, threshold, provider_id, sent_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (event_hash, user_id, event_key, event_id, threshold, notification_group, title, body,
+         doc_name, expiration_date, days_remaining, provider_id, sent_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       hashValue(eventKey),
       userId,
       eventKey,
       record.id,
-      Number(record.threshold),
+      threshold,
+      notificationGroup,
+      String(record.title || getNotificationTitle(notificationGroup)).slice(0, 255),
+      String(record.body || ''),
+      String(record.docName || 'Documento').slice(0, 255),
+      String(record.expirationDate || '').slice(0, 100) || null,
+      toNullableNumber(record.daysRemaining),
       providerId || null,
       sentDate
     ]);
   }));
+}
+
+function normalizeNotificationGroup(record, threshold) {
+  const group = String(record?.group || record?.severity || '').trim().toLowerCase();
+  if (['warning', 'critical', 'urgent', 'expired', 'signature'].includes(group)) return group;
+  if (threshold === 60) return 'warning';
+  if (threshold === 30) return 'critical';
+  if (threshold === 1) return 'urgent';
+  if (threshold === 0) return 'expired';
+  return 'warning';
+}
+
+function getNotificationTitle(group) {
+  if (group === 'expired') return 'Documento vencido';
+  if (group === 'urgent') return 'Documento por expirar';
+  if (group === 'critical') return 'Documento crítico';
+  if (group === 'warning') return 'Documento por vencer';
+  if (group === 'signature') return 'Firma pendiente';
+  return 'Alerta documental';
 }
 
 async function deletePushSubscriptions(endpoints) {
@@ -381,7 +507,7 @@ function recordEmailSchedulerRun(result) {
   return result;
 }
 
-async function sendResendEmail({ to, subject, text, html, config = resolveResendConfig() }) {
+async function sendResendEmail({ to, subject, text, html, idempotencyKey, config = resolveResendConfig() }) {
   if (!config.ready) {
     throw new Error(`Resend no está configurado. Faltan: ${config.missing.join(', ')}`);
   }
@@ -390,13 +516,16 @@ async function sendResendEmail({ to, subject, text, html, config = resolveResend
   if (!isValidEmail(recipient)) throw new Error('El correo destinatario no es válido.');
 
   const resend = new Resend(config.apiKey);
-  const { data, error } = await resend.emails.send({
-    from: RESEND_FROM_ADDRESS,
-    to: recipient,
-    subject,
-    text,
-    html
-  });
+  const { data, error } = await resend.emails.send(
+    {
+      from: RESEND_FROM_ADDRESS,
+      to: recipient,
+      subject,
+      text,
+      html
+    },
+    idempotencyKey ? { idempotencyKey } : undefined
+  );
 
   if (error) throw new Error(error.message || 'Resend rechazó el envío.');
 
@@ -419,11 +548,13 @@ export function configureWebPush() {
 
 export async function handlePushSubscription(req, res) {
   if (!requireSameOriginRequest(req, res)) return;
-  await tryEnsureNotificationPersistence();
-  if (req.method === 'GET') return sendJson(res, 200, { count: pushSubscriptions.size, pushReady: hasVapidConfig() });
   if (!['POST', 'DELETE'].includes(req.method)) return sendJson(res, 405, { error: 'Method not allowed' });
   if (!requireJsonRequest(req, res)) return;
   if (!consumeRateLimit(req, res, 'push-subscription', 20, 15 * 60 * 1000)) return;
+
+  const userId = getSessionUserId(req);
+  if (!userId) return sendJson(res, 401, { error: 'No autorizado' });
+  await tryEnsureNotificationPersistence();
 
   const rawBody = await readRequestBody(req);
   let payload;
@@ -432,7 +563,6 @@ export async function handlePushSubscription(req, res) {
   const subscription = payload.subscription || payload;
   if (!subscription || !subscription.endpoint) return sendJson(res, 400, { error: 'Invalid push subscription' });
 
-  const userId = getCookie(req, 'compas_user_id') || 'demo';
   if (req.method === 'DELETE') {
     const storedRecord = pushSubscriptions.get(subscription.endpoint);
     const canRemove = storedRecord && String(storedRecord.userId) === String(userId);
@@ -461,7 +591,8 @@ export async function handlePushTest(req, res) {
   if (!requireJsonRequest(req, res)) return;
   if (!consumeRateLimit(req, res, 'push-test', 5, 10 * 60 * 1000)) return;
 
-  const userId = getCookie(req, 'compas_user_id') || 'demo';
+  const userId = getSessionUserId(req);
+  if (!userId) return sendJson(res, 401, { ok: false, reason: 'No autorizado' });
   if (!hasVapidConfig()) return sendJson(res, 503, { ok: false, reason: 'VAPID no configurado' });
   configureWebPush();
   await tryEnsureNotificationPersistence();
@@ -575,6 +706,7 @@ export async function runScheduledPushNotifications({ getControlDocData } = {}) 
     let sent = 0;
     let touchedStore = false;
     const removedEndpoints = [];
+    const historyOccurrences = [];
     const now = Date.now();
 
     for (const user of users) {
@@ -598,14 +730,17 @@ export async function runScheduledPushNotifications({ getControlDocData } = {}) 
         if (result.sent === 0) continue;
 
         sent += result.sent;
-        group.records.forEach((record) => markScheduledRecordAsSent(user.id, record, now));
+        group.records.forEach((record) => {
+          const occurrence = markScheduledRecordAsSent(user.id, record, now);
+          if (occurrence) historyOccurrences.push(occurrence);
+        });
         touchedStore = true;
       }
     }
 
     if (touchedStore) {
       pruneSentEvents();
-      await persistNotificationState({ removedEndpoints });
+      await persistNotificationState({ removedEndpoints, historyOccurrences });
     }
 
     return { checked: true, sent, users: users.length };
@@ -623,7 +758,15 @@ export async function runScheduledEmailNotifications({ getControlDocData } = {})
     return recordEmailSchedulerRun({ skipped: true, reason: 'missing-control-doc-provider' });
   }
 
-  await tryEnsureNotificationPersistence();
+  const databaseReady = await tryEnsureNotificationPersistence();
+  if (!databaseReady) {
+    return recordEmailSchedulerRun({
+      skipped: true,
+      reason: 'persistence-unavailable',
+      sent: 0,
+      failed: 0
+    });
+  }
   emailSchedulerRunning = true;
 
   try {
@@ -687,6 +830,7 @@ export async function runScheduledEmailNotifications({ getControlDocData } = {})
             subject: message.subject,
             text: message.text,
             html: message.html,
+            idempotencyKey: buildEmailIdempotencyKey(user.id, emailGroup.records),
             config
           });
 
@@ -742,7 +886,7 @@ export async function handleEmailAlerts(req, res) {
     return sendJson(res, 400, { error: 'No hay avisos de expiracion de 60, 30 dias o documentos vencidos para enviar.' });
   }
 
-  const userId = getCookie(req, 'compas_user_id');
+  const userId = getSessionUserId(req);
   if (!userId) return sendJson(res, 401, { error: 'No autorizado' });
 
   let user = null;
@@ -780,7 +924,13 @@ export async function handleEmailAlerts(req, res) {
     });
   }
 
-  await tryEnsureNotificationPersistence();
+  const databaseReady = await tryEnsureNotificationPersistence();
+  if (!databaseReady) {
+    return sendJson(res, 503, {
+      ok: false,
+      error: 'El registro persistente de correos no está disponible; no se enviará para evitar duplicados.'
+    });
+  }
   const sentEventIds = await getSentEmailEventIds(userId);
   const pendingAlerts = alerts.filter((alert) => !sentEventIds.has(alert.id));
   if (pendingAlerts.length === 0) {
@@ -804,15 +954,13 @@ export async function handleEmailAlerts(req, res) {
         subject: message.subject,
         text: message.text,
         html: message.html,
+        idempotencyKey: buildEmailIdempotencyKey(userId, emailGroup.records),
         config: emailConfig
       });
 
       await markEmailRecordsAsSent({
         userId,
-        records: emailGroup.records.map((alert) => ({
-          id: alert.id,
-          threshold: alert.threshold
-        })),
+        records: emailGroup.records,
         providerId: result.id,
         sentAt: Date.now()
       });
@@ -850,13 +998,14 @@ export async function handleEmailNotificationHistory(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
   if (!requireSameOriginRequest(req, res)) return;
 
-  const userId = getCookie(req, 'compas_user_id');
+  const userId = getSessionUserId(req);
   if (!userId) return sendJson(res, 401, { error: 'No autorizado' });
 
   try {
     await tryEnsureNotificationPersistence();
     const [rows] = await dbPool.execute(`
-      SELECT event_id, threshold, provider_id, sent_at
+      SELECT event_id, threshold, notification_group, title, body, doc_name,
+             expiration_date, days_remaining, provider_id, sent_at
       FROM email_notification_events
       WHERE user_id = ?
       ORDER BY sent_at DESC
@@ -865,12 +1014,7 @@ export async function handleEmailNotificationHistory(req, res) {
 
     return sendJson(res, 200, {
       ok: true,
-      events: rows.map((row) => ({
-        eventId: row.event_id,
-        threshold: Number(row.threshold),
-        providerId: row.provider_id || null,
-        sentAt: toIsoDate(row.sent_at)
-      }))
+      events: rows.map(normalizeEmailHistoryRow)
     });
   } catch (error) {
     console.error('[Email History] No se pudo consultar el registro:', error.message);
@@ -878,11 +1022,29 @@ export async function handleEmailNotificationHistory(req, res) {
   }
 }
 
+export function normalizeEmailHistoryRow(row) {
+  const threshold = Number(row?.threshold);
+  const group = normalizeNotificationGroup({ group: row?.notification_group }, threshold);
+
+  return {
+    eventId: String(row?.event_id || '').trim(),
+    threshold,
+    group,
+    title: String(row?.title || getNotificationTitle(group)),
+    body: String(row?.body || ''),
+    docName: String(row?.doc_name || 'Documento'),
+    expirationDate: String(row?.expiration_date || ''),
+    daysRemaining: toNullableNumber(row?.days_remaining),
+    providerId: row?.provider_id || null,
+    sentAt: toIsoDate(row?.sent_at)
+  };
+}
+
 export async function handlePushNotificationHistory(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
   if (!requireSameOriginRequest(req, res)) return;
 
-  const userId = getCookie(req, 'compas_user_id');
+  const userId = getSessionUserId(req);
   if (!userId) return sendJson(res, 401, { error: 'No autorizado' });
 
   const databaseReady = await tryEnsureNotificationPersistence();
@@ -896,7 +1058,7 @@ export async function handlePushNotificationHistory(req, res) {
 
   try {
     const [rows] = await dbPool.execute(`
-      SELECT event_id, notification_group, threshold, title, body, doc_name,
+      SELECT event_hash, history_id, event_id, notification_group, threshold, title, body, doc_name,
              expiration_date, days_remaining, sent_at, last_sent_at
       FROM push_notification_history
       WHERE user_id = ?
@@ -1121,7 +1283,7 @@ function markScheduledRecordAsSent(userId, record, now) {
   const previous = sentEvents[eventKey];
   const sentAt = new Date(now).toISOString();
 
-  sentEvents[eventKey] = {
+  const event = {
     ruleVersion: SERVER_ALERT_RULE_VERSION,
     sentAt: previous?.sentAt || sentAt,
     lastSentAt: sentAt,
@@ -1137,14 +1299,30 @@ function markScheduledRecordAsSent(userId, record, now) {
       url: record.url || '/documentos'
     }
   };
+  sentEvents[eventKey] = event;
+  return [eventKey, event];
+}
+
+export function pruneNotificationSentEvents(events, maximum = MAX_STORED_SENT_EVENTS) {
+  if (!events || typeof events !== 'object' || Array.isArray(events)) return {};
+
+  const entries = Object.entries(events);
+  const expiredEntries = entries.filter(([eventKey, event]) => isExpiredSentEvent(eventKey, event));
+  const recurringEntries = entries
+    .filter(([eventKey, event]) => !isExpiredSentEvent(eventKey, event))
+    .sort((a, b) => getSentEventTime(b[1]) - getSentEventTime(a[1]))
+    .slice(0, Math.max(0, maximum));
+
+  return Object.fromEntries([...expiredEntries, ...recurringEntries]);
 }
 
 function pruneSentEvents() {
-  sentEvents = Object.fromEntries(
-    Object.entries(sentEvents)
-      .sort((a, b) => getSentEventTime(b[1]) - getSentEventTime(a[1]))
-      .slice(0, MAX_STORED_SENT_EVENTS)
-  );
+  sentEvents = pruneNotificationSentEvents(sentEvents);
+}
+
+function isExpiredSentEvent(eventKey, event) {
+  const eventId = event?.alert?.id || extractEventIdFromEventKey(eventKey);
+  return String(eventId || '').startsWith('document:0:') || event?.alert?.group === 'expired';
 }
 
 function normalizeSentEvents(value) {
@@ -1216,12 +1394,21 @@ function buildEmailEventKey(userId, eventId) {
   return `email:user:${userId}:${eventId}`;
 }
 
+export function buildEmailIdempotencyKey(userId, records = []) {
+  const eventIds = records
+    .map((record) => String(record?.id || '').trim())
+    .filter(Boolean)
+    .sort();
+  return `compas-email-${hashValue(`${userId}|${eventIds.join('|')}`)}`;
+}
+
 function getPushNotificationHistoryFromMemory(userId) {
   const prefix = `user:${userId}:`;
 
   return Object.entries(sentEvents)
     .filter(([eventKey, event]) => eventKey.startsWith(prefix) && event?.alert)
-    .map(([, event]) => normalizePushHistoryRow({
+    .map(([eventKey, event]) => normalizePushHistoryRow({
+      history_id: buildPushHistoryId(eventKey, event.lastSentAt || event.sentAt),
       event_id: event.alert.id,
       notification_group: event.alert.group,
       threshold: event.alert.threshold,
@@ -1239,6 +1426,7 @@ function getPushNotificationHistoryFromMemory(userId) {
 
 function normalizePushHistoryRow(row) {
   return {
+    historyId: String(row.history_id || (row.event_hash ? `push:legacy:${row.event_hash}` : '')).trim(),
     eventId: String(row.event_id || '').trim(),
     group: String(row.notification_group || '').trim(),
     threshold: toNullableNumber(row.threshold),

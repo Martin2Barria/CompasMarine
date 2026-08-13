@@ -1,4 +1,4 @@
-import { getCookie } from './http.js';
+import { getSessionUserId } from './session.js';
 
 export function getControlDocBaseUrl() {
   const url = process.env.CONTROLDOC_BASE_URL || 'https://compliance.controldoc.legal';
@@ -7,7 +7,7 @@ export function getControlDocBaseUrl() {
 
 export function resolveControlDocCredentials(req) {
   const byUser = parseJsonEnv('CONTROLDOC_USER_CREDENTIALS_JSON');
-  const cookieUserId = req ? getCookie(req, 'compas_user_id') : null;
+  const cookieUserId = req ? getSessionUserId(req) : null;
   const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
 
   // 1. PRIORIDAD MÁXIMA: Leemos la variable global con las comas

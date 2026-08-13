@@ -121,3 +121,21 @@ test('respeta los cooldowns completos de 5 dias, 24 horas y 6 horas', () => {
   assert.equal(isScheduledNotificationRecordDue(urgent, previousEvent(urgent.cooldownMs - 1), now), false);
   assert.equal(isScheduledNotificationRecordDue(urgent, previousEvent(urgent.cooldownMs), now), true);
 });
+
+test('envia el aviso de documento vencido una sola vez', () => {
+  const now = Date.now();
+  const [expired] = buildScheduledNotificationRecords({
+    documents: [document('expired-once', -1)]
+  });
+
+  assert.equal(expired.group, 'expired');
+  assert.equal(expired.threshold, 0);
+  assert.equal(expired.once, true);
+  assert.equal(NOTIFICATION_RULES.expired.once, true);
+  assert.equal(isScheduledNotificationRecordDue(expired, null, now), true);
+  assert.equal(isScheduledNotificationRecordDue(
+    expired,
+    { lastSentAt: new Date(now - 365 * 24 * 60 * 60 * 1000).toISOString() },
+    now
+  ), false);
+});

@@ -17,7 +17,9 @@ La app usa `/api` como base por defecto. En desarrollo, Vite proxya esas llamada
 npm run dev:api
 ```
 
-La sesión permanece iniciada al recargar o volver a abrir la aplicación durante 30 días por defecto. Se puede cambiar con `SESSION_MAX_AGE_SECONDS` y se elimina al cerrar sesión.
+La sesión permanece iniciada al recargar o volver a abrir la aplicación durante 30 días por defecto. Se puede cambiar con `SESSION_MAX_AGE_SECONDS` y se elimina al cerrar sesión. En producción, `SESSION_SECRET` es obligatorio y debe contener al menos 32 bytes aleatorios; por ejemplo, puede generarse con `openssl rand -base64 48`.
+
+Las cookies emitidas antes de incorporar la firma HMAC ya no son válidas. Tras este despliegue, los usuarios deberán iniciar sesión nuevamente una vez.
 
 Variables importantes:
 
@@ -27,6 +29,8 @@ CONTROLDOC_USER_EMAIL=
 CONTROLDOC_USER_TOKEN=
 CONTROLDOC_CUSTOMER_ID=
 CONTROLDOC_DEFAULT_ENTITY_TYPE_ID=
+SESSION_SECRET=
+SESSION_MAX_AGE_SECONDS=2592000
 ```
 
 ## PWA y Notificaciones
@@ -54,7 +58,7 @@ El backend usa el SDK oficial de Resend. Configura la API key en el entorno del 
 RESEND_API_KEY=re_xxxxxxxxx
 ```
 
-El remitente está fijado en el backend como `noreply@compasmarinenotificaciones.com`, correspondiente al dominio verificado en Resend.
+El remitente está fijado en el backend como `Compas Marine Notificaciones <notificaciones@compasmarinenotificaciones.com>`, correspondiente al dominio verificado en Resend. La dirección se usa solo para enviar y no requiere un buzón asociado.
 
 El estado del scheduler se puede comprobar en `GET /api/health`, dentro de la propiedad `email`. La respuesta indica si Resend está configurado, si el scheduler arrancó y el resultado de su última revisión, sin exponer la API key. Un administrador también puede forzar una revisión inmediata mediante `POST /api/admin/notifications/email-run`.
 
@@ -62,17 +66,21 @@ Los correos automáticos se envían únicamente a usuarios activos registrados e
 
 Las notificaciones push mantienen sus propios intervalos: 60 días cada 5 días, 30 días cada día y 1 día o menos cada 6 horas.
 
-Al entrar un usuario compatible, la aplicación intenta solicitar el permiso y registrar automáticamente el dispositivo. Si el navegador bloquea o no completa la activación, la vista Notificaciones muestra el botón `Activar notificaciones`; sólo cuando existe una suscripción activa muestra `Probar push`. Los avisos entregados se respaldan en `push_notification_history` con su contenido y fecha para mostrarlos en esa vista. Al cerrar sesión, la suscripción del dispositivo se elimina para no mezclar avisos entre usuarios.
+Al entrar un usuario compatible, la aplicación intenta solicitar el permiso y registrar automáticamente el dispositivo. Si el navegador bloquea o no completa la activación, la vista Notificaciones muestra el botón `Activar notificaciones`; sólo cuando existe una suscripción activa muestra `Probar push`. Cada ocurrencia entregada se respalda como una fila independiente en `push_notification_history`, con su contenido y fecha, para mostrarla en esa vista. Al cerrar sesión, la suscripción del dispositivo se elimina para no mezclar avisos entre usuarios.
 
-El endpoint de prueba push está apagado por defecto:
-
-```env
-ENABLE_PUSH_TEST_ENDPOINT=false
-```
+El endpoint de prueba push está disponible para el botón `Probar push`. Exige una
+sesión autenticada, aplica límite de solicitudes y solo envía a las suscripciones
+registradas para el usuario de esa sesión.
 
 ## Verificación
 
 ```bash
+npm test
 npm run lint
 npm run build
+npm audit
 ```
+
+El servidor y el build requieren Node.js `20.19+` o `22.12+`. Antes de iniciar el
+scheduler en una base existente, el usuario MySQL debe poder crear tablas y agregar
+las columnas nuevas de historial (`CREATE` y `ALTER`).

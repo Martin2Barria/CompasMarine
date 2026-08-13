@@ -1,6 +1,6 @@
 import { readControlDocSnapshot, readControlDocSnapshotAsync } from '../storage/controlDocOffline';
 import { getApiUrl } from '../config/api';
-import { getDocumentExpirationDate, getDocumentStatusText, hasPendingSignature, parseControlDocDate } from '../controldoc/fields';
+import { getCalendarDaysRemaining, getDocumentExpirationDate, getDocumentStatusText, hasPendingSignature, parseControlDocDate } from '../controldoc/fields';
 import { showAppNotification } from './pushNotifications';
 
 const SENT_EVENTS_KEY = 'compas:notifications:sent-events:v2';
@@ -36,17 +36,7 @@ export async function runCachedNotificationRules(ownerKey) {
 }
 
 export async function getCachedNotificationRecords(ownerKey) {
-  const snapshotData = await readCurrentSnapshotData(ownerKey);
-  const existingRecords = readAlertRecords(ownerKey);
-
-  if (!snapshotData) return existingRecords;
-
-  const records = buildDocumentAlertRecords({
-    documents: snapshotData.documents || [],
-    documentTypes: snapshotData.documentTypes || []
-  });
-
-  return mergeAlertRecords(ownerKey, records);
+  return attachLocalPushTimestamps(readAlertRecords(ownerKey));
 }
 
 export async function evaluateDocumentNotificationRules({
@@ -56,7 +46,6 @@ export async function evaluateDocumentNotificationRules({
   ownerKey = null
 }) {
   const records = buildDocumentAlertRecords({ documents, documentTypes });
-  mergeAlertRecords(ownerKey, records);
 
   if (!canNotify()) {
     return {
@@ -83,7 +72,7 @@ export async function evaluateDocumentNotificationRules({
     group: 'expired',
     tag: 'compas-docs-expired'
   })) {
-    markEventsAsSent(expiredDocs.map((item) => item.id));
+    recordShownNotifications(ownerKey, expiredDocs);
     shown += 1;
   }
 
@@ -93,7 +82,7 @@ export async function evaluateDocumentNotificationRules({
     group: 'urgent',
     tag: 'compas-docs-expiring-1'
   })) {
-    markEventsAsSent(urgentDocs.map((item) => item.id));
+    recordShownNotifications(ownerKey, urgentDocs);
     shown += 1;
   }
 
@@ -103,7 +92,7 @@ export async function evaluateDocumentNotificationRules({
     group: 'critical',
     tag: 'compas-docs-expiring-30'
   })) {
-    markEventsAsSent(criticalDocs.map((item) => item.id));
+    recordShownNotifications(ownerKey, criticalDocs);
     shown += 1;
   }
 
@@ -113,7 +102,7 @@ export async function evaluateDocumentNotificationRules({
     group: 'warning',
     tag: 'compas-docs-expiring-60'
   })) {
-    markEventsAsSent(warningDocs.map((item) => item.id));
+    recordShownNotifications(ownerKey, warningDocs);
     shown += 1;
   }
 
@@ -123,7 +112,7 @@ export async function evaluateDocumentNotificationRules({
     group: 'signature',
     tag: 'compas-docs-signatures'
   })) {
-    markEventsAsSent(signatureDocs.map((item) => item.id));
+    recordShownNotifications(ownerKey, signatureDocs);
     shown += 1;
   }
 
@@ -146,7 +135,7 @@ export function buildDocumentAlertRecords({ documents = [], documentTypes = [] }
       if (isInvalidNotificationDocName(docName)) return records;
 
       const expirationDate = getDocumentExpirationDate(doc);
-      const daysRemaining = getDaysRemaining(expirationDate);
+      const daysRemaining = getCalendarDaysRemaining(expirationDate);
 
       if (daysRemaining !== null && daysRemaining <= 60) {
         const threshold = daysRemaining < 0
@@ -253,26 +242,13 @@ function calculateHealthyPercentage(documents) {
   if (documents.length === 0) return 100;
 
   const healthyDocs = documents.filter((doc) => {
-    const days = getDaysRemaining(getDocumentExpirationDate(doc));
+    const days = getCalendarDaysRemaining(getDocumentExpirationDate(doc));
     const status = getDocumentStatusText(doc);
     if (days === null && !status) return false;
     return days === null || days > 30;
   }).length;
 
   return Math.round((healthyDocs / documents.length) * 100);
-}
-
-function getDaysRemaining(dateString) {
-  if (!dateString) return null;
-
-  const expirationDate = parseControlDocDate(dateString);
-  if (!expirationDate) return null;
-
-  const currentDate = new Date();
-  currentDate.setHours(0, 0, 0, 0);
-  const diff = expirationDate.getTime() - currentDate.getTime();
-
-  return Math.ceil(diff / (1000 * 3600 * 24));
 }
 
 function buildDocumentExpirationBody({ docName, threshold, daysRemaining, expirationDate }) {
@@ -344,6 +320,21 @@ function readSentEvents() {
   }
 }
 
+function attachLocalPushTimestamps(records) {
+  const sentEvents = readSentEvents();
+
+  return records.map((record) => ({
+    ...record,
+    pushSentAt: record.pushSentAt || getSentEventTimestamp(sentEvents[record.eventId || record.id]) || null
+  }));
+}
+
+function getSentEventTimestamp(event) {
+  if (typeof event === 'string') return event;
+  if (!event || typeof event !== 'object') return null;
+  return event.lastSentAt || event.sentAt || null;
+}
+
 function shouldNotifyRecord(record, sentEvents, now) {
   const previous = sentEvents[record.id];
   if (!previous) return true;
@@ -377,13 +368,29 @@ function markEventsAsSent(eventIds) {
     sentEvents[eventId] = sentAt;
   });
 
-  const prunedEvents = Object.fromEntries(
-    Object.entries(sentEvents)
-      .sort((a, b) => b[1].localeCompare(a[1]))
-      .slice(0, MAX_STORED_EVENTS)
-  );
+  const entries = Object.entries(sentEvents);
+  const oneTimeEntries = entries.filter(([eventId]) => eventId.includes('document:0:'));
+  const recurrentEntries = entries
+    .filter(([eventId]) => !eventId.includes('document:0:'))
+    .sort((a, b) => getSentEventTimestamp(b[1])?.localeCompare(getSentEventTimestamp(a[1]) || '') || 0)
+    .slice(0, Math.max(0, MAX_STORED_EVENTS - oneTimeEntries.length));
+  const prunedEvents = Object.fromEntries([...oneTimeEntries, ...recurrentEntries]);
 
   window.localStorage.setItem(SENT_EVENTS_KEY, JSON.stringify(prunedEvents));
+}
+
+function recordShownNotifications(ownerKey, records) {
+  if (records.length === 0) return;
+
+  const sentAt = new Date().toISOString();
+  markEventsAsSent(records.map((record) => record.id));
+  mergeAlertRecords(ownerKey, records.map((record) => ({
+    ...record,
+    eventId: record.id,
+    id: `${record.id}:push:${sentAt}`,
+    createdAt: sentAt,
+    pushSentAt: sentAt
+  })));
 }
 
 function mergeAlertRecords(ownerKey, records) {

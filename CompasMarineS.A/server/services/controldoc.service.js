@@ -1,5 +1,6 @@
 import { dbPool } from '../config/db.js';
-import { sendJson, getCookie } from '../utils/http.js';
+import { sendJson } from '../utils/http.js';
+import { getSessionUserId } from '../utils/session.js';
 import { fetchAllControlDocPages, resolveControlDocCredentials } from '../utils/controldoc.js';
 import { requireSameOriginRequest } from '../utils/security.js';
 
@@ -26,7 +27,7 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
 
     if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
 
-    const cookieUserId = getCookie(req, 'compas_user_id');
+    const cookieUserId = getSessionUserId(req);
     if (!cookieUserId) {
         console.warn(`❌ [API] No autorizado. Faltan cookies.`);
         return sendJson(res, 401, { error: 'No autorizado' });
@@ -216,6 +217,8 @@ export async function handleSetupDB(req, res) {
       `CREATE TABLE IF NOT EXISTS respaldos_documentos (id INT AUTO_INCREMENT PRIMARY KEY, documento_id INT NOT NULL, ruta_archivo VARCHAR(500) NOT NULL, nombre_archivo VARCHAR(255), mime_type VARCHAR(100), peso_bytes BIGINT, hash_archivo VARCHAR(128), descargado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (documento_id) REFERENCES documentos_api(id) ON DELETE CASCADE ON UPDATE CASCADE)`,
       `CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint_hash CHAR(64) PRIMARY KEY, user_id INT NULL, endpoint TEXT NOT NULL, subscription_json JSON NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, INDEX idx_push_subscriptions_user_id (user_id))`,
       `CREATE TABLE IF NOT EXISTS push_notification_events (event_hash CHAR(64) PRIMARY KEY, user_id INT NULL, event_key TEXT NOT NULL, event_id TEXT NOT NULL, rule_version INT NOT NULL DEFAULT 1, sent_at DATETIME NOT NULL, last_sent_at DATETIME NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, INDEX idx_push_notification_events_user_id (user_id))`,
+      `CREATE TABLE IF NOT EXISTS push_notification_history (event_hash CHAR(64) PRIMARY KEY, history_id VARCHAR(96) NOT NULL, user_id INT NOT NULL, event_id VARCHAR(1024) NOT NULL, notification_group VARCHAR(32) NOT NULL, threshold TINYINT NULL, title VARCHAR(255) NOT NULL, body TEXT NOT NULL, doc_name VARCHAR(255) NOT NULL, expiration_date VARCHAR(100) NULL, days_remaining INT NULL, sent_at DATETIME NOT NULL, last_sent_at DATETIME NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, INDEX idx_push_notification_history_user_id (user_id), INDEX idx_push_notification_history_last_sent_at (last_sent_at))`,
+      `CREATE TABLE IF NOT EXISTS email_notification_events (event_hash CHAR(64) PRIMARY KEY, user_id INT NOT NULL, event_key VARCHAR(1024) NOT NULL, event_id VARCHAR(1024) NOT NULL, threshold TINYINT NOT NULL, notification_group VARCHAR(32) NOT NULL, title VARCHAR(255) NOT NULL, body TEXT NOT NULL, doc_name VARCHAR(255) NOT NULL, expiration_date VARCHAR(100) NULL, days_remaining INT NULL, provider_id VARCHAR(255) NULL, sent_at DATETIME NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_email_notification_events_user_id (user_id), INDEX idx_email_notification_events_sent_at (sent_at))`,
       `CREATE TABLE IF NOT EXISTS sync_logs (id INT AUTO_INCREMENT PRIMARY KEY, tipo VARCHAR(100) NOT NULL, estado ENUM('exitoso', 'fallido') NOT NULL, mensaje TEXT, registros_procesados INT DEFAULT 0, creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`
     ];
     for (const query of queries) await dbPool.query(query);

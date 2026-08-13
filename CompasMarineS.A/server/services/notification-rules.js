@@ -1,4 +1,5 @@
 import {
+  getCalendarDaysRemaining,
   getDocumentExpirationDate,
   hasPendingSignature,
   parseControlDocDate
@@ -10,7 +11,8 @@ export const NOTIFICATION_RULE_VERSION = 1;
 export const NOTIFICATION_RULES = Object.freeze({
   warning: { threshold: 60, cooldownMs: 5 * DAY_MS },
   critical: { threshold: 30, cooldownMs: DAY_MS },
-  urgent: { threshold: 1, cooldownMs: 6 * 60 * 60 * 1000 }
+  urgent: { threshold: 1, cooldownMs: 6 * 60 * 60 * 1000 },
+  expired: { threshold: 0, once: true }
 });
 
 const EMAIL_NOTIFICATION_ORDER = ['warning', 'critical', 'expired', 'urgent'];
@@ -24,7 +26,7 @@ export function buildScheduledNotificationRecords({ documents = [], documentType
     if (isInvalidNotificationDocName(docName)) continue;
 
     const expirationDate = getDocumentExpirationDate(doc);
-    const daysRemaining = getDaysRemaining(expirationDate);
+    const daysRemaining = getCalendarDaysRemaining(expirationDate);
 
     if (daysRemaining !== null && daysRemaining <= 60) {
       const threshold = daysRemaining < 0
@@ -46,7 +48,7 @@ export function buildScheduledNotificationRecords({ documents = [], documentType
         id: buildDocumentEventId(doc, threshold),
         ruleVersion: NOTIFICATION_RULE_VERSION,
         group,
-        once: threshold === 0,
+        once: Boolean(NOTIFICATION_RULES[group]?.once),
         threshold,
         cooldownMs: NOTIFICATION_RULES[group]?.cooldownMs || null,
         docName,
@@ -166,19 +168,6 @@ function getAlertGroupFromThreshold(threshold, severity = '') {
   if (severity === 'critical' || Number(threshold) === 30) return 'critical';
   if (severity === 'urgent' || Number(threshold) === 1) return 'urgent';
   return severity;
-}
-
-function getDaysRemaining(dateString) {
-  if (!dateString) return null;
-
-  const expirationDate = parseControlDocDate(dateString);
-  if (!expirationDate) return null;
-
-  const currentDate = new Date();
-  currentDate.setHours(0, 0, 0, 0);
-  const diff = expirationDate.getTime() - currentDate.getTime();
-
-  return Math.ceil(diff / DAY_MS);
 }
 
 function buildDocumentExpirationBody({ docName, threshold, daysRemaining, expirationDate }) {

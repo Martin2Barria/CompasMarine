@@ -2,8 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Search, User, Clock, PenTool, Globe, ShieldAlert, KeyRound, Eye, EyeOff, RotateCcw } from 'lucide-react';
 import { getApiUrl } from '../config/api'; // <-- IMPORTACIÓN CORREGIDA
 import {
+  compareExpirationUrgency,
+  getCalendarDaysRemaining,
   getDocumentEntityIds,
   getDocumentExpirationDate,
+  hasExpiredDocumentStatus,
   parseControlDocDate
 } from '../controldoc/fields';
 
@@ -66,22 +69,12 @@ const formatDate = (dateString) => {
     : 'N/A';
 };
 
-const getDaysRemaining = (dateString) => {
-  if (!dateString) return null;
-  const expirationDate = parseControlDocDate(dateString);
-  if (!expirationDate) return null;
-  const currentDate = new Date();
-  currentDate.setHours(0, 0, 0, 0);
-  const diff = expirationDate.getTime() - currentDate.getTime();
-  return Math.ceil(diff / (1000 * 3600 * 24));
-};
-
 const isBlockedDocument = (doc) => doc.aasm_state === 'blocked' && !doc.blocked_description?.toLowerCase().includes('cargo');
 const getDocumentStatusText = (doc) => doc.aasm_state;
 const hasNonCompliantDocumentStatus = (doc) => ['rejected', 'expired'].includes(doc.aasm_state);
 
 const getDocumentComplianceBucket = (doc) => {
-  const days = getDaysRemaining(getDocumentExpirationDate(doc));
+  const days = getCalendarDaysRemaining(getDocumentExpirationDate(doc));
   const status = getDocumentStatusText(doc);
 
   if (isBlockedDocument(doc) || hasNonCompliantDocumentStatus(doc) || (days !== null && days < 0)) return 'nonCompliant';
@@ -416,8 +409,8 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
 
   const selectedExpiringDocs = useMemo(() =>
     selectedUserDocs.map((doc) => ({
-      ...doc, daysRemaining: getDaysRemaining(getDocumentExpirationDate(doc)), expirationDate: getDocumentExpirationDate(doc), displayName: getDocName(doc)
-    })).filter((doc) => doc.daysRemaining !== null && doc.daysRemaining <= 60).sort((a, b) => a.daysRemaining - b.daysRemaining), [selectedUserDocs, getDocName]
+      ...doc, daysRemaining: getCalendarDaysRemaining(getDocumentExpirationDate(doc)), expirationDate: getDocumentExpirationDate(doc), displayName: getDocName(doc)
+    })).filter((doc) => !hasExpiredDocumentStatus(doc) && doc.daysRemaining !== null && doc.daysRemaining >= 0 && doc.daysRemaining <= 60).sort(compareExpirationUrgency), [selectedUserDocs, getDocName]
   );
 
   const selectedHealthyDocsCount = useMemo(() =>
@@ -822,19 +815,14 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                 {selectedExpiringDocs.length > 0 ? (
                   <div className="space-y-3">
                     {selectedExpiringDocs.slice(0, 5).map((doc) => {
-                      const isExpired = doc.daysRemaining <= 0;
-                      const isCritical = doc.daysRemaining >= 1 && doc.daysRemaining <= 30;
+                      const isCritical = doc.daysRemaining <= 30;
                       const isWarning = doc.daysRemaining >= 31 && doc.daysRemaining <= 60;
                       let borderClass = 'border-gray-100', pillClass = '', statusText = '';
 
-                      if (isExpired) {
+                      if (isCritical) {
                         borderClass = 'border-red-200';
                         pillClass = 'severity-pill-red';
-                        statusText = doc.daysRemaining === 0 ? 'Expira hoy' : `Expirado (${Math.abs(doc.daysRemaining)}d)`;
-                      } else if (isCritical) {
-                        borderClass = 'border-orange-200';
-                        pillClass = 'severity-pill-orange';
-                        statusText = `Expira en ${doc.daysRemaining}d`;
+                        statusText = doc.daysRemaining === 0 ? 'Expira hoy' : `Expira en ${doc.daysRemaining}d`;
                       } else if (isWarning) {
                         borderClass = 'border-amber-200';
                         pillClass = 'severity-pill-amber';

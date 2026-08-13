@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { X, Hand, AlertTriangle, Clock, BellRing, Loader2, Send, Mail } from 'lucide-react';
+import { X, AlertTriangle, Clock, BellRing, Loader2, Send, Mail } from 'lucide-react';
 import {
   enablePushNotifications,
   fetchEmailNotificationHistory,
@@ -33,35 +33,35 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
       fetchEmailNotificationHistory().catch(() => []),
       fetchPushNotificationHistory().catch(() => [])
     ]);
-    const recordsById = new Map(records.map((record) => [record.id, record]));
-
+    const metadataByEventId = new Map();
+    records.forEach((record) => {
+      const eventId = record.eventId || record.id;
+      if (eventId) metadataByEventId.set(eventId, record);
+    });
     pushEvents.forEach((event) => {
-      if (!event.eventId) return;
-      const previous = recordsById.get(event.eventId) || {};
-      recordsById.set(event.eventId, {
-        id: event.eventId,
-        type: event.group === 'signature' ? 'signature' : 'document',
-        severity: event.group,
-        group: event.group,
-        threshold: event.threshold,
-        title: event.title,
-        body: event.body,
-        docName: event.docName,
-        expirationDate: event.expirationDate,
-        daysRemaining: event.daysRemaining,
-        createdAt: event.sentAt,
-        ...previous,
-        pushSentAt: event.lastSentAt || event.sentAt
-      });
+      if (event.eventId) metadataByEventId.set(event.eventId, event);
     });
 
-    const sentByEventId = new Map(emailEvents.map((event) => [event.eventId, event.sentAt]));
-    const mergedRecords = [...recordsById.values()]
-      .map((record) => ({
+    const localPushRecords = records
+      .filter((record) => record.pushSentAt)
+      .map((record) => normalizeHistoryRecord({
         ...record,
-        emailSentAt: sentByEventId.get(record.id) || record.emailSentAt || null
-      }))
-      .sort((a, b) => getAlertRecordTime(b) - getAlertRecordTime(a));
+        eventId: record.eventId || record.id,
+        sentAt: record.pushSentAt
+      }, 'push-local'));
+    const serverPushRecords = pushEvents
+      .map((event) => normalizeHistoryRecord(event, 'push', metadataByEventId.get(event.eventId)))
+      .filter(Boolean);
+    const serverEmailRecords = emailEvents
+      .map((event) => normalizeHistoryRecord(event, 'email', metadataByEventId.get(event.eventId)))
+      .filter(Boolean);
+
+    const serverPushKeys = new Set(serverPushRecords.map(getHistoryOccurrenceKey));
+    const mergedRecords = [
+      ...serverPushRecords,
+      ...serverEmailRecords,
+      ...localPushRecords.filter((record) => !serverPushKeys.has(getHistoryOccurrenceKey(record)))
+    ].sort((a, b) => getAlertRecordTime(b) - getAlertRecordTime(a));
 
     setAlerts(mergedRecords);
   }, [snapshotOwnerKey]);
@@ -163,7 +163,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
           >
             <div className="flex items-center gap-2 min-w-0">
               <span className="shrink-0">ℹ️</span>
-                <span className="leading-snug break-words">🔔 Activa las notificaciones push de este celular para recibir alertas aunque la app esté cerrada. El sistema revisa 60 días cada 5 días, 30 días cada día y 1 día cada 6 horas.</span>
+                <span className="leading-snug break-words">🔔 Activa las notificaciones push de este celular para recibir avisos aunque la app esté cerrada. El sistema avisa a 60 días cada 5 días, a 30 días cada día, a 1 día cada 6 horas y una sola vez cuando el documento ya venció.</span>
             </div>
             <span className="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold ml-2 shrink-0">✕</span>
           </div>
@@ -228,7 +228,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
                 </p>
               ) : (
                 <div className="space-y-3 mt-3">
-                  {alerts.slice(0, 20).map((alert) => (
+                  {alerts.map((alert) => (
                     <div key={alert.id} className="notification-record-card rounded-xl border border-gray-100 p-3 md:p-4 transition-all">
                       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
@@ -247,15 +247,23 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
                         )}
                         {alert.pushSentAt && (
                           <p className="text-[10px] text-blue-700 font-semibold mb-2 flex items-center gap-1">
-                            <BellRing className="w-3 h-3" /> Notificación enviada el {formatNotificationTimestamp(alert.pushSentAt)}
+                            <BellRing className="w-3 h-3" /> Notificación push enviada
                           </p>
                         )}
-                        <button
-                          onClick={() => setView('documentos')}
-                          className="w-full sm:w-auto text-center text-xs bg-[#921E30] text-white px-5 py-2 rounded-xl font-bold shadow-sm hover:bg-red-800 active:bg-red-900 transition min-h-[36px] sm:min-h-0"
-                        >
-                          Ver Documento
-                        </button>
+                        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
+                          <button
+                            onClick={() => setView('documentos')}
+                            className="w-full sm:w-auto text-center text-xs bg-[#921E30] text-white px-5 py-2 rounded-xl font-bold shadow-sm hover:bg-red-800 active:bg-red-900 transition min-h-[36px] sm:min-h-0"
+                          >
+                            Ver Documento
+                          </button>
+                          {getNotificationSentAt(alert) && (
+                            <span className="self-end ml-auto text-[10px] text-gray-400 font-semibold flex items-center gap-1 text-right">
+                              <Clock className="w-3 h-3 shrink-0" />
+                              {alert.pushSentAt ? 'Avisado el' : 'Correo enviado el'} {formatNotificationTimestamp(getNotificationSentAt(alert))}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -265,24 +273,6 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
           </div>
         </div>
 
-        {/* Card: Saludo Estático de Bienvenida */}
-        <div className="bg-white rounded-2xl p-4 md:p-5 shadow-sm relative overflow-hidden border border-gray-100">
-          <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-green-500"></div>
-          <div className="flex gap-4 items-start">
-            <div className="bg-green-50 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-              <Hand className="w-5 h-5 text-green-600" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <h4 className="font-bold text-gray-800 text-sm md:text-base mb-1">Bienvenido a Compas Marine</h4>
-              <p className="text-xs md:text-sm text-gray-500 leading-relaxed">
-                Esperamos que disfrutes tu instancia con nuestros servicios integrales de gestión marina.
-              </p>
-              <span className="text-[10px] font-semibold text-gray-400 mt-3 flex items-center gap-1">
-                <Clock className="w-3 h-3 shrink-0" /> Hace 2 horas
-              </span>
-            </div>
-          </div>
-        </div>
       </main>
     </div>
   );
@@ -295,6 +285,46 @@ function getSeverityLabel(severity) {
   return 'Por vencer';
 }
 
+function normalizeHistoryRecord(event, channel, fallback = {}) {
+  if (!event) return null;
+
+  const sentAt = event.lastSentAt || event.sentAt || event.pushSentAt || event.emailSentAt;
+  const eventId = event.eventId || fallback.eventId || fallback.id;
+  if (!eventId || !sentAt) return null;
+
+  const group = event.group || event.severity || fallback.group || fallback.severity || getGroupFromThreshold(event.threshold ?? fallback.threshold);
+  const historyId = event.historyId || `${eventId}:${sentAt}`;
+
+  return {
+    id: `${channel}:${historyId}`,
+    historyId,
+    eventId,
+    type: group === 'signature' ? 'signature' : 'document',
+    severity: group,
+    group,
+    threshold: event.threshold ?? fallback.threshold ?? null,
+    title: event.title || fallback.title || 'Alerta documental',
+    body: event.body || fallback.body || 'Aviso documental enviado por el sistema.',
+    docName: event.docName || fallback.docName || 'Documento',
+    expirationDate: event.expirationDate || fallback.expirationDate || '',
+    daysRemaining: event.daysRemaining ?? fallback.daysRemaining ?? null,
+    createdAt: sentAt,
+    pushSentAt: channel.startsWith('push') ? sentAt : null,
+    emailSentAt: channel === 'email' ? sentAt : null
+  };
+}
+
+function getGroupFromThreshold(threshold) {
+  if (Number(threshold) === 0) return 'expired';
+  if (Number(threshold) === 1) return 'urgent';
+  if (Number(threshold) === 30) return 'critical';
+  return 'warning';
+}
+
+function getHistoryOccurrenceKey(record) {
+  return `${record.eventId || ''}|${getNotificationSentAt(record) || ''}`;
+}
+
 function getSeverityClass(severity) {
   if (severity === 'expired') return 'severity-pill-red border';
   if (severity === 'urgent') return 'severity-pill-red border';
@@ -304,9 +334,13 @@ function getSeverityClass(severity) {
 }
 
 function getAlertRecordTime(record) {
-  const value = record?.pushSentAt || record?.emailSentAt || record?.createdAt;
+  const value = getNotificationSentAt(record) || record?.createdAt;
   const parsed = Date.parse(value || '');
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getNotificationSentAt(record) {
+  return record?.pushSentAt || record?.emailSentAt || null;
 }
 
 function formatNotificationTimestamp(value) {

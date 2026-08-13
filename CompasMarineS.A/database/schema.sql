@@ -159,10 +159,11 @@ CREATE TABLE push_notification_events (
     INDEX idx_push_notification_events_user_id (user_id)
 );
 
--- Historial visible de alertas push efectivamente enviadas al usuario
+-- Historial visible: cada ocurrencia push enviada ocupa una fila independiente.
 
 CREATE TABLE push_notification_history (
     event_hash CHAR(64) PRIMARY KEY,
+    history_id VARCHAR(96) NOT NULL,
     user_id INT NOT NULL,
     event_id VARCHAR(1024) NOT NULL,
     notification_group VARCHAR(32) NOT NULL,
@@ -182,13 +183,19 @@ CREATE TABLE push_notification_history (
 );
 
 -- Registro de correos automáticos enviados por Resend.
--- El evento es único por usuario, documento y umbral (parche de correo: 60 o 30 días).
+-- El evento es único por usuario, documento y umbral e incluye el contenido visible enviado.
 CREATE TABLE email_notification_events (
     event_hash CHAR(64) PRIMARY KEY,
     user_id INT NOT NULL,
     event_key VARCHAR(1024) NOT NULL,
     event_id VARCHAR(1024) NOT NULL,
     threshold TINYINT NOT NULL,
+    notification_group VARCHAR(32) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    body TEXT NOT NULL,
+    doc_name VARCHAR(255) NOT NULL,
+    expiration_date VARCHAR(100) NULL,
+    days_remaining INT NULL,
     provider_id VARCHAR(255) NULL,
     sent_at DATETIME NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
