@@ -115,7 +115,7 @@ Endpoints relevantes observados:
 ### 4.2 Autenticacion
 
 - No se utiliza JWT en el flujo principal actual.
-- Se usa cookie de sesion HttpOnly (compas_user_id).
+- Se usa una cookie de sesion HttpOnly (`compas_user_id`) cuyo contenido incluye usuario, expiracion y firma HMAC-SHA256. Las cookies antiguas sin firma dejan de ser validas y requieren un nuevo inicio de sesion.
 - Passwords con bcrypt.
 - Recuperacion de contrasena con token temporal en memoria del proceso.
 
@@ -210,6 +210,8 @@ SERVER_PORT=8787
 SERVER_HOST=0.0.0.0
 NODE_ENV=production
 APP_ALLOWED_ORIGINS=https://compasmarine-production.up.railway.app/
+SESSION_SECRET=generar_con_openssl_rand_base64_48
+SESSION_MAX_AGE_SECONDS=2592000
 
 # MySQL
 MYSQLHOST=127.0.0.1
@@ -234,7 +236,7 @@ VAPID_PRIVATE_KEY=clave_privada
 RESEND_API_KEY=re_xxxxxxxxx
 ```
 
-El remitente de Resend está fijado en el backend como `noreply@compasmarinenotificaciones.com`, correspondiente al dominio verificado.
+El remitente de Resend está fijado en el backend como `Compas Marine Notificaciones <notificaciones@compasmarinenotificaciones.com>`, correspondiente al dominio verificado. La dirección se usa solo para enviar y no requiere un buzón asociado.
 
 `GET /api/health` informa el estado del scheduler de email y el resumen de su última revisión sin revelar la API key. Los roles administrativos `10` y `11` pueden forzar una revisión con `POST /api/admin/notifications/email-run`.
 

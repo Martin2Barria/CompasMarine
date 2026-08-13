@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { dbPool } from '../config/db.js';
-import { sendJson, readRequestBody, getCookie } from '../utils/http.js';
+import { sendJson, readRequestBody } from '../utils/http.js';
 import { requireSameOriginRequest } from '../utils/security.js';
-import { buildClearSessionCookie, buildSessionCookie } from '../utils/session.js';
+import { buildClearSessionCookie, buildSessionCookie, getSessionUserId } from '../utils/session.js';
 
 const PASSWORD_RESET_TOKEN_TTL = 10 * 60 * 1000;
 const passwordResetTokens = new Map();
@@ -212,7 +212,7 @@ export async function handleResetPassword(req, res) {
 
 export async function handleAuthMe(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' });
-  const cookieUserId = getCookie(req, 'compas_user_id');
+  const cookieUserId = getSessionUserId(req);
   if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado' });
 
   try {

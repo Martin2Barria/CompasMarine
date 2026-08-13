@@ -1,6 +1,16 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Eye, Tag, Download, User as UserIcon } from 'lucide-react';
 import { getApiUrl } from '../config/api'; // <-- IMPORTACIÓN CORREGIDA
+import {
+  getCalendarDaysRemaining,
+  getDocumentEntityId,
+  getDocumentExpirationDate,
+  getDocumentIssueDate,
+  getDocumentRegistrationDate,
+  hasBlockedDocumentStatus,
+  hasExpiredDocumentStatus,
+  parseControlDocDate
+} from '../controldoc/fields';
 
 const getUserSnapshotKey = (user) => user?.id ? `user_${user.id}` : 'global';
 const SNAPSHOT_FRESH_MS = 15 * 60 * 1000;
@@ -36,7 +46,7 @@ const hasAdminRole = (user) => {
 
 // --- COMPONENTE DE TARJETA ESTÉTICO ---
 const ApiDocumentCard = ({ doc, documentTypeById, entityById, showEntityName = true }) => {
-  const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString() || doc.employee_id?.toString();
+  const docEntityId = getDocumentEntityId(doc);
   const entity = entityById ? entityById.get(docEntityId) : null;
   const docType = documentTypeById ? documentTypeById.get(doc.document_type_id?.toString()) : null;
   
@@ -44,19 +54,15 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById, showEntityName = t
   const typeName = docType?.name || docType?.label || docType?.id || doc.document_type_id || 'Documento';
 
   let status = { label: 'Sin Fecha', bgClass: 'bg-gray-100 text-gray-600 border border-gray-200' };
-  const expirationDateValue = doc.expires_at;
+  const expirationDateValue = getDocumentExpirationDate(doc);
+  const issueDateValue = getDocumentIssueDate(doc);
+  const registrationDateValue = getDocumentRegistrationDate(doc);
 
-  let isBlocked = doc.aasm_state === 'blocked';
-  if (isBlocked && doc.blocked_description?.toLowerCase().includes('cargo')) isBlocked = false;
-  const hasExpiredStatus = ['rejected', 'expired'].includes(doc.aasm_state);
+  const isBlocked = isRelevantBlockedDocument(doc);
+  const hasExpiredStatus = hasExpiredDocumentStatus(doc);
 
   if (expirationDateValue) {
-    const expirationDate = new Date(expirationDateValue);
-    const currentDate = new Date(); 
-    currentDate.setHours(0, 0, 0, 0);
-
-    const timeDifference = isNaN(expirationDate.getTime()) ? null : expirationDate.getTime() - currentDate.getTime();
-    const daysRemaining = timeDifference === null ? null : Math.ceil(timeDifference / (1000 * 3600 * 24));
+    const daysRemaining = getCalendarDaysRemaining(expirationDateValue);
 
     if (daysRemaining === null) {
       status = { label: 'Sin Fecha', bgClass: 'bg-gray-100 text-gray-600 border-2 border-gray-200' };
@@ -83,10 +89,10 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById, showEntityName = t
 
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
-    const parsedDate = new Date(dateString);
-    return isNaN(parsedDate.getTime())
-      ? 'N/A'
-      : parsedDate.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const parsedDate = parseControlDocDate(dateString);
+    return parsedDate
+      ? parsedDate.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' })
+      : 'N/A';
   };
 
   return (
@@ -120,11 +126,16 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById, showEntityName = t
 
         <div className="space-y-1.5 mb-3.5 text-xs px-0.5">
           <div className="text-gray-400 flex justify-between gap-4">
-            <span>Emisión:</span> <span className="font-semibold text-gray-600">{formatDate(doc.created_at || doc.issued_at)}</span>
+            <span>Emisión:</span> <span className="font-semibold text-gray-600">{issueDateValue ? formatDate(issueDateValue) : 'No informada'}</span>
           </div>
           <div className="text-gray-400 flex justify-between gap-4">
             <span>Expiración:</span> <span className="font-semibold text-gray-600">{formatDate(expirationDateValue)}</span>
           </div>
+          {registrationDateValue && (
+            <div className="text-gray-400 flex justify-between gap-4">
+              <span>Registro en ControlDoc:</span> <span className="font-semibold text-gray-600">{formatDate(registrationDateValue)}</span>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center w-full">
@@ -159,15 +170,6 @@ const urls = {
   documentTypes: getApiUrl('/controldoc/document-types')
 };
 
-const getDaysRemaining = (dateString) => {
-  if (!dateString) return null;
-  const expirationDate = new Date(dateString);
-  const currentDate = new Date();
-  currentDate.setHours(0, 0, 0, 0);
-  const diff = expirationDate.getTime() - currentDate.getTime();
-  return Math.ceil(diff / (1000 * 3600 * 24));
-};
-
 const toArray = (value, fallbackKeys = []) => {
   if (Array.isArray(value)) return value;
   if (!value || typeof value !== 'object') return [];
@@ -188,6 +190,11 @@ const normalizeApiData = (rawData) => {
 };
 
 const normalizeText = (value) => (value || '').toString().trim().toLowerCase();
+
+const isRelevantBlockedDocument = (doc) => (
+  hasBlockedDocumentStatus(doc) &&
+  !doc?.blocked_description?.toString().toLowerCase().includes('cargo')
+);
 
 const hasPendingSignature = (doc) => {
   if (!doc || typeof doc !== 'object') return false;
@@ -376,7 +383,7 @@ export const ViewDocumentos = ({ currentUser }) => {
     const query = normalizeText(searchTerm);
 
     return baseDocuments
-      .map(doc => ({ doc, daysRemaining: getDaysRemaining(doc.expires_at) }))
+      .map(doc => ({ doc, daysRemaining: getCalendarDaysRemaining(getDocumentExpirationDate(doc)) }))
       .filter(({ doc, daysRemaining }) => {
         const docTypeId = doc.document_type_id?.toString();
         const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString();
@@ -384,15 +391,16 @@ export const ViewDocumentos = ({ currentUser }) => {
         const typeMatch = selectedType === 'all' || docTypeId === selectedType;
         const entityMatch = (!isAdmin) || selectedEntityId === 'all' || docEntityId === selectedEntityId;
         const signatureMatch = signatureFilter === 'all' || hasPendingSignature(doc);
-        const isNotBlocked = doc.aasm_state !== 'blocked';
+        const isNotBlocked = !isRelevantBlockedDocument(doc);
+        const hasExpiredStatus = hasExpiredDocumentStatus(doc);
         const searchableText = [getDocumentDisplayName(doc), doc.label, doc.name, doc.id, doc.document_type_id].filter(Boolean).join(' ').toLowerCase();
 
         const searchMatch = query === '' || searchableText.includes(query);
 
         let statusMatch = true;
         if (statusFilter !== 'all') {
-          if (daysRemaining === null) statusMatch = statusFilter === 'valid';
-          else if (statusFilter === 'expired') statusMatch = daysRemaining < 0;
+          if (statusFilter === 'expired') statusMatch = hasExpiredStatus || (daysRemaining !== null && daysRemaining < 0);
+          else if (daysRemaining === null || hasExpiredStatus) statusMatch = false;
           else if (statusFilter === 'critical') statusMatch = daysRemaining >= 0 && daysRemaining <= 30;
           else if (statusFilter === 'warning') statusMatch = daysRemaining > 30 && daysRemaining <= 60;
           else if (statusFilter === 'valid') statusMatch = daysRemaining > 60;
@@ -405,7 +413,7 @@ export const ViewDocumentos = ({ currentUser }) => {
   }, [baseDocuments, selectedType, selectedEntityId, statusFilter, signatureFilter, searchTerm, getDocumentDisplayName, isAdmin]);
 
   const documentsToRender = useMemo(() => processedDocuments.slice(0, visibleCount), [processedDocuments, visibleCount]);
-  const totalDocumentsWithoutBlocked = useMemo(() => baseDocuments.filter((doc) => doc.aasm_state !== 'blocked').length, [baseDocuments]);
+  const totalDocumentsWithoutBlocked = useMemo(() => baseDocuments.filter((doc) => !isRelevantBlockedDocument(doc)).length, [baseDocuments]);
 
   const searchSuggestions = useMemo(() => {
     if (!searchTerm.trim()) return [];

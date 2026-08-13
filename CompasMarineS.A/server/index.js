@@ -5,7 +5,12 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import mysql from 'mysql2/promise';
-import { buildClearSessionCookie, buildSessionCookie } from './utils/session.js';
+import {
+  buildClearSessionCookie,
+  buildSessionCookie,
+  getSessionUserId,
+  validateSessionConfiguration
+} from './utils/session.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const appRoot = resolve(__dirname, '..');
@@ -29,6 +34,13 @@ function loadEnvFiles(fileNames) {
   }
 }
 loadEnvFiles(['.env.server.local', '.env.server', '.env.local', '.env']);
+
+const sessionConfiguration = validateSessionConfiguration();
+if (sessionConfiguration.usingDevelopmentFallback) {
+  console.warn('[Session] Usando secreto temporal exclusivo para desarrollo. Configura SESSION_SECRET antes de producción.');
+}
+
+const { consumeRateLimit } = await import('./utils/security.js');
 
 const {
   handlePushSubscription,
@@ -104,11 +116,6 @@ function readRequestBody(req) {
     req.on('end', () => resolve(body));
     req.on('error', reject);
   });
-}
-
-function getCookie(req, cookieName) {
-  const match = (req.headers.cookie || '').split(';').map(c => c.trim()).find(c => c.startsWith(`${cookieName}=`));
-  return match ? decodeURIComponent(match.slice(cookieName.length + 1)) : '';
 }
 
 function requireSameOriginRequest(req, res) {
@@ -190,7 +197,13 @@ function serveStaticFile(res, requestUrl) {
   if (!filePath.startsWith(distDir)) return sendJson(res, 403, { error: 'Acceso denegado' });
   if (!existsSync(filePath) || statSync(filePath).isDirectory()) filePath = join(distDir, 'index.html');
   const ext = extname(filePath);
-  res.writeHead(200, { ...securityHeaders, 'Content-Type': mimeTypes[ext] || 'application/octet-stream', 'Cache-Control': ext === '.html' ? 'no-store' : 'public, max-age=31536000, immutable' });
+  const fileName = filePath.slice(distDir.length).replaceAll('\\', '/');
+  const mustRevalidate = ext === '.html' || fileName === '/sw.js' || fileName === '/manifest.webmanifest';
+  res.writeHead(200, {
+    ...securityHeaders,
+    'Content-Type': mimeTypes[ext] || 'application/octet-stream',
+    'Cache-Control': mustRevalidate ? 'no-cache' : 'public, max-age=31536000, immutable'
+  });
   createReadStream(filePath).pipe(res);
 }
 
@@ -214,7 +227,7 @@ function extractControlDocItems(json) {
 // --- LÓGICA DE CONTROLDOC MULTI-EMPRESA ---
 function resolveControlDocCredentials(req) {
   const byUser = parseJsonEnv('CONTROLDOC_USER_CREDENTIALS_JSON');
-  const cookieUserId = req ? getCookie(req, 'compas_user_id') : null;
+  const cookieUserId = req ? getSessionUserId(req) : null;
   const requestedUserId = cookieUserId || process.env.CONTROLDOC_DEFAULT_USER_ID;
 
   const rawEntityTypes = process.env.API_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_IDS || process.env.CONTROLDOC_ENTITY_TYPE_ID || '467, 468, 469';
@@ -390,7 +403,7 @@ async function serveWithSWR(cacheKey, upstreamPath, credentials, extraParams = {
 
 async function proxyControlDocRequest(req, res, cleanPath) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'No permitido' });
-  const cookieUserId = getCookie(req, 'compas_user_id');
+  const cookieUserId = getSessionUserId(req);
   if (!cookieUserId) return sendJson(res, 401, { error: 'No autorizado' });
 
   let userEmail = '';
@@ -482,6 +495,7 @@ async function proxyControlDocRequest(req, res, cleanPath) {
 // --- SERVICIOS DE AUTENTICACIÓN ---
 async function handleLogin(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
+  if (!consumeRateLimit(req, res, 'auth-login', 10, 15 * 60 * 1000)) return;
   let payload;
   try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
   
@@ -541,6 +555,7 @@ async function handleLogout(req, res) {
 async function handleVerifyResetIdentity(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método no válido' });
   if (!requireSameOriginRequest(req, res)) return;
+  if (!consumeRateLimit(req, res, 'auth-reset-identity', 10, 15 * 60 * 1000)) return;
 
   let payload;
   try { payload = JSON.parse(await readRequestBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'JSON inválido' }); }
@@ -623,7 +638,7 @@ async function handleResetPassword(req, res) {
 }
 
 async function handleAuthMe(req, res) {
-  const userId = getCookie(req, 'compas_user_id');
+  const userId = getSessionUserId(req);
   if (!userId) return sendJson(res, 401, { error: 'No autorizado' });
   try {
     const [rows] = await dbPool.execute(`SELECT u.id, u.nombre, u.email, r.nombre as rol, r.id as rol_id FROM usuarios u LEFT JOIN usuarios_roles ur ON u.id = ur.usuario_id LEFT JOIN roles r ON ur.rol_id = r.id WHERE u.id = ? AND u.activo = TRUE`, [userId]);
@@ -635,7 +650,7 @@ async function handleAuthMe(req, res) {
 
 // --- SERVICIOS DE GESTIÓN (Roles Centralizados) ---
 async function getAdminRoleId(req) {
-  const cookieUserId = getCookie(req, 'compas_user_id');
+  const cookieUserId = getSessionUserId(req);
   if (!cookieUserId) return null;
   try {
     const [rows] = await dbPool.execute('SELECT r.id as rol_id FROM usuarios_roles ur JOIN roles r ON ur.rol_id = r.id WHERE ur.usuario_id = ?', [cookieUserId]);
@@ -812,16 +827,9 @@ async function handleSetupDB(req, res) {
     await dbPool.query(`CREATE TABLE IF NOT EXISTS entidades_api (id INT AUTO_INCREMENT PRIMARY KEY, external_id VARCHAR(100) NOT NULL UNIQUE, rut VARCHAR(50), nombre VARCHAR(255), email VARCHAR(150), data_json JSON)`);
     await dbPool.query(`CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint_hash CHAR(64) PRIMARY KEY, user_id INT NULL, endpoint TEXT NOT NULL, subscription_json JSON NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, INDEX idx_push_subscriptions_user_id (user_id))`);
     await dbPool.query(`CREATE TABLE IF NOT EXISTS push_notification_events (event_hash CHAR(64) PRIMARY KEY, user_id INT NULL, event_key TEXT NOT NULL, event_id TEXT NOT NULL, rule_version INT NOT NULL DEFAULT 1, sent_at DATETIME NOT NULL, last_sent_at DATETIME NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, INDEX idx_push_notification_events_user_id (user_id))`);
-    await dbPool.query(`CREATE TABLE IF NOT EXISTS email_notification_events (event_hash CHAR(64) PRIMARY KEY, user_id INT NOT NULL, event_key VARCHAR(1024) NOT NULL, event_id VARCHAR(1024) NOT NULL, threshold TINYINT NOT NULL, provider_id VARCHAR(255) NULL, sent_at DATETIME NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_email_notification_events_user_id (user_id), INDEX idx_email_notification_events_sent_at (sent_at))`);
+    await dbPool.query(`CREATE TABLE IF NOT EXISTS push_notification_history (event_hash CHAR(64) PRIMARY KEY, history_id VARCHAR(96) NOT NULL, user_id INT NOT NULL, event_id VARCHAR(1024) NOT NULL, notification_group VARCHAR(32) NOT NULL, threshold TINYINT NULL, title VARCHAR(255) NOT NULL, body TEXT NOT NULL, doc_name VARCHAR(255) NOT NULL, expiration_date VARCHAR(100) NULL, days_remaining INT NULL, sent_at DATETIME NOT NULL, last_sent_at DATETIME NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, INDEX idx_push_notification_history_user_id (user_id), INDEX idx_push_notification_history_last_sent_at (last_sent_at))`);
+    await dbPool.query(`CREATE TABLE IF NOT EXISTS email_notification_events (event_hash CHAR(64) PRIMARY KEY, user_id INT NOT NULL, event_key VARCHAR(1024) NOT NULL, event_id VARCHAR(1024) NOT NULL, threshold TINYINT NOT NULL, notification_group VARCHAR(32) NOT NULL, title VARCHAR(255) NOT NULL, body TEXT NOT NULL, doc_name VARCHAR(255) NOT NULL, expiration_date VARCHAR(100) NULL, days_remaining INT NULL, provider_id VARCHAR(255) NULL, sent_at DATETIME NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_email_notification_events_user_id (user_id), INDEX idx_email_notification_events_sent_at (sent_at))`);
     await dbPool.query(`INSERT IGNORE INTO roles (nombre) VALUES ('Admin Supremo'), ('Admin Gestor'), ('Admin'), ('Usuario')`);
-    
-    const [adminCheck] = await dbPool.execute('SELECT id FROM usuarios WHERE email = "admin@compasmarine.cl"');
-    if (adminCheck.length === 0) {
-      const hash = await bcrypt.hash('admin123', 12);
-      const [insertUser] = await dbPool.execute('INSERT INTO usuarios (nombre, email, password_hash) VALUES (?, ?, ?)', ['Admin', 'admin@compasmarine.cl', hash]);
-      const [roleCheck] = await dbPool.execute('SELECT id FROM roles WHERE nombre = "Admin Supremo"');
-      if (roleCheck.length > 0) await dbPool.execute('INSERT INTO usuarios_roles (usuario_id, rol_id) VALUES (?, ?)', [insertUser.insertId, roleCheck[0].id]);
-    }
     sendJson(res, 200, { ok: true, message: 'DB lista.' });
   } catch (err) { sendJson(res, 500, { error: err.message }); }
 }
@@ -908,7 +916,7 @@ const server = createServer(async (req, res) => {
     
     if (cleanPath === '/api/controldoc/documents/sync') { 
         if (!requireSameOriginRequest(req, res)) return;
-        if (!getCookie(req, 'compas_user_id')) return sendJson(res, 401, { error: 'No autorizado' });
+        if (!getSessionUserId(req)) return sendJson(res, 401, { error: 'No autorizado' });
         serverCache.documents.expiresAt = 0; 
         serverCache.entities.expiresAt = 0; 
         serverCache.documentTypes.expiresAt = 0; 

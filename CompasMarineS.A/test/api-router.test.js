@@ -16,7 +16,7 @@ test('apiRouter conserva health check y fallback 404', async () => {
   assert.equal(healthResponse.status, 200);
   const healthPayload = JSON.parse(healthResponse.body);
   assert.equal(healthPayload.ok, true);
-  assert.equal(healthPayload.email.from, 'noreply@compasmarinenotificaciones.com');
+  assert.equal(healthPayload.email.from, 'Compas Marine Notificaciones <notificaciones@compasmarinenotificaciones.com>');
   assert.equal(typeof healthPayload.email.ready, 'boolean');
 
   const notFoundResponse = response();

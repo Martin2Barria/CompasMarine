@@ -1,4 +1,4 @@
-const APP_CACHE = 'compas-marine-app-v4';
+const APP_CACHE = 'compas-marine-app-v5';
 const APP_SHELL = [
   '/',
   '/index.html',
