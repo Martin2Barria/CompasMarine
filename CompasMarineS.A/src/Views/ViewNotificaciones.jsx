@@ -109,7 +109,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
       await Promise.all([refreshPushStatus(), loadAlertHistory()]);
       onLoadingProgress?.({ percent: 100, done: true });
       setNotificationStatus('enabled');
-      setNotificationMessage('Avisos push activos en este celular. Llegarán aunque la app esté cerrada o el teléfono esté bloqueado, según la configuración del sistema.');
+      setNotificationMessage('Avisos activos en este celular. Llegarán aunque la app esté cerrada o el teléfono esté bloqueado, según la configuración del sistema.');
     } catch (error) {
       onLoadingProgress?.({ active: false });
       await refreshPushStatus();
@@ -163,7 +163,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
           >
             <div className="flex items-center gap-2 min-w-0">
               <span className="shrink-0">ℹ️</span>
-                <span className="leading-snug break-words">🔔 Activa las notificaciones push de este celular para recibir avisos aunque la app esté cerrada. El sistema avisa a 60 días cada 5 días, a 30 días cada día, a 1 día cada 6 horas y una sola vez cuando el documento ya venció.</span>
+                <span className="leading-snug break-words">🔔 Activa las notificaciones en este celular para recibir avisos aunque la app esté cerrada. El sistema avisa a 60 días cada 5 días, a 30 días cada día, a 1 día cada 6 horas y una sola vez cuando el documento ya venció.</span>
             </div>
             <span className="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold ml-2 shrink-0">✕</span>
           </div>
