@@ -50,6 +50,11 @@ export const PwaInstallPrompt = ({ className = '' }) => {
     };
   }, []);
 
+  useEffect(() => {
+    document.documentElement.classList.toggle('pwa-install-prompt-visible', shouldShow);
+    return () => document.documentElement.classList.remove('pwa-install-prompt-visible');
+  }, [shouldShow]);
+
   if (!shouldShow) return null;
 
   const handleInstall = async () => {
@@ -73,7 +78,7 @@ export const PwaInstallPrompt = ({ className = '' }) => {
 
   return (
     <div className={`z-[60] ${className}`}>
-      <div className="bg-[#394049] text-white rounded-xl shadow-lg border border-white/10 p-3">
+      <div className="bg-[#394049] text-white rounded-xl shadow-lg border border-white/10 p-3 max-h-[min(58vh,30rem)] overflow-y-auto scrollable-content">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
             <Smartphone className="w-5 h-5" />

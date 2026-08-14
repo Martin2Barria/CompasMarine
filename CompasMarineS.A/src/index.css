@@ -5,6 +5,15 @@
 .scrollable-content::-webkit-scrollbar { display: none; }
 .scrollable-content { -ms-overflow-style: none; scrollbar-width: none; }
 
+.pwa-scroll-content {
+  padding-bottom: 6.5rem;
+  transition: padding-bottom 180ms ease;
+}
+
+.pwa-install-prompt-visible .pwa-scroll-content {
+  padding-bottom: 13rem;
+}
+
 @keyframes fadeIn { 
   from { opacity: 0; transform: translateY(5px); } 
   to { opacity: 1; transform: translateY(0); } 

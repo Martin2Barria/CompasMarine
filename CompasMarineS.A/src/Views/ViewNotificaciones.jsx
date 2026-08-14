@@ -7,6 +7,7 @@ import {
   getNotificationPermissionState,
   getPushNotificationStatus,
   PUSH_STATUS_CHANGED_EVENT,
+  reactivatePushNotifications,
   sendTestPushNotification
 } from '../pwa/pushNotifications';
 import { getCachedNotificationRecords } from '../pwa/notificationRules';
@@ -26,6 +27,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
   const snapshotOwnerKey = getUserSnapshotKey(currentUser);
   const permissionState = pushStatus.permission;
   const canTestPush = pushStatus.active && permissionState === 'granted';
+  const activationButtonLabel = canTestPush ? 'Reactivar notificaciones' : 'Activar notificaciones';
 
   const loadAlertHistory = useCallback(async () => {
     const [records, emailEvents, pushEvents] = await Promise.all([
@@ -104,12 +106,13 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
     onLoadingProgress?.({ percent: 14 });
 
     try {
-      await enablePushNotifications();
+      if (canTestPush) await reactivatePushNotifications();
+      else await enablePushNotifications();
       onLoadingProgress?.({ percent: 72 });
       await Promise.all([refreshPushStatus(), loadAlertHistory()]);
       onLoadingProgress?.({ percent: 100, done: true });
       setNotificationStatus('enabled');
-      setNotificationMessage('Avisos push activos en este celular. Llegarán aunque la app esté cerrada o el teléfono esté bloqueado, según la configuración del sistema.');
+      setNotificationMessage('Avisos activos en este celular. Llegarán aunque la app esté cerrada o el teléfono esté bloqueado, según la configuración del sistema.');
     } catch (error) {
       onLoadingProgress?.({ active: false });
       await refreshPushStatus();
@@ -128,7 +131,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
       await sendTestPushNotification();
       onLoadingProgress?.({ percent: 100, done: true });
       setTestStatus('sent');
-      setNotificationMessage('Notificación push de prueba enviada.');
+      setNotificationMessage('Notificación de prueba enviada.');
     } catch (error) {
       onLoadingProgress?.({ active: false });
       setTestStatus('error');
@@ -152,7 +155,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
       </div>
       
       {/* Contenedor Principal */}
-      <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50 p-4 max-w-4xl mx-auto w-full space-y-4">
+      <main className="pwa-scroll-content flex-1 overflow-y-auto scrollable-content bg-gray-50 p-4 max-w-4xl mx-auto w-full space-y-4">
         
         {/* Guía breve para Notificaciones */}
         {showGuideNotif && (
@@ -163,7 +166,7 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
           >
             <div className="flex items-center gap-2 min-w-0">
               <span className="shrink-0">ℹ️</span>
-                <span className="leading-snug break-words">🔔 Activa las notificaciones push de este celular para recibir avisos aunque la app esté cerrada. El sistema avisa a 60 días cada 5 días, a 30 días cada día, a 1 día cada 6 horas y una sola vez cuando el documento ya venció.</span>
+                <span className="leading-snug break-words">🔔 Activa las notificaciones en este celular para recibir avisos aunque la app esté cerrada. El sistema avisa a 60 días cada 5 días, a 30 días cada día, a 1 día cada 6 horas y una sola vez cuando el documento ya venció.</span>
             </div>
             <span className="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold ml-2 shrink-0">✕</span>
           </div>
@@ -182,20 +185,32 @@ export const ViewNotificaciones = ({ setView, currentUser, onLoadingProgress }) 
                 Al entrar a la aplicación se intenta activar este celular. Si el navegador exige una acción manual, usa el botón de activación.
               </p>
               
-              <div className="w-full">
+              <div className="w-full flex flex-col sm:flex-row gap-2.5">
                 <button
-                  onClick={canTestPush ? handleSendTestNotification : handleEnableNotifications}
+                  onClick={handleEnableNotifications}
                   disabled={testStatus === 'loading' || notificationStatus === 'loading'}
-                  className={`w-full sm:w-auto text-white text-xs px-5 py-2.5 rounded-xl font-bold shadow-sm transition disabled:opacity-70 flex items-center justify-center min-h-[40px] sm:min-h-0 ${canTestPush ? 'bg-[#921E30] hover:bg-red-800 active:bg-red-900' : 'bg-[#394049] hover:bg-gray-700 active:bg-gray-800'}`}
+                  className="w-full sm:w-auto bg-[#394049] hover:bg-gray-700 active:bg-gray-800 text-white text-xs px-5 py-2.5 rounded-xl font-bold shadow-sm transition disabled:opacity-70 flex items-center justify-center min-h-[40px] sm:min-h-0"
                 >
-                  {testStatus === 'loading' || notificationStatus === 'loading' ? (
+                  {notificationStatus === 'loading' ? (
                     <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
-                  ) : canTestPush ? (
-                    <Send className="w-3.5 h-3.5 mr-2" />
                   ) : (
                     <BellRing className="w-3.5 h-3.5 mr-2" />
                   )}
-                  {canTestPush ? 'Probar push' : 'Activar notificaciones'}
+                  {activationButtonLabel}
+                </button>
+
+                <button
+                  onClick={handleSendTestNotification}
+                  disabled={!canTestPush || testStatus === 'loading' || notificationStatus === 'loading'}
+                  title={canTestPush ? 'Enviar una notificación de prueba a este dispositivo' : 'Activa las notificaciones antes de probar el envío'}
+                  className="w-full sm:w-auto bg-[#921E30] hover:bg-red-800 active:bg-red-900 text-white text-xs px-5 py-2.5 rounded-xl font-bold shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center min-h-[40px] sm:min-h-0"
+                >
+                  {testStatus === 'loading' ? (
+                    <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
+                  ) : (
+                    <Send className="w-3.5 h-3.5 mr-2" />
+                  )}
+                  Probar push
                 </button>
               </div>
 

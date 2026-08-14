@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Search, User, Clock, PenTool, Globe, ShieldAlert, KeyRound, Eye, EyeOff, RotateCcw } from 'lucide-react';
+import { Search, User, Clock, PenTool, Globe, ShieldAlert, KeyRound, Eye, EyeOff, RotateCcw, FolderOpen } from 'lucide-react';
 import { getApiUrl } from '../config/api'; // <-- IMPORTACIÓN CORREGIDA
+import {
+  identifierStartsWith,
+  matchesSearchTokenPrefixes,
+  normalizeSearchIdentifier,
+  normalizeSearchText,
+  splitSearchTokens
+} from '../utils/search';
 import {
   compareExpirationUrgency,
   getCalendarDaysRemaining,
@@ -84,9 +91,8 @@ const getDocumentComplianceBucket = (doc) => {
   return 'healthy';
 };
 
-const normalizeText = (value) => (value || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
-const normalizeIdentifier = (value) => normalizeText(value).replace(/[^a-z0-9]/g, '');
-const splitSearchTokens = (value) => normalizeText(value).split(/\s+/).filter(Boolean);
+const normalizeText = normalizeSearchText;
+const normalizeIdentifier = normalizeSearchIdentifier;
 
 const ENTITY_RUT_KEYS = ['rut', 'run', 'identifier', 'numero_de_documento', 'numero documento', 'numero_de_identificacion', 'document_number', 'identification', 'legal_id', 'dni'];
 const normalizeFieldKey = (value) => (value || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -191,7 +197,13 @@ const hasPendingSignature = (doc) => {
 };
 
 // COMPONENTE PRINCIPAL
-export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
+export const ViewInicio = ({
+  setView,
+  currentUser,
+  onLoadingProgress,
+  onAdminCollaboratorChange,
+  onOpenCollaboratorDocuments
+}) => {
   const [allDocs, setAllDocs] = useState([]);
   const [allEntities, setAllEntities] = useState([]);
   const [allTypes, setAllTypes] = useState([]);
@@ -470,19 +482,18 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     return allEntities.map((entity) => {
         const entityRut = getEntityRut(entity);
         const entityIdentifier = getEntityFieldValue(entity, ['identifier', 'document_number', 'identification', 'legal_id']);
-        const rutCandidates = [entityRut, entityIdentifier].filter(Boolean).map(normalizeIdentifier);
+        const rutCandidates = [entityRut, entityIdentifier].filter(Boolean);
         const nameText = normalizeText([getEntityDisplayName(entity), entity?.full_name, entity?.name, entity?.label].filter(Boolean).join(' '));
         const emailText = normalizeText(entity?.email);
 
         if (isIdentifierSearch) {
-          const exactStart = rutCandidates.some((value) => value.startsWith(identifierQuery));
-          const partial = rutCandidates.some((value) => value.includes(identifierQuery));
-          if (!partial) return null;
-          return { entity, score: exactStart ? 0 : 1, label: nameText };
+          const rutMatches = rutCandidates.some((value) => identifierStartsWith(value, identifierQuery));
+          if (!rutMatches) return null;
+          return { entity, score: 0, label: nameText };
         }
 
-        const nameMatches = textTokens.every((token) => nameText.includes(token));
-        const emailMatches = query.includes('@') && emailText.includes(query);
+        const nameMatches = matchesSearchTokenPrefixes(textTokens.join(' '), nameText);
+        const emailMatches = query.includes('@') && emailText.startsWith(query);
         if (!nameMatches && !emailMatches) return null;
 
         const startsWithQuery = nameText.startsWith(query);
@@ -497,6 +508,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     setSelectedUserId(entityId);
     setSearchTerm(getEntityDisplayName(entity));
     setIsAutocompleteOpen(false);
+    onAdminCollaboratorChange?.(entity);
     window.setTimeout(() => { onLoadingProgress?.({ percent: 100, done: true }); }, 220);
   };
 
@@ -504,6 +516,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
     setSearchTerm('');
     setSelectedUserId('');
     setIsAutocompleteOpen(false);
+    onAdminCollaboratorChange?.(null);
   };
 
   const syncSourceText = syncStats?.source === 'cache' ? 'celular' : 'servidor';
@@ -602,7 +615,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
         </div>
       </div>
 
-      <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
+      <main className="pwa-scroll-content flex-1 overflow-y-auto scrollable-content bg-gray-50">
         {serverNotice && (
             <div className="bg-yellow-50 text-yellow-800 p-4 mx-4 sm:mx-6 mt-4 rounded-xl text-xs font-medium border border-yellow-200 shadow-sm max-w-6xl md:mx-auto">
                 {serverNotice}
@@ -621,7 +634,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                 <span className="shrink-0">ℹ️</span>
                 <span className="leading-snug break-words">
                   {isAdminUser 
-                    ? '📊 Visualiza el cumplimiento documentario de toda la flota. Busca un tripulante para ver sus documentos específicos, monitorea vencimientos próximos y supervisa el estado general de cumplimiento.'
+                    ? '📊 Visualiza el cumplimiento documentario de toda la flota. Busca un colaborador por nombre o RUT para ver sus documentos específicos, monitorea vencimientos próximos y supervisa el estado general de cumplimiento.'
                     : '📋 Aquí ves el estado de todos tus documentos vigentes. Los documentos en rojo (🔴) requieren atención urgente. Revisa fechas de vencimiento y descarga copias si es necesario.'}
                 </span>
               </div>
@@ -637,7 +650,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                   <Search className="w-5 h-5 absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400" />
                   <input
                     type="text" value={searchTerm} onChange={(e) => { setSearchTerm(e.target.value); setSelectedUserId(''); setIsAutocompleteOpen(true); }}
-                    onFocus={() => setIsAutocompleteOpen(true)} placeholder="Busca un tripulante por nombre o RUT..."
+                    onFocus={() => setIsAutocompleteOpen(true)} autoComplete="off" placeholder="Busca un colaborador por nombre o RUT..."
                     className="w-full bg-transparent py-4 pl-12 pr-10 focus:outline-none text-sm"
                   />
                 {searchTerm && (
@@ -659,7 +672,7 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
               )}
               {isAutocompleteOpen && searchTerm && searchSuggestions.length === 0 && (
                 <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 p-4 text-xs text-gray-500">
-                  No se encontraron tripulantes con ese nombre o RUT.
+                  No se encontraron colaboradores con ese nombre o RUT.
                 </div>
               )}
             </div>
@@ -763,6 +776,17 @@ export const ViewInicio = ({ setView, currentUser, onLoadingProgress }) => {
                   <div className="h-3 rounded-full transition-all duration-1000 ease-out" style={{ width: `${selectedDocPercentage}%`, backgroundColor: getProgressColor(selectedDocPercentage) }}></div>
                 </div>
               </div>
+
+              {isAdminUser && selectedEntity && (
+                <button
+                  type="button"
+                  onClick={() => onOpenCollaboratorDocuments?.(selectedEntity)}
+                  className="mt-5 w-full sm:w-auto inline-flex items-center justify-center rounded-xl bg-[#394049] px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-gray-700 active:bg-gray-800"
+                >
+                  <FolderOpen className="w-4 h-4 mr-2" />
+                  Ver documentos
+                </button>
+              )}
             </div>
           )}
         </div>

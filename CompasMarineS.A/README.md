@@ -66,7 +66,7 @@ Los correos automáticos se envían únicamente a usuarios activos registrados e
 
 Las notificaciones push mantienen sus propios intervalos: 60 días cada 5 días, 30 días cada día y 1 día o menos cada 6 horas.
 
-Al entrar un usuario compatible, la aplicación intenta solicitar el permiso y registrar automáticamente el dispositivo. Si el navegador bloquea o no completa la activación, la vista Notificaciones muestra el botón `Activar notificaciones`; sólo cuando existe una suscripción activa muestra `Probar push`. Cada ocurrencia entregada se respalda como una fila independiente en `push_notification_history`, con su contenido y fecha, para mostrarla en esa vista. Al cerrar sesión, la suscripción del dispositivo se elimina para no mezclar avisos entre usuarios.
+Al entrar un usuario compatible, la aplicación intenta solicitar el permiso y registrar automáticamente el dispositivo. Si el navegador exige una interacción manual, se muestra un aviso de activación dentro de la app. El permiso y la suscripción permanecen activos en ese dispositivo mientras el usuario no los revoque desde el navegador o el sistema operativo. La vista Notificaciones mantiene dos botones separados: `Activar/Reactivar notificaciones`, que vuelve a crear y registrar la suscripción cuando sea necesario, y `Probar push`, habilitado cuando existe una suscripción activa. Cada ocurrencia entregada se respalda como una fila independiente en `push_notification_history`, con su contenido y fecha, para mostrarla en esa vista. Al cerrar sesión, la suscripción del dispositivo se elimina para no mezclar avisos entre usuarios.
 
 El endpoint de prueba push está disponible para el botón `Probar push`. Exige una
 sesión autenticada, aplica límite de solicitudes y solo envía a las suscripciones

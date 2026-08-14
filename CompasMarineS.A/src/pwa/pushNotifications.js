@@ -3,10 +3,10 @@ import { getApiUrl } from '../config/api';
 export const PUSH_STATUS_CHANGED_EVENT = 'compas:push-status-changed';
 let pushActivationPromise = null;
 
-export function enablePushNotifications() {
+export function enablePushNotifications(options = {}) {
   if (pushActivationPromise) return pushActivationPromise;
 
-  pushActivationPromise = activatePushNotifications()
+  pushActivationPromise = activatePushNotifications(options)
     .then((status) => {
       notifyPushStatusChanged(status);
       return status;
@@ -26,7 +26,11 @@ export function enablePushNotifications() {
   return pushActivationPromise;
 }
 
-async function activatePushNotifications() {
+export function reactivatePushNotifications() {
+  return enablePushNotifications({ forceResubscribe: true });
+}
+
+async function activatePushNotifications({ forceResubscribe = false } = {}) {
   if (!('Notification' in window)) {
     throw new Error('Este navegador no soporta notificaciones.');
   }
@@ -61,7 +65,15 @@ async function activatePushNotifications() {
   }
 
   const registration = await getPushServiceWorkerRegistration();
-  const existingSubscription = await registration.pushManager.getSubscription();
+  await registration.update?.().catch(() => null);
+
+  let existingSubscription = await registration.pushManager.getSubscription();
+  if (forceResubscribe && existingSubscription) {
+    await unregisterPushSubscription(existingSubscription).catch(() => null);
+    await existingSubscription.unsubscribe().catch(() => false);
+    existingSubscription = await registration.pushManager.getSubscription();
+  }
+
   const subscription = existingSubscription || await registration.pushManager.subscribe({
     userVisibleOnly: true,
     applicationServerKey: urlBase64ToUint8Array(publicKey)
@@ -86,6 +98,19 @@ async function activatePushNotifications() {
     permission: 'granted',
     active: true
   };
+}
+
+async function unregisterPushSubscription(subscription) {
+  const response = await fetch(getApiUrl('/notifications/subscriptions'), {
+    method: 'DELETE',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subscription })
+  });
+
+  if (!response.ok) {
+    throw new Error('No se pudo retirar la suscripción anterior del servidor.');
+  }
 }
 
 export function getNotificationPermissionState() {
