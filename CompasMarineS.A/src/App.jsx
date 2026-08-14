@@ -7,6 +7,7 @@ import { Login } from './Components/login';
 //unico cambio 28 Domingo
 import { OlvidastePassword } from './Components/olvidastePassword';
 import { PwaInstallPrompt } from './Components/PwaInstallPrompt';
+import { PushActivationPrompt } from './Components/PushActivationPrompt';
 import { SyncProgressOverlay } from './Components/SyncProgressOverlay';
 
 // Importaciones de Vistas
@@ -39,6 +40,7 @@ export default function App() {
   const hideProgressTimer = useRef(null);
   const [authScreen, setAuthScreen] = useState('login');
   const [darkMode, setDarkMode] = useState(getInitialDarkMode);
+  const [adminCollaboratorContext, setAdminCollaboratorContext] = useState(null);
   
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
@@ -154,6 +156,7 @@ export default function App() {
     setCurrentView('inicio');
     setVisitedViews(new Set(['inicio']));
     setSyncProgress({ active: false, percent: 0 });
+    setAdminCollaboratorContext(null);
   };
 
   const handleViewChange = (view) => {
@@ -176,6 +179,12 @@ export default function App() {
       return nextViews;
     });
     setCurrentView(nextView);
+  };
+
+  const handleOpenCollaboratorDocuments = (collaborator) => {
+    if (!collaborator?.id) return;
+    setAdminCollaboratorContext(collaborator);
+    handleViewChange('documentos');
   };
 
   if (isCheckingAuth) {
@@ -219,6 +228,7 @@ export default function App() {
     <div className="bg-gray-50 flex justify-center min-h-screen m-0 font-sans w-full">
       {/* SOLUCIÓN AL PROBLEMA 1: Quitamos max-w-[414px] o max-w-6xl. Ahora la app toma 'w-full' (ancho completo) */}
       <div className="w-full bg-white min-h-screen flex flex-col relative overflow-hidden pb-24">
+        <PushActivationPrompt enabled={!isAdminUser(currentUser)} />
         <SyncProgressOverlay active={syncProgress.active} percent={syncProgress.percent} />
         
         <Header onLogout={handleLogout} darkMode={darkMode} onToggleTheme={toggleTheme} />
@@ -227,13 +237,24 @@ export default function App() {
         <div className="flex-1 flex flex-col min-h-0 w-full mx-auto px-4 sm:px-6 md:px-8">
           {visitedViews.has('inicio') && (
             <div className={currentView === 'inicio' ? 'flex flex-col flex-1 min-h-0 w-full' : 'hidden'}>
-              <ViewInicio setView={handleViewChange} currentUser={currentUser} onLoadingProgress={reportLoadingProgress} />
+              <ViewInicio
+                setView={handleViewChange}
+                currentUser={currentUser}
+                onLoadingProgress={reportLoadingProgress}
+                onAdminCollaboratorChange={setAdminCollaboratorContext}
+                onOpenCollaboratorDocuments={handleOpenCollaboratorDocuments}
+              />
             </div>
           )}
 
           {visitedViews.has('documentos') && (
             <div className={currentView === 'documentos' ? 'flex flex-col flex-1 min-h-0 w-full' : 'hidden'}>
-              <ViewDocumentos currentUser={currentUser} onLoadingProgress={reportLoadingProgress} />
+              <ViewDocumentos
+                currentUser={currentUser}
+                onLoadingProgress={reportLoadingProgress}
+                focusedCollaborator={adminCollaboratorContext}
+                onCollaboratorChange={setAdminCollaboratorContext}
+              />
             </div>
           )}
 
@@ -252,11 +273,16 @@ export default function App() {
 
         {/* Contenedor limpio para la barra inferior */}
         <div className="w-full fixed bottom-0 left-0 right-0 z-30">
-          <BottomNav currentView={currentView} setCurrentView={handleViewChange} currentUser={currentUser} />
+          <BottomNav
+            currentView={currentView}
+            setCurrentView={handleViewChange}
+            currentUser={currentUser}
+            hideDocuments={isAdminUser(currentUser) && Boolean(adminCollaboratorContext)}
+          />
         </div>
 
         {/* Se subió un poco el cartel de PWA para que no pise los botones en celulares */}
-        <PwaInstallPrompt className="absolute left-4 right-4 bottom-28 z-40" />
+        <PwaInstallPrompt className="fixed left-3 right-3 bottom-[6.75rem] mx-auto max-w-lg z-[60]" />
       </div>
     </div>
   );

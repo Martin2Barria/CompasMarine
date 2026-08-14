@@ -148,7 +148,7 @@ export const Login = ({ onLoginSuccess, onLoadingProgress }) => {
                   className="bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 px-3 py-1.5 rounded-md text-[11px] font-medium mt-1 flex items-center justify-between cursor-pointer hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors select-none"
                   title="Haz clic para ocultar"
                 >
-                  <span>🔑 Ingrese su RUT completo como contraseña.</span>
+                  <span>🔑 Ingrese su RUT completo como contraseña, sin puntos ni guion. Ejemplo: 112223334.</span>
                   <span className="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold ml-2">✕</span>
                 </div>
               )}

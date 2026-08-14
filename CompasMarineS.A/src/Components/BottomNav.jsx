@@ -1,12 +1,16 @@
 import { Home, FolderOpen, Bell } from 'lucide-react';
 import { isAdminUser } from '../auth/userScope';
 
-export const BottomNav = ({ currentView, setCurrentView, currentUser }) => {
+export const BottomNav = ({ currentView, setCurrentView, currentUser, hideDocuments = false }) => {
   const navItems = [
     { id: 'inicio', icon: Home, label: 'Inicio' },
     { id: 'documentos', icon: FolderOpen, label: 'Docs' },
     { id: 'notificaciones', icon: Bell, label: 'Notif' }
-  ].filter((item) => item.id !== 'notificaciones' || !isAdminUser(currentUser));
+  ].filter((item) => {
+    if (item.id === 'notificaciones' && isAdminUser(currentUser)) return false;
+    if (item.id === 'documentos' && hideDocuments) return false;
+    return true;
+  });
 
   return (
     // CORRECCIÓN: Se cambió fixed con "w-[inherit]" por un layout fijo con "left-0 right-0 w-full"

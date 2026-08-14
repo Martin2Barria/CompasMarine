@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
-import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Eye, Tag, Download, User as UserIcon } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Eye, Tag, User as UserIcon } from 'lucide-react';
 import { getApiUrl } from '../config/api'; // <-- IMPORTACIÓN CORREGIDA
 import {
   getCalendarDaysRemaining,
@@ -11,6 +11,12 @@ import {
   hasExpiredDocumentStatus,
   parseControlDocDate
 } from '../controldoc/fields';
+import {
+  identifierStartsWith,
+  matchesSearchTokenPrefixes,
+  normalizeSearchIdentifier,
+  normalizeSearchText
+} from '../utils/search';
 
 const getUserSnapshotKey = (user) => user?.id ? `user_${user.id}` : 'global';
 const SNAPSHOT_FRESH_MS = 15 * 60 * 1000;
@@ -125,15 +131,18 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById, showEntityName = t
         </div>
 
         <div className="space-y-1.5 mb-3.5 text-xs px-0.5">
-          <div className="text-gray-400 flex justify-between gap-4">
-            <span>Emisión:</span> <span className="font-semibold text-gray-600">{issueDateValue ? formatDate(issueDateValue) : 'No informada'}</span>
+          <div className="text-gray-400 flex items-baseline justify-start gap-3">
+            <span className="shrink-0">Emisión:</span>
+            <span className="font-semibold text-gray-600">{issueDateValue ? formatDate(issueDateValue) : 'No informada'}</span>
           </div>
-          <div className="text-gray-400 flex justify-between gap-4">
-            <span>Expiración:</span> <span className="font-semibold text-gray-600">{formatDate(expirationDateValue)}</span>
+          <div className="text-gray-400 flex items-baseline justify-start gap-3">
+            <span className="shrink-0">Expiración:</span>
+            <span className="font-semibold text-gray-600">{formatDate(expirationDateValue)}</span>
           </div>
           {registrationDateValue && (
-            <div className="text-gray-400 flex justify-between gap-4">
-              <span>Registro en ControlDoc:</span> <span className="font-semibold text-gray-600">{formatDate(registrationDateValue)}</span>
+            <div className="text-gray-400 flex items-baseline justify-start gap-3">
+              <span className="shrink-0">Registro en ControlDoc:</span>
+              <span className="font-semibold text-gray-600">{formatDate(registrationDateValue)}</span>
             </div>
           )}
         </div>
@@ -142,15 +151,9 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityById, showEntityName = t
           <div className={`text-xs font-extrabold text-center px-4 py-1.5 rounded-full border whitespace-nowrap sm:inline-block flex-1 sm:flex-initial ${status.bgClass}`}>
             {status.label}
           </div>
-          {doc.download_base64_url ? (
-            <a href={doc.download_base64_url} target="_blank" rel="noreferrer" className="text-xs font-bold bg-[#394049] text-white px-4 py-2 rounded-xl flex items-center justify-center hover:bg-gray-700 active:bg-gray-800 transition shadow-sm text-center">
-              <Download className="w-3.5 h-3.5 mr-1.5 shrink-0" /> Ver / Bajar
-            </a>
-          ) : (
-             <a href={`https://compliance.controldoc.legal/documentos/${doc.id}`} target="_blank" rel="noreferrer" className="text-xs font-bold bg-[#394049]/10 text-[#394049] border border-[#394049]/20 px-4 py-2 rounded-xl flex items-center justify-center hover:bg-gray-200 active:bg-gray-300 transition shadow-sm text-center">
-              <Eye className="w-3.5 h-3.5 mr-1.5 shrink-0" /> Ver API
-            </a>
-          )}
+          <a href={`https://compliance.controldoc.legal/documentos/${doc.id}`} target="_blank" rel="noreferrer" className="text-xs font-bold bg-[#394049]/10 text-[#394049] border border-[#394049]/20 px-4 py-2 rounded-xl flex items-center justify-center hover:bg-gray-200 active:bg-gray-300 transition shadow-sm text-center">
+            <Eye className="w-3.5 h-3.5 mr-1.5 shrink-0" /> Ver API
+          </a>
         </div>
 
         {isBlocked && doc.blocked_description && (
@@ -189,7 +192,15 @@ const normalizeApiData = (rawData) => {
   };
 };
 
-const normalizeText = (value) => (value || '').toString().trim().toLowerCase();
+const getEntityDisplayName = (entity) => (
+  entity?.full_name || entity?.name || entity?.nombre || entity?.label || entity?.email || ''
+);
+
+const getEntityRut = (entity) => (
+  entity?.rut || entity?.run || entity?.identifier || entity?.numero_de_documento ||
+  entity?.custom_fields?.rut || entity?.custom_fields?.run ||
+  entity?.custom_fields?.numero_de_documento || entity?.custom_fields?.numero_documento || ''
+);
 
 const isRelevantBlockedDocument = (doc) => (
   hasBlockedDocumentStatus(doc) &&
@@ -226,7 +237,7 @@ const hasPendingSignature = (doc) => {
   });
 };
 
-export const ViewDocumentos = ({ currentUser }) => {
+export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onCollaboratorChange }) => {
   const [apiData, setApiData] = useState({ documents: [], entities: [], documentTypes: [] });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -234,11 +245,11 @@ export const ViewDocumentos = ({ currentUser }) => {
   const [cacheNotice, setCacheNotice] = useState('');
   
   const [selectedType, setSelectedType] = useState('all');
-  const [selectedEntityId, setSelectedEntityId] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [signatureFilter, setSignatureFilter] = useState('all');
   
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedSearchEntityId, setSelectedSearchEntityId] = useState('');
   const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
 
   const [visibleCount, setVisibleCount] = useState(50);
@@ -249,7 +260,14 @@ export const ViewDocumentos = ({ currentUser }) => {
   const isAdmin = currentUser ? hasAdminRole(currentUser) : false;
   const snapshotOwnerKey = getUserSnapshotKey(currentUser);
 
-  useEffect(() => { setVisibleCount(50); }, [selectedType, selectedEntityId, statusFilter, signatureFilter]);
+  useEffect(() => {
+    if (!isAdmin || !focusedCollaborator?.id) return;
+    setSelectedSearchEntityId(focusedCollaborator.id.toString());
+    setSearchTerm(getEntityDisplayName(focusedCollaborator));
+    setIsAutocompleteOpen(false);
+  }, [focusedCollaborator, isAdmin]);
+
+  useEffect(() => { setVisibleCount(50); }, [selectedType, statusFilter, signatureFilter, searchTerm, selectedSearchEntityId]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -350,13 +368,13 @@ export const ViewDocumentos = ({ currentUser }) => {
     const activeEntityIds = new Set(baseDocuments.map(d => d.entity_id?.toString() || d.abstract_entity_id?.toString()).filter(id => id && id !== 'undefined' && id !== 'null'));
     const usersMap = new Map();
     apiData.entities.forEach(e => {
-      if (e && e.id) usersMap.set(e.id.toString(), { id: e.id.toString(), name: e.full_name || e.name || e.email || `Usuario ${e.id}` });
+      if (e && e.id) usersMap.set(e.id.toString(), { ...e, id: e.id.toString(), name: getEntityDisplayName(e) || `Colaborador ${e.id}` });
     });
 
     const finalUsers = [];
     activeEntityIds.forEach(id => {
       if (usersMap.has(id)) finalUsers.push(usersMap.get(id));
-      else finalUsers.push({ id: id, name: `Tripulante ID: ${id}` });
+      else finalUsers.push({ id: id, name: `Colaborador ID: ${id}` });
     });
 
     return finalUsers.sort((a, b) => a.name.localeCompare(b.name));
@@ -364,13 +382,6 @@ export const ViewDocumentos = ({ currentUser }) => {
 
   const entityById = useMemo(() => new Map(apiData.entities.map(entity => [entity.id?.toString(), entity])), [apiData.entities]);
   const documentTypeById = useMemo(() => new Map(apiData.documentTypes.map(type => [type.id?.toString(), type])), [apiData.documentTypes]);
-
-  const getDocumentDisplayName = useCallback((doc) => {
-    const type = documentTypeById.get(doc.document_type_id?.toString());
-    const typeName = type?.name || type?.label || '';
-    const docLabel = doc.label || doc.name || '';
-    return `${typeName} ${docLabel}`.trim() || `Documento ${doc.id || ''}`;
-  }, [documentTypeById]);
 
   const processedDocuments = useMemo(() => {
     const urgencyValue = (days) => {
@@ -380,7 +391,9 @@ export const ViewDocumentos = ({ currentUser }) => {
       return 1000 + days;
     };
 
-    const query = normalizeText(searchTerm);
+    const query = normalizeSearchText(searchTerm);
+    const identifierQuery = normalizeSearchIdentifier(searchTerm);
+    const isIdentifierSearch = /\d/.test(searchTerm);
 
     return baseDocuments
       .map(doc => ({ doc, daysRemaining: getCalendarDaysRemaining(getDocumentExpirationDate(doc)) }))
@@ -389,13 +402,18 @@ export const ViewDocumentos = ({ currentUser }) => {
         const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString();
 
         const typeMatch = selectedType === 'all' || docTypeId === selectedType;
-        const entityMatch = (!isAdmin) || selectedEntityId === 'all' || docEntityId === selectedEntityId;
         const signatureMatch = signatureFilter === 'all' || hasPendingSignature(doc);
         const isNotBlocked = !isRelevantBlockedDocument(doc);
         const hasExpiredStatus = hasExpiredDocumentStatus(doc);
-        const searchableText = [getDocumentDisplayName(doc), doc.label, doc.name, doc.id, doc.document_type_id].filter(Boolean).join(' ').toLowerCase();
-
-        const searchMatch = query === '' || searchableText.includes(query);
+        const entity = entityById.get(docEntityId);
+        const entityName = getEntityDisplayName(entity);
+        const entityRut = getEntityRut(entity);
+        const collaboratorMatch = selectedSearchEntityId
+          ? docEntityId === selectedSearchEntityId
+          : isIdentifierSearch
+            ? identifierStartsWith(entityRut, identifierQuery)
+            : matchesSearchTokenPrefixes(query, entityName);
+        const searchMatch = query === '' || collaboratorMatch;
 
         let statusMatch = true;
         if (statusFilter !== 'all') {
@@ -406,32 +424,58 @@ export const ViewDocumentos = ({ currentUser }) => {
           else if (statusFilter === 'valid') statusMatch = daysRemaining > 60;
         }
 
-        return typeMatch && entityMatch && signatureMatch && statusMatch && isNotBlocked && searchMatch;
+        return typeMatch && signatureMatch && statusMatch && isNotBlocked && searchMatch;
       })
       .sort((a, b) => urgencyValue(a.daysRemaining) - urgencyValue(b.daysRemaining))
       .map(({ doc }) => doc);
-  }, [baseDocuments, selectedType, selectedEntityId, statusFilter, signatureFilter, searchTerm, getDocumentDisplayName, isAdmin]);
+  }, [baseDocuments, selectedType, statusFilter, signatureFilter, searchTerm, selectedSearchEntityId, entityById]);
 
   const documentsToRender = useMemo(() => processedDocuments.slice(0, visibleCount), [processedDocuments, visibleCount]);
   const totalDocumentsWithoutBlocked = useMemo(() => baseDocuments.filter((doc) => !isRelevantBlockedDocument(doc)).length, [baseDocuments]);
 
   const searchSuggestions = useMemo(() => {
     if (!searchTerm.trim()) return [];
-    return processedDocuments.slice(0, 6);
-  }, [processedDocuments, searchTerm]);
+    const identifierQuery = normalizeSearchIdentifier(searchTerm);
+    const isIdentifierSearch = /\d/.test(searchTerm);
 
-  const handleSelectSuggestion = (doc) => { setSearchTerm(getDocumentDisplayName(doc)); setIsAutocompleteOpen(false); };
-  const handleClearSelection = () => { setSearchTerm(''); setIsAutocompleteOpen(false); };
+    return relevantEntities
+      .filter((entity) => (
+        isIdentifierSearch
+          ? identifierStartsWith(getEntityRut(entity), identifierQuery)
+          : matchesSearchTokenPrefixes(searchTerm, getEntityDisplayName(entity))
+      ))
+      .slice(0, 8);
+  }, [relevantEntities, searchTerm]);
+
+  const handleSelectSuggestion = (entity) => {
+    setSelectedSearchEntityId(entity.id?.toString() || '');
+    setSearchTerm(getEntityDisplayName(entity));
+    setIsAutocompleteOpen(false);
+    onCollaboratorChange?.(entity);
+  };
+  const handleClearSelection = () => {
+    setSearchTerm('');
+    setSelectedSearchEntityId('');
+    setIsAutocompleteOpen(false);
+    onCollaboratorChange?.(null);
+  };
+
+  const selectedSearchEntity = entityById.get(selectedSearchEntityId) || focusedCollaborator;
+  const documentsTitle = isAdmin
+    ? selectedSearchEntity?.id
+      ? `Documentos de ${getEntityDisplayName(selectedSearchEntity)}`
+      : 'Documentos'
+    : 'Mis Documentos';
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden animate-fade-in w-full bg-gray-50">
       <div className="bg-[#394049] p-4 md:p-5 flex items-center justify-between flex-shrink-0 shadow-md">
         <h2 className="text-white text-lg md:text-xl font-semibold flex items-center">
-          <FolderOpen className="w-5 h-5 md:w-6 md:h-6 mr-2 shrink-0 text-gray-300" /> <span>Mis Documentos</span>
+          <FolderOpen className="w-5 h-5 md:w-6 md:h-6 mr-2 shrink-0 text-gray-300" /> <span>{documentsTitle}</span>
         </h2>
       </div>
 
-      <main className="flex-1 overflow-y-auto scrollable-content pb-24 bg-gray-50">
+      <main className="pwa-scroll-content flex-1 overflow-y-auto scrollable-content bg-gray-50">
         <div className="p-4 md:p-6 max-w-7xl mx-auto w-full space-y-4">
           
           {showGuideDocs && (
@@ -444,7 +488,7 @@ export const ViewDocumentos = ({ currentUser }) => {
                 <span className="shrink-0">ℹ️</span>
                 <span className="leading-snug break-words">
                   {isAdmin 
-                    ? '📁 Filtra por tipo de documento, usuario o estado para encontrar rápidamente. Supervisa documentos próximos a vencer (< 60 días) y revisa firmas pendientes. Descarga o visualiza documentos directamente.'
+                    ? '📁 Busca colaboradores por nombre o RUT y combina la búsqueda con los filtros de tipo, estado y firma para encontrar sus documentos.'
                     : '📄 Revisa aquí todos tus documentos. Usa los filtros para encontrar rápidamente lo que necesitas. Descarga copias o visualiza detalles en el portal de ControlDoc.'}
                 </span>
               </div>
@@ -473,28 +517,33 @@ export const ViewDocumentos = ({ currentUser }) => {
               
               {isAdmin && (
                 <div className="space-y-1">
-                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Buscar Documento</label>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Buscar colaborador</label>
                   <div className="relative">
                     <div className="relative bg-white rounded-xl border border-gray-200 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
                       <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                      <input type="text" value={searchTerm} onChange={(e) => { setSearchTerm(e.target.value); setIsAutocompleteOpen(true); }} onFocus={() => setIsAutocompleteOpen(true)} placeholder="Busca por nombre o tipo de documento..." className="w-full bg-transparent py-2.5 pl-10 pr-10 focus:outline-none text-sm text-gray-700 placeholder-gray-400" />
+                      <input type="text" value={searchTerm} onChange={(e) => { setSearchTerm(e.target.value); setSelectedSearchEntityId(''); setIsAutocompleteOpen(true); }} onFocus={() => setIsAutocompleteOpen(true)} autoComplete="off" placeholder="Busca un colaborador por nombre o RUT..." className="w-full bg-transparent py-2.5 pl-10 pr-10 focus:outline-none text-sm text-gray-700 placeholder-gray-400" />
                       {searchTerm && (<button type="button" onClick={handleClearSelection} className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 font-bold text-xs">✕</button>)}
                     </div>
                     {isAutocompleteOpen && searchSuggestions.length > 0 && (
                       <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 max-h-60 overflow-y-auto">
-                        {searchSuggestions.map((doc) => (
-                          <button key={doc.id} type="button" onClick={() => handleSelectSuggestion(doc)} className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-50 last:border-b-0">
-                            <p className="text-sm font-semibold text-gray-700 truncate">{getDocumentDisplayName(doc)}</p>
-                            <p className="text-[11px] text-gray-400 mt-0.5">ID: {doc.id}</p>
+                        {searchSuggestions.map((entity) => (
+                          <button key={entity.id} type="button" onClick={() => handleSelectSuggestion(entity)} className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-50 last:border-b-0">
+                            <p className="text-sm font-semibold text-gray-700 truncate">{getEntityDisplayName(entity)}</p>
+                            <p className="text-[11px] text-[#921E30] mt-0.5">RUT: {getEntityRut(entity) || 'Sin RUT'}</p>
                           </button>
                         ))}
+                      </div>
+                    )}
+                    {isAutocompleteOpen && searchTerm.trim() && searchSuggestions.length === 0 && (
+                      <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 p-4 text-xs text-gray-500">
+                        No se encontraron colaboradores con ese nombre o RUT.
                       </div>
                     )}
                   </div>
                 </div>
               )}
               
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
                 <div>
                   <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Tipo</label>
                   <select value={selectedType} onChange={(e) => setSelectedType(e.target.value)} className="w-full px-3 py-2 text-xs text-gray-600 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white truncate">
@@ -502,16 +551,6 @@ export const ViewDocumentos = ({ currentUser }) => {
                     {apiData.documentTypes.map(type => <option key={type.id} value={type.id?.toString()}>{type.name || type.label || `Tipo ${type.id}`}</option>)}
                   </select>
                 </div>
-                
-                {isAdmin && (
-                  <div>
-                    <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Usuario</label>
-                    <select value={selectedEntityId} onChange={(e) => setSelectedEntityId(e.target.value)} className="w-full px-3 py-2 text-xs text-gray-600 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#921E30] bg-white truncate">
-                      <option value="all">Todos los usuarios</option>
-                      {relevantEntities.map(entity => <option key={entity.id} value={entity.id?.toString()}>{entity.name}</option>)}
-                    </select>
-                  </div>
-                )}
                 
                 <div>
                   <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Estado</label>
