@@ -83,6 +83,9 @@ test('documentos diferencia emisión real de fecha de registro en ControlDoc', a
   assert.doesNotMatch(documentsView, /documentMatch/);
   assert.match(documentsView, /focusedCollaborator/);
   assert.match(documentsView, /Documentos de/);
+  assert.match(documentsView, /id="documents-company-filter"/);
+  assert.match(documentsView, /filterComplianceDataByCompany\(apiData\.entities, apiData\.documents, selectedCompanyKey\)/);
+  assert.match(documentsView, /Empresa seleccionada/);
 });
 
 test('el perfil administrativo abre documentos contextualizados y oculta el acceso global', async () => {

@@ -122,6 +122,8 @@ Endpoints relevantes observados:
 ### 4.3 ControlDoc y cache de backend
 
 - El backend consulta endpoints abstract de ControlDoc con paginacion.
+- La integracion multiempresa usa los tipos de entidad `467` (Compas Marine Servicios Acuícolas SpA), `468` (Compas Marine Trabajos Marítimos S.A.) y `469` (Compas Marine Servicios Acuícolas SA).
+- Cada entidad y documento conserva en `control_doc_source_entity_type_id` el tipo de entidad con el que fue descargado, para permitir filtros por empresa sin depender del texto de sus campos personalizados.
 - Mantiene cache en RAM para document-types, entities y documents.
 - Aplica filtrado estricto por rol para usuarios no admin.
 - Sincroniza entidades a MySQL con operaciones ON DUPLICATE KEY UPDATE.

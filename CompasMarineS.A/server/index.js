@@ -342,7 +342,11 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
           if (items.length === 0) {
               emptyPageDetected = true;
           } else {
-              allItems.push(...items);
+              allItems.push(...items.map((item) => (
+                item && typeof item === 'object' && !Array.isArray(item)
+                  ? { ...item, control_doc_source_entity_type_id: entityTypeId }
+                  : item
+              )));
           }
         }
 
@@ -358,7 +362,15 @@ async function fetchAllControlDocPages(upstreamPath, credentials, extraParams = 
     console.log(`[ControlDoc] Finalizada descarga global en ${upstreamPath}. Total acumulado: ${globalItems.length}`);
   } catch (err) { console.error("Error paginando:", err); }
   
-  return Array.from(new Map(globalItems.filter(i => i && i.id).map(item => [item.id, item])).values());
+  const isSharedCatalog = upstreamPath.includes('/document_types');
+  return Array.from(new Map(
+    globalItems
+      .filter((item) => item && item.id)
+      .map((item) => [
+        isSharedCatalog ? item.id : `${item.control_doc_source_entity_type_id}:${item.id}`,
+        item
+      ])
+  ).values());
 }
 
 async function serveWithSWR(cacheKey, upstreamPath, credentials, extraParams = {}) {
@@ -464,6 +476,7 @@ async function proxyControlDocRequest(req, res, cleanPath) {
       });
 
       const myExternalId = myEntity ? myEntity.id?.toString() : null;
+      const mySourceEntityTypeId = myEntity?.control_doc_source_entity_type_id?.toString() || '';
 
       if (!myExternalId) {
           console.log(`⚠️ [API] No se encontró entidad para el tripulante ${userEmail}.`);
@@ -471,7 +484,10 @@ async function proxyControlDocRequest(req, res, cleanPath) {
       }
 
       if (isUsersEndpoint) {
-          const filteredEntities = allEntities.filter(e => e.id?.toString() === myExternalId);
+          const filteredEntities = allEntities.filter((entity) => (
+            entity.id?.toString() === myExternalId &&
+            (!mySourceEntityTypeId || entity.control_doc_source_entity_type_id?.toString() === mySourceEntityTypeId)
+          ));
           return sendJson(res, 200, filteredEntities);
       }
 
@@ -479,7 +495,9 @@ async function proxyControlDocRequest(req, res, cleanPath) {
           const allDocs = await serveWithSWR('documents', upstreamPath, credentials);
           const filteredDocs = allDocs.filter(item => {
               const docEntityId = item.entity_id?.toString() || item.abstract_entity_id?.toString() || item.employee_id?.toString();
-              return docEntityId === myExternalId;
+              return docEntityId === myExternalId && (
+                !mySourceEntityTypeId || item.control_doc_source_entity_type_id?.toString() === mySourceEntityTypeId
+              );
           });
           console.log(`👤 [API] Enviando ${filteredDocs.length} documentos filtrados al tripulante ${userEmail}.`);
           return sendJson(res, 200, filteredDocs);

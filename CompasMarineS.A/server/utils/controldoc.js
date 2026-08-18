@@ -113,7 +113,11 @@ export async function fetchAllControlDocPages(upstreamPath, credentials, extraPa
           if (items.length === 0) {
             hasMore = false;
           } else {
-            allItems.push(...items);
+            allItems.push(...items.map((item) => (
+              item && typeof item === 'object' && !Array.isArray(item)
+                ? { ...item, control_doc_source_entity_type_id: entityTypeId }
+                : item
+            )));
             if (items.length < 25) hasMore = false; 
           }
         }
@@ -129,6 +133,15 @@ export async function fetchAllControlDocPages(upstreamPath, credentials, extraPa
     console.error("[ControlDoc Engine] Error durante la paginación concurrente:", err);
   }
   
-  // Limpiamos duplicados y retornamos
-  return Array.from(new Map(globalItems.filter(i => i && i.id).map(item => [item.id, item])).values());
+  // Conservamos registros con el mismo ID cuando pertenecen a empresas distintas.
+  // Los tipos de documento siguen siendo un catálogo compartido entre empresas.
+  const isSharedCatalog = upstreamPath.includes('/document_types');
+  return Array.from(new Map(
+    globalItems
+      .filter((item) => item && item.id)
+      .map((item) => [
+        isSharedCatalog ? item.id : `${item.control_doc_source_entity_type_id}:${item.id}`,
+        item
+      ])
+  ).values());
 }

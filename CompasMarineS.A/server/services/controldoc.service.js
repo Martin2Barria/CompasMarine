@@ -124,11 +124,22 @@ export async function proxyControlDocRequest(req, res, requestUrl, cleanPath) {
             });
             
             const myExternalId = myEntity ? myEntity.id?.toString() : null;
+            const mySourceEntityTypeId = myEntity?.control_doc_source_entity_type_id?.toString() || '';
+
+            if (!myExternalId) {
+                return sendJson(res, 200, []);
+            }
             
             if (cacheKey === 'entities') {
-                dataToSend = allEntities.filter(item => item && item.id?.toString() === myExternalId);
+                dataToSend = allEntities.filter((item) => item && (
+                    item.id?.toString() === myExternalId &&
+                    (!mySourceEntityTypeId || item.control_doc_source_entity_type_id?.toString() === mySourceEntityTypeId)
+                ));
             } else if (cacheKey === 'documents') {
-                dataToSend = cacheStore.data.filter(item => item && item.entity_id?.toString() === myExternalId);
+                dataToSend = cacheStore.data.filter((item) => item && (
+                    item.entity_id?.toString() === myExternalId &&
+                    (!mySourceEntityTypeId || item.control_doc_source_entity_type_id?.toString() === mySourceEntityTypeId)
+                ));
             }
             
             console.log(`👤 [API] Enviando solo ${dataToSend.length} registros que le pertenecen a ${userEmail}.`);
@@ -187,7 +198,7 @@ export async function handleSyncUsersToDB(req, res) {
       let emailRaw = entity.custom_fields?.correo_electronico_personal || entity.custom_fields?.correo_electronico_corporativo || entity.email || '';
       const email = emailRaw ? emailRaw.trim().toLowerCase() : null;
       const jsonString = JSON.stringify(entity);
-      const entityTypeToSave = entity.entity_type_id || credentials.entityTypeIds[0];
+      const entityTypeToSave = entity.control_doc_source_entity_type_id || entity.entity_type_id || credentials.entityTypeIds[0];
 
       await dbPool.execute(`
         INSERT INTO entidades_api (external_id, identifier, nombre, sexo, rut, email, telefono, customer_id, entity_type_id, data_json)
