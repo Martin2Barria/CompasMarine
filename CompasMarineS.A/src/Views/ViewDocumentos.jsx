@@ -17,6 +17,12 @@ import {
   normalizeSearchIdentifier,
   normalizeSearchText
 } from '../utils/search';
+import {
+  ALL_COMPANIES_KEY,
+  buildCompanyOptions,
+  filterComplianceDataByCompany,
+  getCompanyKey
+} from '../controldoc/companies';
 
 const getUserSnapshotKey = (user) => user?.id ? `user_${user.id}` : 'global';
 const SNAPSHOT_FRESH_MS = 15 * 60 * 1000;
@@ -50,10 +56,20 @@ const hasAdminRole = (user) => {
   return ['admin supremo', 'admin gestor', 'lector global', 'admin'].includes(roleName) || roleName.includes('admin');
 };
 
+const getEntityRecordKey = (entity) => {
+  const entityId = entity?.id?.toString() || '';
+  return entityId ? `${getCompanyKey(entity) || 'sin-empresa'}:${entityId}` : '';
+};
+
+const getDocumentEntityRecordKey = (doc) => {
+  const entityId = getDocumentEntityId(doc);
+  return entityId ? `${getCompanyKey(doc) || 'sin-empresa'}:${entityId}` : '';
+};
+
 // --- COMPONENTE DE TARJETA ESTÉTICO ---
-const ApiDocumentCard = ({ doc, documentTypeById, entityById, showEntityName = true }) => {
+const ApiDocumentCard = ({ doc, documentTypeById, entityByRecordKey, entityById, showEntityName = true }) => {
   const docEntityId = getDocumentEntityId(doc);
-  const entity = entityById ? entityById.get(docEntityId) : null;
+  const entity = entityByRecordKey?.get(getDocumentEntityRecordKey(doc)) || entityById?.get(docEntityId) || null;
   const docType = documentTypeById ? documentTypeById.get(doc.document_type_id?.toString()) : null;
   
   const entityName = entity?.full_name || entity?.name || entity?.label || entity?.email || docEntityId || 'Sin Nombre';
@@ -247,9 +263,10 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
   const [selectedType, setSelectedType] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [signatureFilter, setSignatureFilter] = useState('all');
+  const [selectedCompanyKey, setSelectedCompanyKey] = useState(ALL_COMPANIES_KEY);
   
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedSearchEntityId, setSelectedSearchEntityId] = useState('');
+  const [selectedSearchEntityKey, setSelectedSearchEntityKey] = useState('');
   const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
 
   const [visibleCount, setVisibleCount] = useState(50);
@@ -262,12 +279,13 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
 
   useEffect(() => {
     if (!isAdmin || !focusedCollaborator?.id) return;
-    setSelectedSearchEntityId(focusedCollaborator.id.toString());
+    setSelectedSearchEntityKey(getEntityRecordKey(focusedCollaborator));
+    setSelectedCompanyKey(getCompanyKey(focusedCollaborator) || ALL_COMPANIES_KEY);
     setSearchTerm(getEntityDisplayName(focusedCollaborator));
     setIsAutocompleteOpen(false);
   }, [focusedCollaborator, isAdmin]);
 
-  useEffect(() => { setVisibleCount(50); }, [selectedType, statusFilter, signatureFilter, searchTerm, selectedSearchEntityId]);
+  useEffect(() => { setVisibleCount(50); }, [selectedType, statusFilter, signatureFilter, selectedCompanyKey, searchTerm, selectedSearchEntityKey]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -359,28 +377,69 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
     return () => { isCancelled = true; };
   }, [currentUser, isAdmin, snapshotOwnerKey]);
 
-  // CONFIANZA CIEGA EN EL BACKEND: Lo que llega es lo que se pinta.
-  const baseDocuments = apiData.documents;
+  const companyOptions = useMemo(() => buildCompanyOptions(apiData.entities), [apiData.entities]);
+  const selectedCompany = useMemo(
+    () => companyOptions.find((company) => company.key === selectedCompanyKey) || companyOptions[0],
+    [companyOptions, selectedCompanyKey]
+  );
+  const companyScopedData = useMemo(
+    () => filterComplianceDataByCompany(apiData.entities, apiData.documents, selectedCompanyKey),
+    [apiData.documents, apiData.entities, selectedCompanyKey]
+  );
+
+  useEffect(() => {
+    if (companyOptions.some((company) => company.key === selectedCompanyKey)) return;
+    setSelectedCompanyKey(ALL_COMPANIES_KEY);
+    setSelectedSearchEntityKey('');
+    setSearchTerm('');
+    onCollaboratorChange?.(null);
+  }, [companyOptions, onCollaboratorChange, selectedCompanyKey]);
+
+  // El backend conserva la empresa de origen; desde aquí todos los filtros se encadenan a esa selección.
+  const baseDocuments = isAdmin ? companyScopedData.documents : apiData.documents;
+  const baseEntities = isAdmin ? companyScopedData.entities : apiData.entities;
 
   const relevantEntities = useMemo(() => {
-    if (!isAdmin) return apiData.entities.length > 0 ? [apiData.entities[0]] : [];
+    if (!isAdmin) return baseEntities.length > 0 ? [baseEntities[0]] : [];
 
-    const activeEntityIds = new Set(baseDocuments.map(d => d.entity_id?.toString() || d.abstract_entity_id?.toString()).filter(id => id && id !== 'undefined' && id !== 'null'));
-    const usersMap = new Map();
-    apiData.entities.forEach(e => {
-      if (e && e.id) usersMap.set(e.id.toString(), { ...e, id: e.id.toString(), name: getEntityDisplayName(e) || `Colaborador ${e.id}` });
+    const activeEntityKeys = new Set(baseDocuments.map(getDocumentEntityRecordKey).filter(Boolean));
+    const activeUnscopedEntityIds = new Set(
+      baseDocuments
+        .filter((doc) => !getCompanyKey(doc))
+        .map(getDocumentEntityId)
+        .filter(Boolean)
+    );
+
+    return baseEntities
+      .filter((entity) => (
+        activeEntityKeys.has(getEntityRecordKey(entity)) ||
+        activeUnscopedEntityIds.has(entity.id?.toString())
+      ))
+      .map((entity) => ({ ...entity, id: entity.id?.toString(), name: getEntityDisplayName(entity) || `Colaborador ${entity.id}` }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'es'));
+  }, [baseDocuments, baseEntities, isAdmin]);
+
+  const entityByRecordKey = useMemo(
+    () => new Map(apiData.entities.map((entity) => [getEntityRecordKey(entity), entity]).filter(([key]) => key)),
+    [apiData.entities]
+  );
+  const entityById = useMemo(() => {
+    const entitiesById = new Map();
+    const ambiguousIds = new Set();
+
+    apiData.entities.forEach((entity) => {
+      const entityId = entity.id?.toString();
+      if (!entityId || ambiguousIds.has(entityId)) return;
+      if (entitiesById.has(entityId)) {
+        entitiesById.delete(entityId);
+        ambiguousIds.add(entityId);
+      } else {
+        entitiesById.set(entityId, entity);
+      }
     });
 
-    const finalUsers = [];
-    activeEntityIds.forEach(id => {
-      if (usersMap.has(id)) finalUsers.push(usersMap.get(id));
-      else finalUsers.push({ id: id, name: `Colaborador ID: ${id}` });
-    });
-
-    return finalUsers.sort((a, b) => a.name.localeCompare(b.name));
-  }, [isAdmin, baseDocuments, apiData.entities]);
-
-  const entityById = useMemo(() => new Map(apiData.entities.map(entity => [entity.id?.toString(), entity])), [apiData.entities]);
+    return entitiesById;
+  }, [apiData.entities]);
   const documentTypeById = useMemo(() => new Map(apiData.documentTypes.map(type => [type.id?.toString(), type])), [apiData.documentTypes]);
 
   const processedDocuments = useMemo(() => {
@@ -405,11 +464,13 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
         const signatureMatch = signatureFilter === 'all' || hasPendingSignature(doc);
         const isNotBlocked = !isRelevantBlockedDocument(doc);
         const hasExpiredStatus = hasExpiredDocumentStatus(doc);
-        const entity = entityById.get(docEntityId);
+        const documentEntityKey = getDocumentEntityRecordKey(doc);
+        const entity = entityByRecordKey.get(documentEntityKey) || entityById.get(docEntityId);
+        const resolvedEntityKey = entity ? getEntityRecordKey(entity) : documentEntityKey;
         const entityName = getEntityDisplayName(entity);
         const entityRut = getEntityRut(entity);
-        const collaboratorMatch = selectedSearchEntityId
-          ? docEntityId === selectedSearchEntityId
+        const collaboratorMatch = selectedSearchEntityKey
+          ? resolvedEntityKey === selectedSearchEntityKey
           : isIdentifierSearch
             ? identifierStartsWith(entityRut, identifierQuery)
             : matchesSearchTokenPrefixes(query, entityName);
@@ -428,7 +489,7 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
       })
       .sort((a, b) => urgencyValue(a.daysRemaining) - urgencyValue(b.daysRemaining))
       .map(({ doc }) => doc);
-  }, [baseDocuments, selectedType, statusFilter, signatureFilter, searchTerm, selectedSearchEntityId, entityById]);
+  }, [baseDocuments, selectedType, statusFilter, signatureFilter, searchTerm, selectedSearchEntityKey, entityById, entityByRecordKey]);
 
   const documentsToRender = useMemo(() => processedDocuments.slice(0, visibleCount), [processedDocuments, visibleCount]);
   const totalDocumentsWithoutBlocked = useMemo(() => baseDocuments.filter((doc) => !isRelevantBlockedDocument(doc)).length, [baseDocuments]);
@@ -448,19 +509,27 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
   }, [relevantEntities, searchTerm]);
 
   const handleSelectSuggestion = (entity) => {
-    setSelectedSearchEntityId(entity.id?.toString() || '');
+    setSelectedSearchEntityKey(getEntityRecordKey(entity));
     setSearchTerm(getEntityDisplayName(entity));
     setIsAutocompleteOpen(false);
     onCollaboratorChange?.(entity);
   };
   const handleClearSelection = () => {
     setSearchTerm('');
-    setSelectedSearchEntityId('');
+    setSelectedSearchEntityKey('');
     setIsAutocompleteOpen(false);
     onCollaboratorChange?.(null);
   };
 
-  const selectedSearchEntity = entityById.get(selectedSearchEntityId) || focusedCollaborator;
+  const handleCompanyChange = (event) => {
+    setSelectedCompanyKey(event.target.value);
+    setSearchTerm('');
+    setSelectedSearchEntityKey('');
+    setIsAutocompleteOpen(false);
+    onCollaboratorChange?.(null);
+  };
+
+  const selectedSearchEntity = entityByRecordKey.get(selectedSearchEntityKey) || focusedCollaborator;
   const documentsTitle = isAdmin
     ? selectedSearchEntity?.id
       ? `Documentos de ${getEntityDisplayName(selectedSearchEntity)}`
@@ -488,7 +557,7 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
                 <span className="shrink-0">ℹ️</span>
                 <span className="leading-snug break-words">
                   {isAdmin 
-                    ? '📁 Busca colaboradores por nombre o RUT y combina la búsqueda con los filtros de tipo, estado y firma para encontrar sus documentos.'
+                    ? '📁 Filtra por empresa, busca colaboradores por nombre o RUT y combina la búsqueda con tipo, estado y firma para encontrar sus documentos.'
                     : '📄 Revisa aquí todos tus documentos. Usa los filtros para encontrar rápidamente lo que necesitas. Descarga copias o visualiza detalles en el portal de ControlDoc.'}
                 </span>
               </div>
@@ -508,7 +577,7 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
             <div className="bg-yellow-50 text-yellow-800 p-3 rounded-xl text-xs font-medium border border-yellow-100 shadow-sm">{cacheNotice}</div>
           )}
 
-          {baseDocuments.length > 0 && (
+          {(isAdmin || baseDocuments.length > 0) && (
             <div className="bg-white rounded-2xl p-4 md:p-5 border border-gray-100 shadow-sm space-y-4">
               <div className="flex items-center gap-2 border-b border-gray-50 pb-2">
                 <Filter className="w-4 h-4 text-[#921E30]" />
@@ -516,31 +585,55 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
               </div>
               
               {isAdmin && (
-                <div className="space-y-1">
-                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Buscar colaborador</label>
-                  <div className="relative">
-                    <div className="relative bg-white rounded-xl border border-gray-200 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
-                      <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                      <input type="text" value={searchTerm} onChange={(e) => { setSearchTerm(e.target.value); setSelectedSearchEntityId(''); setIsAutocompleteOpen(true); }} onFocus={() => setIsAutocompleteOpen(true)} autoComplete="off" placeholder="Busca un colaborador por nombre o RUT..." className="w-full bg-transparent py-2.5 pl-10 pr-10 focus:outline-none text-sm text-gray-700 placeholder-gray-400" />
-                      {searchTerm && (<button type="button" onClick={handleClearSelection} className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 font-bold text-xs">✕</button>)}
+                <>
+                  <div className="grid grid-cols-2 items-center rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5">
+                    <div className="min-w-0 px-2 text-center">
+                      <p className="text-[9px] font-bold uppercase tracking-wider text-gray-400">Empresa seleccionada</p>
+                      <p className="break-words text-xs font-bold leading-tight text-[#394049]" title={selectedCompany?.label || 'Todos'}>
+                        {selectedCompany?.label || 'Todos'}
+                      </p>
                     </div>
-                    {isAutocompleteOpen && searchSuggestions.length > 0 && (
-                      <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 max-h-60 overflow-y-auto">
-                        {searchSuggestions.map((entity) => (
-                          <button key={entity.id} type="button" onClick={() => handleSelectSuggestion(entity)} className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-50 last:border-b-0">
-                            <p className="text-sm font-semibold text-gray-700 truncate">{getEntityDisplayName(entity)}</p>
-                            <p className="text-[11px] text-[#921E30] mt-0.5">RUT: {getEntityRut(entity) || 'Sin RUT'}</p>
-                          </button>
+                    <div className="flex items-center justify-center border-l border-gray-200 px-2">
+                      <label htmlFor="documents-company-filter" className="sr-only">Filtrar documentos por empresa</label>
+                      <select
+                        id="documents-company-filter"
+                        value={selectedCompanyKey}
+                        onChange={handleCompanyChange}
+                        className="w-full max-w-sm rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs font-semibold text-gray-600 focus:outline-none focus:ring-2 focus:ring-[#921E30]"
+                      >
+                        {companyOptions.map((company) => (
+                          <option key={company.key} value={company.key}>{company.label}</option>
                         ))}
-                      </div>
-                    )}
-                    {isAutocompleteOpen && searchTerm.trim() && searchSuggestions.length === 0 && (
-                      <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 p-4 text-xs text-gray-500">
-                        No se encontraron colaboradores con ese nombre o RUT.
-                      </div>
-                    )}
+                      </select>
+                    </div>
                   </div>
-                </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Buscar colaborador</label>
+                    <div className="relative">
+                      <div className="relative bg-white rounded-xl border border-gray-200 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
+                        <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                        <input type="text" value={searchTerm} onChange={(e) => { setSearchTerm(e.target.value); setSelectedSearchEntityKey(''); setIsAutocompleteOpen(true); onCollaboratorChange?.(null); }} onFocus={() => setIsAutocompleteOpen(true)} autoComplete="off" placeholder="Busca un colaborador por nombre o RUT..." className="w-full bg-transparent py-2.5 pl-10 pr-10 focus:outline-none text-sm text-gray-700 placeholder-gray-400" />
+                        {searchTerm && (<button type="button" onClick={handleClearSelection} className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 font-bold text-xs">✕</button>)}
+                      </div>
+                      {isAutocompleteOpen && searchSuggestions.length > 0 && (
+                        <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 max-h-60 overflow-y-auto">
+                          {searchSuggestions.map((entity) => (
+                            <button key={getEntityRecordKey(entity)} type="button" onClick={() => handleSelectSuggestion(entity)} className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-50 last:border-b-0">
+                              <p className="text-sm font-semibold text-gray-700 truncate">{getEntityDisplayName(entity)}</p>
+                              <p className="text-[11px] text-[#921E30] mt-0.5">RUT: {getEntityRut(entity) || 'Sin RUT'}</p>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {isAutocompleteOpen && searchTerm.trim() && searchSuggestions.length === 0 && (
+                        <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 p-4 text-xs text-gray-500">
+                          No se encontraron colaboradores con ese nombre o RUT en esta empresa.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
               )}
               
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
@@ -593,14 +686,32 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
           {!isLoading && baseDocuments.length === 0 && !error && (
             <div className="text-center py-16 text-gray-400 bg-white rounded-2xl border border-gray-100 shadow-sm">
               <FileText className="w-12 h-12 mx-auto mb-2 opacity-20" />
-              <p className="text-sm font-medium">No tienes documentos cargados.</p>
+              <p className="text-sm font-medium">
+                {isAdmin && selectedCompanyKey !== ALL_COMPANIES_KEY
+                  ? `No hay documentos para ${selectedCompany?.label || 'la empresa seleccionada'}.`
+                  : 'No hay documentos cargados.'}
+              </p>
+            </div>
+          )}
+
+          {!isLoading && baseDocuments.length > 0 && processedDocuments.length === 0 && !error && (
+            <div className="text-center py-12 text-gray-400 bg-white rounded-2xl border border-gray-100 shadow-sm">
+              <FileText className="w-10 h-10 mx-auto mb-2 opacity-20" />
+              <p className="text-sm font-medium">No hay documentos que coincidan con los filtros seleccionados.</p>
             </div>
           )}
 
           {documentsToRender.length > 0 && (
             <div className="space-y-3">
               {documentsToRender.map((doc) => (
-                <ApiDocumentCard key={doc.id} doc={doc} entityById={entityById} documentTypeById={documentTypeById} showEntityName={isAdmin} />
+                <ApiDocumentCard
+                  key={`${getCompanyKey(doc) || 'sin-empresa'}:${doc.id}`}
+                  doc={doc}
+                  entityByRecordKey={entityByRecordKey}
+                  entityById={entityById}
+                  documentTypeById={documentTypeById}
+                  showEntityName={isAdmin}
+                />
               ))}
             </div>
           )}

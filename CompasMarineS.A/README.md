@@ -28,10 +28,16 @@ CONTROLDOC_BASE_URL=
 CONTROLDOC_USER_EMAIL=
 CONTROLDOC_USER_TOKEN=
 CONTROLDOC_CUSTOMER_ID=
-CONTROLDOC_DEFAULT_ENTITY_TYPE_ID=
+CONTROLDOC_ENTITY_TYPE_IDS=467,468,469
 SESSION_SECRET=
 SESSION_MAX_AGE_SECONDS=2592000
 ```
+
+Los tipos de entidad configurados corresponden a:
+
+- `467`: Compas Marine Servicios Acuícolas SpA
+- `468`: Compas Marine Trabajos Marítimos S.A.
+- `469`: Compas Marine Servicios Acuícolas SA
 
 ## PWA y Notificaciones
 

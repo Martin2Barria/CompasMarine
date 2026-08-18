@@ -16,6 +16,13 @@ import {
   hasExpiredDocumentStatus,
   parseControlDocDate
 } from '../controldoc/fields';
+import {
+  ALL_COMPANIES_KEY,
+  buildCompanyOptions,
+  filterComplianceDataByCompany,
+  getCompanyKey,
+  getControlDocSourceId
+} from '../controldoc/companies';
 
 const isControlDocSnapshotFresh = (snapshot, maxAgeMs) => {
   if (!snapshot || !snapshot.savedAt) return false;
@@ -146,6 +153,10 @@ const getEntityRut = (entity) => getEntityFieldValue(entity, ENTITY_RUT_KEYS);
 const getEntityEmail = (entity) => getEntityFieldValue(entity, ['email', 'correo_electronico_personal', 'correo electronico personal', 'correo_electronico_corporativo', 'correo electronico corporativo', 'correo', 'mail']);
 const getEntityCorporateEmail = (entity) => getEntityFieldValue(entity, ['correo_electronico_corporativo', 'correo electronico corporativo', 'email_corporativo', 'email corporativo', 'corporate_email', 'corporateEmail', 'work_email', 'workEmail', 'correo_empresa', 'correo empresa']);
 const getEntityPhone = (entity) => getEntityFieldValue(entity, ['telefono', 'teléfono', 'phone', 'mobile', 'celular', 'telefono_movil', 'telefono movil', 'numero_telefono', 'numero telefono', 'phone_number', 'phoneNumber', 'contact_phone', 'contactPhone']);
+const getEntitySelectionKey = (entity) => {
+  const entityId = entity?.id?.toString() || '';
+  return entityId ? `${getCompanyKey(entity) || 'sin-empresa'}:${entityId}` : '';
+};
 const SNAPSHOT_FRESH_MS = 15 * 60 * 1000;
 const SEVERITY_COLORS = {
   red: '#921E30',
@@ -207,7 +218,8 @@ export const ViewInicio = ({
   const [allDocs, setAllDocs] = useState([]);
   const [allEntities, setAllEntities] = useState([]);
   const [allTypes, setAllTypes] = useState([]);
-  const [selectedUserId, setSelectedUserId] = useState('');
+  const [selectedEntityKey, setSelectedEntityKey] = useState('');
+  const [selectedCompanyKey, setSelectedCompanyKey] = useState(ALL_COMPANIES_KEY);
   const [searchTerm, setSearchTerm] = useState('');
   const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -381,10 +393,10 @@ export const ViewInicio = ({
   // 1. Confianza ciega en la API: allEntities viene filtrado para tripulantes
   const selectedEntity = useMemo(() => {
     if (isAdminUser) {
-      return selectedUserId ? allEntities.find((item) => item.id?.toString() === selectedUserId.toString()) : null;
+      return selectedEntityKey ? allEntities.find((item) => getEntitySelectionKey(item) === selectedEntityKey) : null;
     }
     return allEntities.length > 0 ? allEntities[0] : null;
-  }, [allEntities, isAdminUser, selectedUserId]);
+  }, [allEntities, isAdminUser, selectedEntityKey]);
 
   const displayEntity = selectedEntity || (!isAdminUser ? {
     name: getCurrentUserDisplayName(currentUser), 
@@ -410,10 +422,15 @@ export const ViewInicio = ({
   // 2. Confianza ciega en la API: allDocs viene filtrado para tripulantes
   const selectedUserDocs = useMemo(() => {
     if (!isAdminUser) return allDocs; 
-    if (!selectedUserId) return []; // Admin viendo vista global
-    
-    return allDocs.filter((doc) => getDocumentEntityIds(doc).includes(selectedUserId.toString()));
-  }, [isAdminUser, selectedUserId, allDocs]);
+    if (!selectedEntity) return []; // Admin viendo vista global
+
+    const entityId = selectedEntity.id?.toString() || '';
+    const sourceId = getControlDocSourceId(selectedEntity);
+    return allDocs.filter((doc) => {
+      if (!getDocumentEntityIds(doc).includes(entityId)) return false;
+      return !sourceId || getControlDocSourceId(doc) === sourceId;
+    });
+  }, [allDocs, isAdminUser, selectedEntity]);
 
   const selectedPendingSignatures = useMemo(() =>
     selectedUserDocs.filter(hasPendingSignature).map((doc) => ({ ...doc, displayName: getDocName(doc) })), [selectedUserDocs, getDocName]
@@ -434,43 +451,88 @@ export const ViewInicio = ({
     return Math.round((selectedHealthyDocsCount / selectedUserDocs.length) * 100);
   }, [selectedHealthyDocsCount, selectedUserDocs.length]);
 
+  const companyOptions = useMemo(() => buildCompanyOptions(allEntities), [allEntities]);
+  const selectedCompany = useMemo(
+    () => companyOptions.find((company) => company.key === selectedCompanyKey) || companyOptions[0],
+    [companyOptions, selectedCompanyKey]
+  );
+
+  useEffect(() => {
+    if (!companyOptions.some((company) => company.key === selectedCompanyKey)) {
+      setSelectedCompanyKey(ALL_COMPANIES_KEY);
+    }
+  }, [companyOptions, selectedCompanyKey]);
+
+  const complianceData = useMemo(
+    () => filterComplianceDataByCompany(allEntities, allDocs, selectedCompanyKey),
+    [allDocs, allEntities, selectedCompanyKey]
+  );
+
   const globalMetrics = useMemo(() => {
-    const totalDocsCount = allDocs.length;
+    const totalDocsCount = complianceData.documents.length;
     let docsAlDia = 0, docsCaducados = 0, docsEn30Dias = 0, docsEn3060Dias = 0;
 
-    const collaboratorStatusMap = {};
-    allEntities.forEach(ent => { collaboratorStatusMap[ent.id?.toString()] = 'healthy'; });
+    const collaboratorStatusMap = new Map();
+    const collaboratorsByEntityId = new Map();
 
-    allDocs.forEach((doc) => {
+    complianceData.entities.forEach((entity, index) => {
+      const entityId = entity.id?.toString() || '';
+      const sourceId = getControlDocSourceId(entity);
+      const statusKey = `${sourceId || 'sin-empresa'}:${entityId || `sin-id-${index}`}:${index}`;
+      collaboratorStatusMap.set(statusKey, 'healthy');
+
+      if (entityId) {
+        const matches = collaboratorsByEntityId.get(entityId) || [];
+        matches.push({ sourceId, statusKey });
+        collaboratorsByEntityId.set(entityId, matches);
+      }
+    });
+
+    const statusPriority = { healthy: 0, warning: 1, critical: 2, caducado: 3 };
+    const updateCollaboratorStatus = (entityIds, sourceId, nextStatus) => {
+      entityIds.forEach((entityId) => {
+        const matches = collaboratorsByEntityId.get(entityId) || [];
+        matches.forEach((match) => {
+          if (sourceId && match.sourceId && sourceId !== match.sourceId) return;
+          const currentStatus = collaboratorStatusMap.get(match.statusKey);
+          if (statusPriority[nextStatus] > statusPriority[currentStatus]) {
+            collaboratorStatusMap.set(match.statusKey, nextStatus);
+          }
+        });
+      });
+    };
+
+    complianceData.documents.forEach((doc) => {
       const entityIds = getDocumentEntityIds(doc);
       const bucket = getDocumentComplianceBucket(doc);
+      const sourceId = getControlDocSourceId(doc);
 
       if (bucket === 'nonCompliant') {
         docsCaducados++;
-        entityIds.forEach((entId) => { if (collaboratorStatusMap[entId]) collaboratorStatusMap[entId] = 'caducado'; });
+        updateCollaboratorStatus(entityIds, sourceId, 'caducado');
       } else if (bucket === 'critical') {
         docsEn30Dias++;
-        entityIds.forEach((entId) => { if (collaboratorStatusMap[entId] && collaboratorStatusMap[entId] !== 'caducado') collaboratorStatusMap[entId] = 'critical'; });
+        updateCollaboratorStatus(entityIds, sourceId, 'critical');
       } else if (bucket === 'warning') {
         docsEn3060Dias++;
-        entityIds.forEach((entId) => { if (collaboratorStatusMap[entId] && !['caducado', 'critical'].includes(collaboratorStatusMap[entId])) collaboratorStatusMap[entId] = 'warning'; });
+        updateCollaboratorStatus(entityIds, sourceId, 'warning');
       } else { docsAlDia++; }
     });
 
     let colabCaducados = 0, colabEn30Dias = 0, colabEn3060Dias = 0;
-    Object.values(collaboratorStatusMap).forEach((status) => {
+    collaboratorStatusMap.forEach((status) => {
       if (status === 'caducado') colabCaducados++;
       else if (status === 'critical') colabEn30Dias++;
       else if (status === 'warning') colabEn3060Dias++;
     });
 
-    const totalColabs = allEntities.length;
+    const totalColabs = complianceData.entities.length;
     const colabsAlDia = totalColabs - colabCaducados - colabEn30Dias - colabEn3060Dias;
-    const cumplimientoColaboradores = totalColabs > 0 ? Math.round((colabsAlDia / totalColabs) * 100) : 100;
-    const cumplimientoDocumental = totalDocsCount > 0 ? Math.round((docsAlDia / totalDocsCount) * 100) : 100;
+    const cumplimientoColaboradores = totalColabs > 0 ? Math.round((colabsAlDia / totalColabs) * 100) : null;
+    const cumplimientoDocumental = totalDocsCount > 0 ? Math.round((docsAlDia / totalDocsCount) * 100) : null;
 
     return { totalColabs, cumplimientoColaboradores, colabsAlDia, colabCaducados, colabEn30Dias, colabEn3060Dias, totalDocsCount, cumplimientoDocumental, docsAlDia, docsCaducados, docsEn30Dias, docsEn3060Dias };
-  }, [allDocs, allEntities]);
+  }, [complianceData]);
 
   const searchSuggestions = useMemo(() => {
     const query = normalizeText(searchTerm);
@@ -504,8 +566,7 @@ export const ViewInicio = ({
 
   const handleSelectSuggestion = (entity) => {
     onLoadingProgress?.({ percent: 35 });
-    const entityId = entity?.id?.toString() || '';
-    setSelectedUserId(entityId);
+    setSelectedEntityKey(getEntitySelectionKey(entity));
     setSearchTerm(getEntityDisplayName(entity));
     setIsAutocompleteOpen(false);
     onAdminCollaboratorChange?.(entity);
@@ -514,7 +575,7 @@ export const ViewInicio = ({
 
   const handleClearSelection = () => {
     setSearchTerm('');
-    setSelectedUserId('');
+    setSelectedEntityKey('');
     setIsAutocompleteOpen(false);
     onAdminCollaboratorChange?.(null);
   };
@@ -649,7 +710,7 @@ export const ViewInicio = ({
                 <div className="relative bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden focus-within:ring-2 focus-within:ring-[#921E30] transition-all">
                   <Search className="w-5 h-5 absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400" />
                   <input
-                    type="text" value={searchTerm} onChange={(e) => { setSearchTerm(e.target.value); setSelectedUserId(''); setIsAutocompleteOpen(true); }}
+                    type="text" value={searchTerm} onChange={(e) => { setSearchTerm(e.target.value); setSelectedEntityKey(''); setIsAutocompleteOpen(true); }}
                     onFocus={() => setIsAutocompleteOpen(true)} autoComplete="off" placeholder="Busca un colaborador por nombre o RUT..."
                     className="w-full bg-transparent py-4 pl-12 pr-10 focus:outline-none text-sm"
                   />
@@ -660,7 +721,7 @@ export const ViewInicio = ({
               {isAutocompleteOpen && searchSuggestions.length > 0 && (
                 <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 max-h-60 overflow-y-auto">
                   {searchSuggestions.map((entity) => (
-                    <button key={entity.id} type="button" onClick={() => handleSelectSuggestion(entity)} className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-100 last:border-b-0">
+                    <button key={getEntitySelectionKey(entity)} type="button" onClick={() => handleSelectSuggestion(entity)} className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-100 last:border-b-0">
                       <p className="text-sm font-semibold text-[#394049]">{getEntityDisplayName(entity)}</p>
                       <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-gray-500">
                         <span className="font-semibold text-[#921E30]">RUT: {getEntityRut(entity) || 'Sin RUT'}</span>
@@ -679,15 +740,41 @@ export const ViewInicio = ({
           </div>
         )}
 
+        {isGlobalView && (
+          <div className="px-4 sm:px-6 py-2 max-w-6xl mx-auto w-full">
+            <div className="grid grid-cols-2 items-center rounded-xl border border-gray-200 bg-white px-3 py-2.5 shadow-sm">
+              <div className="min-w-0 px-2 text-center">
+                <p className="text-[9px] font-bold uppercase tracking-wider text-gray-400">Vista seleccionada</p>
+                <p className="break-words text-xs font-bold leading-tight text-[#394049] sm:text-sm" title={selectedCompany?.label || 'Todos'}>
+                  {selectedCompany?.label || 'Todos'}
+                </p>
+              </div>
+              <div className="flex items-center justify-center border-l border-gray-100 px-2">
+                <label htmlFor="company-compliance-filter" className="sr-only">Filtrar cumplimiento por empresa</label>
+                <select
+                  id="company-compliance-filter"
+                  value={selectedCompanyKey}
+                  onChange={(event) => setSelectedCompanyKey(event.target.value)}
+                  className="w-full max-w-xs rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-2 text-xs font-semibold text-gray-600 focus:outline-none focus:ring-2 focus:ring-[#921E30]"
+                >
+                  {companyOptions.map((company) => (
+                    <option key={company.key} value={company.key}>{company.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="px-4 sm:px-6 pb-4 pt-2 max-w-6xl mx-auto w-full">
           {isGlobalView ? (
             <div className="space-y-3 mt-2">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
-                  <div className="text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]" style={{ backgroundColor: getProgressColor(globalMetrics.cumplimientoColaboradores) }}>
+                  <div className="text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]" style={{ backgroundColor: globalMetrics.cumplimientoColaboradores === null ? '#64748b' : getProgressColor(globalMetrics.cumplimientoColaboradores) }}>
                     <h4 className="text-sm font-semibold uppercase tracking-wider opacity-90">Cumplimiento Colaboradores</h4>
-                    <p className="text-5xl font-black my-2">{globalMetrics.cumplimientoColaboradores} %</p>
-                    <p className="text-xs opacity-75">De {globalMetrics.totalColabs} Colaboradores</p>
+                    <p className="text-5xl font-black my-2">{globalMetrics.cumplimientoColaboradores === null ? '—' : `${globalMetrics.cumplimientoColaboradores} %`}</p>
+                    <p className="text-xs opacity-75">{globalMetrics.totalColabs > 0 ? `De ${globalMetrics.totalColabs} Colaboradores` : 'Sin colaboradores'}</p>
                   </div>
                   <div className="p-4 bg-white text-center border-t border-gray-50">
                     <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">Estado de Colaboradores</p>
@@ -701,10 +788,10 @@ export const ViewInicio = ({
                 </div>
 
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
-                  <div className="text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]" style={{ backgroundColor: getProgressColor(globalMetrics.cumplimientoDocumental) }}>
+                  <div className="text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]" style={{ backgroundColor: globalMetrics.cumplimientoDocumental === null ? '#64748b' : getProgressColor(globalMetrics.cumplimientoDocumental) }}>
                     <h4 className="text-sm font-semibold uppercase tracking-wider opacity-90">Cumplimiento Documental</h4>
-                    <p className="text-5xl font-black my-2">{globalMetrics.cumplimientoDocumental} %</p>
-                    <p className="text-xs opacity-75">De {globalMetrics.totalDocsCount} Documentos</p>
+                    <p className="text-5xl font-black my-2">{globalMetrics.cumplimientoDocumental === null ? '—' : `${globalMetrics.cumplimientoDocumental} %`}</p>
+                    <p className="text-xs opacity-75">{globalMetrics.totalDocsCount > 0 ? `De ${globalMetrics.totalDocsCount} Documentos` : 'Sin documentos'}</p>
                   </div>
                   <div className="p-4 bg-white text-center border-t border-gray-50">
                     <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">Estado de Documentos</p>
