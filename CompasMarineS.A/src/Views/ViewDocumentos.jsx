@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo } from 'react';
-import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Eye, Tag, User as UserIcon } from 'lucide-react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Tag, User as UserIcon } from 'lucide-react';
 import { getApiUrl } from '../config/api'; // <-- IMPORTACIÓN CORREGIDA
 import {
   getCalendarDaysRemaining,
@@ -163,13 +163,8 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityByRecordKey, entityById,
           )}
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center w-full">
-          <div className={`text-xs font-extrabold text-center px-4 py-1.5 rounded-full border whitespace-nowrap sm:inline-block flex-1 sm:flex-initial ${status.bgClass}`}>
-            {status.label}
-          </div>
-          <a href={`https://compliance.controldoc.legal/documentos/${doc.id}`} target="_blank" rel="noreferrer" className="text-xs font-bold bg-[#394049]/10 text-[#394049] border border-[#394049]/20 px-4 py-2 rounded-xl flex items-center justify-center hover:bg-gray-200 active:bg-gray-300 transition shadow-sm text-center">
-            <Eye className="w-3.5 h-3.5 mr-1.5 shrink-0" /> Ver API
-          </a>
+        <div className={`w-fit max-w-full text-xs font-extrabold text-center px-4 py-1.5 rounded-full border whitespace-nowrap ${status.bgClass}`}>
+          {status.label}
         </div>
 
         {isBlocked && doc.blocked_description && (
@@ -264,6 +259,9 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
   const [statusFilter, setStatusFilter] = useState('all');
   const [signatureFilter, setSignatureFilter] = useState('all');
   const [selectedCompanyKey, setSelectedCompanyKey] = useState(ALL_COMPANIES_KEY);
+  const deferredCompanyKey = useDeferredValue(selectedCompanyKey);
+  const [isCompanyTransitioning, setIsCompanyTransitioning] = useState(false);
+  const companyTransitionTimer = useRef(null);
   
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedSearchEntityKey, setSelectedSearchEntityKey] = useState('');
@@ -276,6 +274,12 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
 
   const isAdmin = currentUser ? hasAdminRole(currentUser) : false;
   const snapshotOwnerKey = getUserSnapshotKey(currentUser);
+
+  useEffect(() => () => {
+    if (companyTransitionTimer.current) {
+      window.clearTimeout(companyTransitionTimer.current);
+    }
+  }, []);
 
   useEffect(() => {
     if (!isAdmin || !focusedCollaborator?.id) return;
@@ -382,10 +386,24 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
     () => companyOptions.find((company) => company.key === selectedCompanyKey) || companyOptions[0],
     [companyOptions, selectedCompanyKey]
   );
-  const companyScopedData = useMemo(
-    () => filterComplianceDataByCompany(apiData.entities, apiData.documents, selectedCompanyKey),
-    [apiData.documents, apiData.entities, selectedCompanyKey]
+  const displayedCompany = useMemo(
+    () => companyOptions.find((company) => company.key === deferredCompanyKey) || companyOptions[0],
+    [companyOptions, deferredCompanyKey]
   );
+  const companyScopedDataByKey = useMemo(
+    () => new Map(
+      (isAdmin ? companyOptions : [{ key: ALL_COMPANIES_KEY }]).map((company) => [
+        company.key,
+        filterComplianceDataByCompany(apiData.entities, apiData.documents, company.key)
+      ])
+    ),
+    [apiData.documents, apiData.entities, companyOptions, isAdmin]
+  );
+  const companyScopedData = companyScopedDataByKey.get(deferredCompanyKey)
+    || companyScopedDataByKey.get(ALL_COMPANIES_KEY)
+    || { entities: apiData.entities, documents: apiData.documents };
+  const isCompanyDataPending = deferredCompanyKey !== selectedCompanyKey;
+  const showCompanyTransition = isAdmin && (isCompanyTransitioning || isCompanyDataPending);
 
   useEffect(() => {
     if (companyOptions.some((company) => company.key === selectedCompanyKey)) return;
@@ -522,11 +540,24 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
   };
 
   const handleCompanyChange = (event) => {
-    setSelectedCompanyKey(event.target.value);
+    const nextCompanyKey = event.target.value;
+    if (nextCompanyKey === selectedCompanyKey) return;
+
+    if (companyTransitionTimer.current) {
+      window.clearTimeout(companyTransitionTimer.current);
+    }
+
+    setIsCompanyTransitioning(true);
+    setSelectedCompanyKey(nextCompanyKey);
     setSearchTerm('');
     setSelectedSearchEntityKey('');
     setIsAutocompleteOpen(false);
     onCollaboratorChange?.(null);
+
+    companyTransitionTimer.current = window.setTimeout(() => {
+      setIsCompanyTransitioning(false);
+      companyTransitionTimer.current = null;
+    }, 360);
   };
 
   const selectedSearchEntity = entityByRecordKey.get(selectedSearchEntityKey) || focusedCollaborator;
@@ -586,7 +617,12 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
               
               {isAdmin && (
                 <>
-                  <div className="grid grid-cols-2 items-center rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5">
+                  <div className={`relative grid grid-cols-2 items-center overflow-hidden rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 transition-[box-shadow,opacity] duration-300 ${showCompanyTransition ? 'opacity-80 shadow-sm' : 'opacity-100'}`} aria-busy={showCompanyTransition}>
+                    {showCompanyTransition && (
+                      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-1 overflow-hidden bg-gray-100/80" aria-hidden="true">
+                        <div key={selectedCompanyKey} className="company-switch-progress h-full bg-[#921E30] shadow-[0_0_8px_rgba(146,30,48,0.35)]" />
+                      </div>
+                    )}
                     <div className="min-w-0 px-2 text-center">
                       <p className="text-[9px] font-bold uppercase tracking-wider text-gray-400">Empresa seleccionada</p>
                       <p className="break-words text-xs font-bold leading-tight text-[#394049]" title={selectedCompany?.label || 'Todos'}>
@@ -683,49 +719,54 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
             </div>
           )}
 
-          {!isLoading && baseDocuments.length === 0 && !error && (
-            <div className="text-center py-16 text-gray-400 bg-white rounded-2xl border border-gray-100 shadow-sm">
-              <FileText className="w-12 h-12 mx-auto mb-2 opacity-20" />
-              <p className="text-sm font-medium">
-                {isAdmin && selectedCompanyKey !== ALL_COMPANIES_KEY
-                  ? `No hay documentos para ${selectedCompany?.label || 'la empresa seleccionada'}.`
-                  : 'No hay documentos cargados.'}
-              </p>
-            </div>
-          )}
+          <div
+            className={`relative transition-[opacity,transform] duration-300 ease-out ${showCompanyTransition ? 'pointer-events-none scale-[0.997] opacity-45' : 'scale-100 opacity-100'}`}
+            aria-busy={showCompanyTransition}
+          >
+            {!isLoading && baseDocuments.length === 0 && !error && (
+              <div className="text-center py-16 text-gray-400 bg-white rounded-2xl border border-gray-100 shadow-sm">
+                <FileText className="w-12 h-12 mx-auto mb-2 opacity-20" />
+                <p className="text-sm font-medium">
+                  {isAdmin && deferredCompanyKey !== ALL_COMPANIES_KEY
+                    ? `No hay documentos para ${displayedCompany?.label || 'la empresa seleccionada'}.`
+                    : 'No hay documentos cargados.'}
+                </p>
+              </div>
+            )}
 
-          {!isLoading && baseDocuments.length > 0 && processedDocuments.length === 0 && !error && (
-            <div className="text-center py-12 text-gray-400 bg-white rounded-2xl border border-gray-100 shadow-sm">
-              <FileText className="w-10 h-10 mx-auto mb-2 opacity-20" />
-              <p className="text-sm font-medium">No hay documentos que coincidan con los filtros seleccionados.</p>
-            </div>
-          )}
+            {!isLoading && baseDocuments.length > 0 && processedDocuments.length === 0 && !error && (
+              <div className="text-center py-12 text-gray-400 bg-white rounded-2xl border border-gray-100 shadow-sm">
+                <FileText className="w-10 h-10 mx-auto mb-2 opacity-20" />
+                <p className="text-sm font-medium">No hay documentos que coincidan con los filtros seleccionados.</p>
+              </div>
+            )}
 
-          {documentsToRender.length > 0 && (
-            <div className="space-y-3">
-              {documentsToRender.map((doc) => (
-                <ApiDocumentCard
-                  key={`${getCompanyKey(doc) || 'sin-empresa'}:${doc.id}`}
-                  doc={doc}
-                  entityByRecordKey={entityByRecordKey}
-                  entityById={entityById}
-                  documentTypeById={documentTypeById}
-                  showEntityName={isAdmin}
-                />
-              ))}
-            </div>
-          )}
-          
-          {visibleCount < processedDocuments.length && (
-            <div className="text-center py-4">
-              <button 
-                onClick={() => setVisibleCount(prev => prev + 50)}
-                className="w-full sm:w-auto bg-white border border-gray-200 text-[#921E30] px-6 py-2.5 rounded-xl text-xs font-bold shadow-sm hover:bg-gray-50 active:bg-gray-100 transition-colors"
-              >
-                Cargar más documentos...
-              </button>
-            </div>
-          )}
+            {documentsToRender.length > 0 && (
+              <div className="space-y-3">
+                {documentsToRender.map((doc) => (
+                  <ApiDocumentCard
+                    key={`${getCompanyKey(doc) || 'sin-empresa'}:${doc.id}`}
+                    doc={doc}
+                    entityByRecordKey={entityByRecordKey}
+                    entityById={entityById}
+                    documentTypeById={documentTypeById}
+                    showEntityName={isAdmin}
+                  />
+                ))}
+              </div>
+            )}
+            
+            {visibleCount < processedDocuments.length && (
+              <div className="text-center py-4">
+                <button 
+                  onClick={() => setVisibleCount(prev => prev + 50)}
+                  className="w-full sm:w-auto bg-white border border-gray-200 text-[#921E30] px-6 py-2.5 rounded-xl text-xs font-bold shadow-sm hover:bg-gray-50 active:bg-gray-100 transition-colors"
+                >
+                  Cargar más documentos...
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </main>
     </div>

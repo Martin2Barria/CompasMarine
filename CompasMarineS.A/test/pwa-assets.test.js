@@ -75,6 +75,8 @@ test('documentos diferencia emisión real de fecha de registro en ControlDoc', a
   assert.match(documentsView, /Registro en ControlDoc:/);
   assert.doesNotMatch(documentsView, /doc\.created_at \|\| doc\.issued_at/);
   assert.doesNotMatch(documentsView, /Ver \/ Bajar/);
+  assert.doesNotMatch(documentsView, /Ver API/);
+  assert.doesNotMatch(documentsView, /compliance\.controldoc\.legal\/documentos\/\$\{doc\.id\}/);
   assert.doesNotMatch(documentsView, /download_base64_url/);
   assert.doesNotMatch(documentsView, /daysRemaining === null\) statusMatch = statusFilter === 'valid'/);
   assert.match(documentsView, /Busca un colaborador por nombre o RUT/);
@@ -84,7 +86,10 @@ test('documentos diferencia emisión real de fecha de registro en ControlDoc', a
   assert.match(documentsView, /focusedCollaborator/);
   assert.match(documentsView, /Documentos de/);
   assert.match(documentsView, /id="documents-company-filter"/);
-  assert.match(documentsView, /filterComplianceDataByCompany\(apiData\.entities, apiData\.documents, selectedCompanyKey\)/);
+  assert.match(documentsView, /companyScopedDataByKey/);
+  assert.match(documentsView, /filterComplianceDataByCompany\(apiData\.entities, apiData\.documents, company\.key\)/);
+  assert.match(documentsView, /useDeferredValue\(selectedCompanyKey\)/);
+  assert.match(documentsView, /company-switch-progress/);
   assert.match(documentsView, /Empresa seleccionada/);
 });
 
