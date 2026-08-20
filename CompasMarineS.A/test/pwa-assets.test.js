@@ -80,17 +80,21 @@ test('documentos diferencia emisión real de fecha de registro en ControlDoc', a
   assert.doesNotMatch(documentsView, /download_base64_url/);
   assert.doesNotMatch(documentsView, /daysRemaining === null\) statusMatch = statusFilter === 'valid'/);
   assert.match(documentsView, /Busca un colaborador por nombre o RUT/);
-  assert.match(documentsView, /identifierStartsWith\(entityRut/);
+  assert.match(documentsView, /identifierStartsWith\(metadata\?\.entityRut/);
   assert.doesNotMatch(documentsView, /Todos los usuarios/);
   assert.doesNotMatch(documentsView, /documentMatch/);
   assert.match(documentsView, /focusedCollaborator/);
   assert.match(documentsView, /Documentos de/);
   assert.match(documentsView, /id="documents-company-filter"/);
   assert.match(documentsView, /companyScopedDataByKey/);
-  assert.match(documentsView, /filterComplianceDataByCompany\(apiData\.entities, apiData\.documents, company\.key\)/);
-  assert.match(documentsView, /useDeferredValue\(selectedCompanyKey\)/);
-  assert.match(documentsView, /company-switch-progress/);
+  assert.match(documentsView, /buildComplianceDataByCompany/);
+  assert.match(documentsView, /if \(!hasSearchFilter && !hasDocumentFilters\) return baseDocuments/);
+  assert.doesNotMatch(documentsView, /useDeferredValue/);
+  assert.doesNotMatch(documentsView, /company-switch-progress/);
   assert.match(documentsView, /Empresa seleccionada/);
+  assert.doesNotMatch(documentsView, /validTypeIds/);
+  assert.doesNotMatch(documentsView, /const isNotBlocked/);
+  assert.match(documentsView, /const totalDocuments = baseDocuments\.length/);
 });
 
 test('el perfil administrativo abre documentos contextualizados y oculta el acceso global', async () => {

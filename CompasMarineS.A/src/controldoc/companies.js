@@ -398,3 +398,64 @@ export function filterComplianceDataByCompany(entities, documents, companyKey) {
 
   return { entities: filteredEntities, documents: filteredDocuments };
 }
+
+export function buildComplianceDataByCompany(entities, documents, companyKeys = []) {
+  const entityList = Array.isArray(entities) ? entities : [];
+  const documentList = Array.isArray(documents) ? documents : [];
+  const selectedKeys = new Set(
+    companyKeys
+      .map(normalizeSelectedCompanyKey)
+      .filter((key) => key && key !== ALL_COMPANIES_KEY)
+  );
+  const dataByCompany = new Map([
+    [ALL_COMPANIES_KEY, { entities: entityList, documents: documentList }]
+  ]);
+  const entityIdsByCompany = new Map();
+  const companyKeysByEntityId = new Map();
+
+  selectedKeys.forEach((key) => {
+    dataByCompany.set(key, { entities: [], documents: [] });
+    entityIdsByCompany.set(key, new Set());
+  });
+
+  entityList.forEach((entity) => {
+    const companyKey = getCompanyKey(entity) || 'sin-empresa';
+    const identityIds = getEntityIdentityIds(entity);
+
+    if (selectedKeys.has(companyKey)) {
+      dataByCompany.get(companyKey).entities.push(entity);
+      identityIds.forEach((id) => entityIdsByCompany.get(companyKey).add(id));
+    }
+
+    identityIds.forEach((id) => {
+      const keys = companyKeysByEntityId.get(id) || new Set();
+      keys.add(companyKey);
+      companyKeysByEntityId.set(id, keys);
+    });
+  });
+
+  documentList.forEach((document) => {
+    const documentCompanyKey = getCompanyKey(document);
+    if (documentCompanyKey) {
+      dataByCompany.get(documentCompanyKey)?.documents.push(document);
+      return;
+    }
+
+    const matchingCompanyKeys = new Set();
+    getDocumentEntityIds(document).forEach((id) => {
+      const entityCompanyKeys = companyKeysByEntityId.get(id);
+      if (entityCompanyKeys?.size !== 1) return;
+
+      const [companyKey] = entityCompanyKeys;
+      if (selectedKeys.has(companyKey) && entityIdsByCompany.get(companyKey).has(id)) {
+        matchingCompanyKeys.add(companyKey);
+      }
+    });
+
+    matchingCompanyKeys.forEach((companyKey) => {
+      dataByCompany.get(companyKey).documents.push(document);
+    });
+  });
+
+  return dataByCompany;
+}

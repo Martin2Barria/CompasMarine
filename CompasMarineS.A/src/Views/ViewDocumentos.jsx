@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { FolderOpen, Loader2, FileText, AlertCircle, Filter, Search, Tag, User as UserIcon } from 'lucide-react';
 import { getApiUrl } from '../config/api'; // <-- IMPORTACIÓN CORREGIDA
 import {
@@ -19,8 +19,8 @@ import {
 } from '../utils/search';
 import {
   ALL_COMPANIES_KEY,
+  buildComplianceDataByCompany,
   buildCompanyOptions,
-  filterComplianceDataByCompany,
   getCompanyKey
 } from '../controldoc/companies';
 
@@ -218,6 +218,13 @@ const isRelevantBlockedDocument = (doc) => (
   !doc?.blocked_description?.toString().toLowerCase().includes('cargo')
 );
 
+const getDocumentUrgencyValue = (days) => {
+  if (days === null) return 10000;
+  if (days < 0) return days;
+  if (days <= 60) return days;
+  return 1000 + days;
+};
+
 const hasPendingSignature = (doc) => {
   if (!doc || typeof doc !== 'object') return false;
   const normalizedString = (value) => {
@@ -259,9 +266,6 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
   const [statusFilter, setStatusFilter] = useState('all');
   const [signatureFilter, setSignatureFilter] = useState('all');
   const [selectedCompanyKey, setSelectedCompanyKey] = useState(ALL_COMPANIES_KEY);
-  const deferredCompanyKey = useDeferredValue(selectedCompanyKey);
-  const [isCompanyTransitioning, setIsCompanyTransitioning] = useState(false);
-  const companyTransitionTimer = useRef(null);
   
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedSearchEntityKey, setSelectedSearchEntityKey] = useState('');
@@ -274,12 +278,6 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
 
   const isAdmin = currentUser ? hasAdminRole(currentUser) : false;
   const snapshotOwnerKey = getUserSnapshotKey(currentUser);
-
-  useEffect(() => () => {
-    if (companyTransitionTimer.current) {
-      window.clearTimeout(companyTransitionTimer.current);
-    }
-  }, []);
 
   useEffect(() => {
     if (!isAdmin || !focusedCollaborator?.id) return;
@@ -353,18 +351,18 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
 
         if (isCancelled) return;
 
-        const validTypes = allTypes || [];
-        const validTypeIds = validTypes.map(t => t.id?.toString());
-        const validDocs = (allDocs || []).filter(doc => validTypeIds.includes(doc.document_type_id?.toString()));
-        
-        const nextApiData = { documents: validDocs, entities: allEntities || [], documentTypes: validTypes };
+        const nextApiData = normalizeApiData({
+          documents: allDocs,
+          entities: allEntities,
+          documentTypes: allTypes
+        });
 
-        if (hadFetchError && validDocs.length === 0 && hasCachedData) {
+        if (hadFetchError && nextApiData.documents.length === 0 && hasCachedData) {
           setProgressInfo('');
           return;
         }
         
-        setApiData(normalizeApiData(nextApiData));
+        setApiData(nextApiData);
         if (!hadFetchError && !isAdmin) saveControlDocSnapshot(nextApiData, snapshotOwnerKey);
         
         setProgressInfo('');
@@ -386,24 +384,17 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
     () => companyOptions.find((company) => company.key === selectedCompanyKey) || companyOptions[0],
     [companyOptions, selectedCompanyKey]
   );
-  const displayedCompany = useMemo(
-    () => companyOptions.find((company) => company.key === deferredCompanyKey) || companyOptions[0],
-    [companyOptions, deferredCompanyKey]
-  );
   const companyScopedDataByKey = useMemo(
-    () => new Map(
-      (isAdmin ? companyOptions : [{ key: ALL_COMPANIES_KEY }]).map((company) => [
-        company.key,
-        filterComplianceDataByCompany(apiData.entities, apiData.documents, company.key)
-      ])
+    () => buildComplianceDataByCompany(
+      apiData.entities,
+      apiData.documents,
+      isAdmin ? companyOptions.map((company) => company.key) : [ALL_COMPANIES_KEY]
     ),
     [apiData.documents, apiData.entities, companyOptions, isAdmin]
   );
-  const companyScopedData = companyScopedDataByKey.get(deferredCompanyKey)
+  const companyScopedData = companyScopedDataByKey.get(selectedCompanyKey)
     || companyScopedDataByKey.get(ALL_COMPANIES_KEY)
     || { entities: apiData.entities, documents: apiData.documents };
-  const isCompanyDataPending = deferredCompanyKey !== selectedCompanyKey;
-  const showCompanyTransition = isAdmin && (isCompanyTransitioning || isCompanyDataPending);
 
   useEffect(() => {
     if (companyOptions.some((company) => company.key === selectedCompanyKey)) return;
@@ -412,30 +403,6 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
     setSearchTerm('');
     onCollaboratorChange?.(null);
   }, [companyOptions, onCollaboratorChange, selectedCompanyKey]);
-
-  // El backend conserva la empresa de origen; desde aquí todos los filtros se encadenan a esa selección.
-  const baseDocuments = isAdmin ? companyScopedData.documents : apiData.documents;
-  const baseEntities = isAdmin ? companyScopedData.entities : apiData.entities;
-
-  const relevantEntities = useMemo(() => {
-    if (!isAdmin) return baseEntities.length > 0 ? [baseEntities[0]] : [];
-
-    const activeEntityKeys = new Set(baseDocuments.map(getDocumentEntityRecordKey).filter(Boolean));
-    const activeUnscopedEntityIds = new Set(
-      baseDocuments
-        .filter((doc) => !getCompanyKey(doc))
-        .map(getDocumentEntityId)
-        .filter(Boolean)
-    );
-
-    return baseEntities
-      .filter((entity) => (
-        activeEntityKeys.has(getEntityRecordKey(entity)) ||
-        activeUnscopedEntityIds.has(entity.id?.toString())
-      ))
-      .map((entity) => ({ ...entity, id: entity.id?.toString(), name: getEntityDisplayName(entity) || `Colaborador ${entity.id}` }))
-      .sort((a, b) => a.name.localeCompare(b.name, 'es'));
-  }, [baseDocuments, baseEntities, isAdmin]);
 
   const entityByRecordKey = useMemo(
     () => new Map(apiData.entities.map((entity) => [getEntityRecordKey(entity), entity]).filter(([key]) => key)),
@@ -460,57 +427,124 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
   }, [apiData.entities]);
   const documentTypeById = useMemo(() => new Map(apiData.documentTypes.map(type => [type.id?.toString(), type])), [apiData.documentTypes]);
 
-  const processedDocuments = useMemo(() => {
-    const urgencyValue = (days) => {
-      if (days === null) return 10000;
-      if (days < 0) return days;
-      if (days <= 60) return days;
-      return 1000 + days;
-    };
+  const documentMetadata = useMemo(() => new Map(apiData.documents.map((doc) => {
+    const documentEntityId = getDocumentEntityId(doc);
+    const documentCompanyKey = getCompanyKey(doc);
+    const documentEntityKey = documentEntityId
+      ? `${documentCompanyKey || 'sin-empresa'}:${documentEntityId}`
+      : '';
+    const entity = entityByRecordKey.get(documentEntityKey) || entityById.get(documentEntityId);
 
+    return [doc, {
+      daysRemaining: getCalendarDaysRemaining(getDocumentExpirationDate(doc)),
+      documentCompanyKey,
+      documentEntityId,
+      documentEntityKey,
+      docTypeId: doc.document_type_id?.toString(),
+      hasExpiredStatus: hasExpiredDocumentStatus(doc),
+      hasPendingSignature: hasPendingSignature(doc),
+      resolvedEntityKey: entity ? getEntityRecordKey(entity) : documentEntityKey,
+      entityName: getEntityDisplayName(entity),
+      entityRut: getEntityRut(entity)
+    }];
+  })), [apiData.documents, entityById, entityByRecordKey]);
+
+  const sortedDocumentsByCompanyKey = useMemo(() => {
+    const sortedByCompany = new Map();
+    companyScopedDataByKey.forEach((data, companyKey) => {
+      const documents = [...data.documents].sort((left, right) => (
+        getDocumentUrgencyValue(documentMetadata.get(left)?.daysRemaining ?? null) -
+        getDocumentUrgencyValue(documentMetadata.get(right)?.daysRemaining ?? null)
+      ));
+      sortedByCompany.set(companyKey, documents);
+    });
+    return sortedByCompany;
+  }, [companyScopedDataByKey, documentMetadata]);
+
+  // Todo queda indexado al recibir la API; cambiar de empresa solo selecciona arreglos ya preparados.
+  const baseDocuments = useMemo(() => (
+    isAdmin
+      ? sortedDocumentsByCompanyKey.get(selectedCompanyKey) || sortedDocumentsByCompanyKey.get(ALL_COMPANIES_KEY) || []
+      : sortedDocumentsByCompanyKey.get(ALL_COMPANIES_KEY) || []
+  ), [isAdmin, selectedCompanyKey, sortedDocumentsByCompanyKey]);
+  const baseEntities = isAdmin ? companyScopedData.entities : apiData.entities;
+
+  const relevantEntitiesByCompanyKey = useMemo(() => {
+    const entitiesByCompany = new Map();
+
+    companyScopedDataByKey.forEach((data, companyKey) => {
+      const activeEntityKeys = new Set();
+      const activeUnscopedEntityIds = new Set();
+
+      data.documents.forEach((doc) => {
+        const metadata = documentMetadata.get(doc);
+        if (metadata?.documentEntityKey) activeEntityKeys.add(metadata.documentEntityKey);
+        if (!metadata?.documentCompanyKey && metadata?.documentEntityId) {
+          activeUnscopedEntityIds.add(metadata.documentEntityId);
+        }
+      });
+
+      const entities = data.entities
+        .filter((entity) => (
+          activeEntityKeys.has(getEntityRecordKey(entity)) ||
+          activeUnscopedEntityIds.has(entity.id?.toString())
+        ))
+        .map((entity) => ({
+          ...entity,
+          id: entity.id?.toString(),
+          name: getEntityDisplayName(entity) || `Colaborador ${entity.id}`
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name, 'es'));
+
+      entitiesByCompany.set(companyKey, entities);
+    });
+
+    return entitiesByCompany;
+  }, [companyScopedDataByKey, documentMetadata]);
+  const relevantEntities = useMemo(() => (
+    isAdmin
+      ? relevantEntitiesByCompanyKey.get(selectedCompanyKey) || []
+      : baseEntities.length > 0 ? [baseEntities[0]] : []
+  ), [baseEntities, isAdmin, relevantEntitiesByCompanyKey, selectedCompanyKey]);
+
+  const processedDocuments = useMemo(() => {
     const query = normalizeSearchText(searchTerm);
     const identifierQuery = normalizeSearchIdentifier(searchTerm);
     const isIdentifierSearch = /\d/.test(searchTerm);
+    const hasSearchFilter = query !== '' || selectedSearchEntityKey !== '';
+    const hasDocumentFilters = selectedType !== 'all' || statusFilter !== 'all' || signatureFilter !== 'all';
+
+    if (!hasSearchFilter && !hasDocumentFilters) return baseDocuments;
 
     return baseDocuments
-      .map(doc => ({ doc, daysRemaining: getCalendarDaysRemaining(getDocumentExpirationDate(doc)) }))
-      .filter(({ doc, daysRemaining }) => {
-        const docTypeId = doc.document_type_id?.toString();
-        const docEntityId = doc.entity_id?.toString() || doc.abstract_entity_id?.toString();
+      .filter((doc) => {
+        const metadata = documentMetadata.get(doc);
+        const daysRemaining = metadata?.daysRemaining ?? null;
 
-        const typeMatch = selectedType === 'all' || docTypeId === selectedType;
-        const signatureMatch = signatureFilter === 'all' || hasPendingSignature(doc);
-        const isNotBlocked = !isRelevantBlockedDocument(doc);
-        const hasExpiredStatus = hasExpiredDocumentStatus(doc);
-        const documentEntityKey = getDocumentEntityRecordKey(doc);
-        const entity = entityByRecordKey.get(documentEntityKey) || entityById.get(docEntityId);
-        const resolvedEntityKey = entity ? getEntityRecordKey(entity) : documentEntityKey;
-        const entityName = getEntityDisplayName(entity);
-        const entityRut = getEntityRut(entity);
+        const typeMatch = selectedType === 'all' || metadata?.docTypeId === selectedType;
+        const signatureMatch = signatureFilter === 'all' || metadata?.hasPendingSignature;
         const collaboratorMatch = selectedSearchEntityKey
-          ? resolvedEntityKey === selectedSearchEntityKey
+          ? metadata?.resolvedEntityKey === selectedSearchEntityKey
           : isIdentifierSearch
-            ? identifierStartsWith(entityRut, identifierQuery)
-            : matchesSearchTokenPrefixes(query, entityName);
-        const searchMatch = query === '' || collaboratorMatch;
+            ? identifierStartsWith(metadata?.entityRut, identifierQuery)
+            : matchesSearchTokenPrefixes(query, metadata?.entityName);
+        const searchMatch = !hasSearchFilter || collaboratorMatch;
 
         let statusMatch = true;
         if (statusFilter !== 'all') {
-          if (statusFilter === 'expired') statusMatch = hasExpiredStatus || (daysRemaining !== null && daysRemaining < 0);
-          else if (daysRemaining === null || hasExpiredStatus) statusMatch = false;
+          if (statusFilter === 'expired') statusMatch = metadata?.hasExpiredStatus || (daysRemaining !== null && daysRemaining < 0);
+          else if (daysRemaining === null || metadata?.hasExpiredStatus) statusMatch = false;
           else if (statusFilter === 'critical') statusMatch = daysRemaining >= 0 && daysRemaining <= 30;
           else if (statusFilter === 'warning') statusMatch = daysRemaining > 30 && daysRemaining <= 60;
           else if (statusFilter === 'valid') statusMatch = daysRemaining > 60;
         }
 
-        return typeMatch && signatureMatch && statusMatch && isNotBlocked && searchMatch;
-      })
-      .sort((a, b) => urgencyValue(a.daysRemaining) - urgencyValue(b.daysRemaining))
-      .map(({ doc }) => doc);
-  }, [baseDocuments, selectedType, statusFilter, signatureFilter, searchTerm, selectedSearchEntityKey, entityById, entityByRecordKey]);
+        return typeMatch && signatureMatch && statusMatch && searchMatch;
+      });
+  }, [baseDocuments, documentMetadata, selectedType, statusFilter, signatureFilter, searchTerm, selectedSearchEntityKey]);
 
   const documentsToRender = useMemo(() => processedDocuments.slice(0, visibleCount), [processedDocuments, visibleCount]);
-  const totalDocumentsWithoutBlocked = useMemo(() => baseDocuments.filter((doc) => !isRelevantBlockedDocument(doc)).length, [baseDocuments]);
+  const totalDocuments = baseDocuments.length;
 
   const searchSuggestions = useMemo(() => {
     if (!searchTerm.trim()) return [];
@@ -543,21 +577,11 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
     const nextCompanyKey = event.target.value;
     if (nextCompanyKey === selectedCompanyKey) return;
 
-    if (companyTransitionTimer.current) {
-      window.clearTimeout(companyTransitionTimer.current);
-    }
-
-    setIsCompanyTransitioning(true);
     setSelectedCompanyKey(nextCompanyKey);
     setSearchTerm('');
     setSelectedSearchEntityKey('');
     setIsAutocompleteOpen(false);
     onCollaboratorChange?.(null);
-
-    companyTransitionTimer.current = window.setTimeout(() => {
-      setIsCompanyTransitioning(false);
-      companyTransitionTimer.current = null;
-    }, 360);
   };
 
   const selectedSearchEntity = entityByRecordKey.get(selectedSearchEntityKey) || focusedCollaborator;
@@ -597,9 +621,10 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
           )}
 
           <div className="flex flex-col gap-4">
-            {totalDocumentsWithoutBlocked > 0 && (
+            {totalDocuments > 0 && (
               <span className="text-[11px] md:text-xs bg-gray-200 text-gray-600 px-3 py-1.5 rounded-full font-bold shadow-sm inline-flex items-center w-fit">
-                 Mostrando {documentsToRender.length} de {processedDocuments.length} (Total: {totalDocumentsWithoutBlocked} documentos)
+                 Mostrando {documentsToRender.length} de {processedDocuments.length} documentos
+                 {processedDocuments.length !== totalDocuments ? ` (total disponible: ${totalDocuments})` : ''}
               </span>
             )}
           </div>
@@ -617,12 +642,7 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
               
               {isAdmin && (
                 <>
-                  <div className={`relative grid grid-cols-2 items-center overflow-hidden rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 transition-[box-shadow,opacity] duration-300 ${showCompanyTransition ? 'opacity-80 shadow-sm' : 'opacity-100'}`} aria-busy={showCompanyTransition}>
-                    {showCompanyTransition && (
-                      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-1 overflow-hidden bg-gray-100/80" aria-hidden="true">
-                        <div key={selectedCompanyKey} className="company-switch-progress h-full bg-[#921E30] shadow-[0_0_8px_rgba(146,30,48,0.35)]" />
-                      </div>
-                    )}
+                  <div className="relative grid grid-cols-2 items-center overflow-hidden rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5">
                     <div className="min-w-0 px-2 text-center">
                       <p className="text-[9px] font-bold uppercase tracking-wider text-gray-400">Empresa seleccionada</p>
                       <p className="break-words text-xs font-bold leading-tight text-[#394049]" title={selectedCompany?.label || 'Todos'}>
@@ -719,16 +739,13 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
             </div>
           )}
 
-          <div
-            className={`relative transition-[opacity,transform] duration-300 ease-out ${showCompanyTransition ? 'pointer-events-none scale-[0.997] opacity-45' : 'scale-100 opacity-100'}`}
-            aria-busy={showCompanyTransition}
-          >
+          <div className="relative">
             {!isLoading && baseDocuments.length === 0 && !error && (
               <div className="text-center py-16 text-gray-400 bg-white rounded-2xl border border-gray-100 shadow-sm">
                 <FileText className="w-12 h-12 mx-auto mb-2 opacity-20" />
                 <p className="text-sm font-medium">
-                  {isAdmin && deferredCompanyKey !== ALL_COMPANIES_KEY
-                    ? `No hay documentos para ${displayedCompany?.label || 'la empresa seleccionada'}.`
+                  {isAdmin && selectedCompanyKey !== ALL_COMPANIES_KEY
+                    ? `No hay documentos para ${selectedCompany?.label || 'la empresa seleccionada'}.`
                     : 'No hay documentos cargados.'}
                 </p>
               </div>

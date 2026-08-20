@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   ALL_COMPANIES_KEY,
   CONTROL_DOC_COMPANIES,
+  buildComplianceDataByCompany,
   buildCompanyOptions,
   filterComplianceDataByCompany,
   getCompanyKey,
@@ -134,4 +135,33 @@ test('no atribuye un documento legacy sin empresa cuando el ID existe en dos emp
   const filtered = filterComplianceDataByCompany(entities, documents, 'source:467');
 
   assert.deepEqual(filtered.documents.map((document) => document.id), ['etiquetado']);
+});
+
+test('indexa todas las empresas en una pasada con el mismo resultado que el filtro individual', () => {
+  const entities = [
+    { id: 101, control_doc_source_entity_type_id: 467 },
+    { id: 102, control_doc_source_entity_type_id: 467 },
+    { id: 201, control_doc_source_entity_type_id: 468 },
+    { id: 301, control_doc_source_entity_type_id: 469 },
+    { id: 555, control_doc_source_entity_type_id: 467 },
+    { id: 555, control_doc_source_entity_type_id: 468 }
+  ];
+  const documents = [
+    { id: 'uno', control_doc_source_entity_type_id: 467, entity_id: 101 },
+    { id: 'dos', control_doc_source_entity_type_id: 468, entity_id: 201 },
+    { id: 'legacy-uno', entity_id: 102 },
+    { id: 'legacy-ambiguo', entity_id: 555 },
+    { id: 'tag-prioritario', control_doc_source_entity_type_id: 468, entity_id: 101 },
+    { id: 'sin-relacion', entity_id: 999 }
+  ];
+  const companyKeys = ['all', 'source:467', 'source:468', 'source:469'];
+  const indexed = buildComplianceDataByCompany(entities, documents, companyKeys);
+
+  companyKeys.forEach((companyKey) => {
+    assert.deepEqual(
+      indexed.get(companyKey),
+      filterComplianceDataByCompany(entities, documents, companyKey)
+    );
+  });
+  assert.strictEqual(indexed.get(ALL_COMPANIES_KEY).documents, documents);
 });
