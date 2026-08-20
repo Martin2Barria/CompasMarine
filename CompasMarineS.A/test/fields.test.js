@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   compareExpirationUrgency,
+  filterOutBlockedDocuments,
   getCalendarDaysRemaining,
   getDocumentEntityIds,
   getDocumentExpirationDate,
@@ -93,4 +94,18 @@ test('no interpreta created_at como fecha de emisión', () => {
 
   assert.equal(getDocumentIssueDate(document), '');
   assert.equal(getDocumentRegistrationDate(document), '2026-07-15');
+});
+
+test('excluye todos los documentos bloqueados sin depender de su descripción', () => {
+  const documents = [
+    { id: 1, aasm_state: 'approved' },
+    { id: 2, aasm_state: 'blocked', blocked_description: 'Actualización' },
+    { id: 3, status: 'Bloqueado por cargo' },
+    { id: 4, state: 'expired' }
+  ];
+
+  assert.deepEqual(
+    filterOutBlockedDocuments(documents).map((document) => document.id),
+    [1, 4]
+  );
 });

@@ -68,7 +68,10 @@ test('inicio muestra solo vencimientos próximos y excluye documentos ya vencido
 });
 
 test('documentos diferencia emisión real de fecha de registro en ControlDoc', async () => {
-  const documentsView = await readFile(new URL('../src/Views/ViewDocumentos.jsx', import.meta.url), 'utf8');
+  const [documentsView, homeView] = await Promise.all([
+    readFile(new URL('../src/Views/ViewDocumentos.jsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/Views/ViewInicio.jsx', import.meta.url), 'utf8')
+  ]);
 
   assert.match(documentsView, /getDocumentIssueDate\(doc\)/);
   assert.match(documentsView, /getDocumentExpirationDate\(doc\)/);
@@ -95,6 +98,8 @@ test('documentos diferencia emisión real de fecha de registro en ControlDoc', a
   assert.doesNotMatch(documentsView, /validTypeIds/);
   assert.doesNotMatch(documentsView, /const isNotBlocked/);
   assert.match(documentsView, /const totalDocuments = baseDocuments\.length/);
+  assert.match(documentsView, /filterOutBlockedDocuments\(toArray\(raw\.documents/);
+  assert.match(homeView, /const usableDocs = filterOutBlockedDocuments\(normalizedDocs\)/);
 });
 
 test('el perfil administrativo abre documentos contextualizados y oculta el acceso global', async () => {

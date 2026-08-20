@@ -270,6 +270,11 @@ export function hasBlockedDocumentStatus(doc) {
   );
 }
 
+export function filterOutBlockedDocuments(documents) {
+  if (!Array.isArray(documents)) return [];
+  return documents.filter((document) => !hasBlockedDocumentStatus(document));
+}
+
 export function hasNonCompliantDocumentStatus(doc) {
   const status = getDocumentStatusText(doc);
   return (

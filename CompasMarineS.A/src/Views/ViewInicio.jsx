@@ -10,6 +10,7 @@ import {
 } from '../utils/search';
 import {
   compareExpirationUrgency,
+  filterOutBlockedDocuments,
   getCalendarDaysRemaining,
   getDocumentEntityIds,
   getDocumentExpirationDate,
@@ -83,7 +84,6 @@ const formatDate = (dateString) => {
     : 'N/A';
 };
 
-const isBlockedDocument = (doc) => doc.aasm_state === 'blocked' && !doc.blocked_description?.toLowerCase().includes('cargo');
 const getDocumentStatusText = (doc) => doc.aasm_state;
 const hasNonCompliantDocumentStatus = (doc) => ['rejected', 'expired'].includes(doc.aasm_state);
 
@@ -91,7 +91,7 @@ const getDocumentComplianceBucket = (doc) => {
   const days = getCalendarDaysRemaining(getDocumentExpirationDate(doc));
   const status = getDocumentStatusText(doc);
 
-  if (isBlockedDocument(doc) || hasNonCompliantDocumentStatus(doc) || (days !== null && days < 0)) return 'nonCompliant';
+  if (hasNonCompliantDocumentStatus(doc) || (days !== null && days < 0)) return 'nonCompliant';
   if (days !== null && days <= 30) return 'critical';
   if (days !== null && days <= 60) return 'warning';
   if (days === null && !status) return 'nonCompliant';
@@ -337,13 +337,19 @@ export const ViewInicio = ({
 
   const processData = useCallback((docs, entities, types) => {
     const normalizedDocs = toArray(docs, ['documents', 'data', 'items']);
+    const usableDocs = filterOutBlockedDocuments(normalizedDocs);
     const normalizedEntities = toArray(entities, ['entities', 'data', 'items']);
     const normalizedTypes = toArray(types, ['documentTypes', 'document_types', 'data', 'items']);
 
-    console.log("🧩 Procesando datos servidos por backend:", { docsLen: normalizedDocs.length, entLen: normalizedEntities.length });
-    setAllDocs(normalizedDocs);
+    console.log("🧩 Procesando datos servidos por backend:", {
+      docsLen: usableDocs.length,
+      blockedExcluded: normalizedDocs.length - usableDocs.length,
+      entLen: normalizedEntities.length
+    });
+    setAllDocs(usableDocs);
     setAllEntities(normalizedEntities);
     setAllTypes(normalizedTypes);
+    return usableDocs.length;
   }, []);
 
   const handleForceHardReset = async () => {
@@ -413,8 +419,8 @@ export const ViewInicio = ({
           meta: { documents: { totalItems: (docsData || []).length } }
         };
 
-        setSyncStats({ source: 'api', totalItems: nextData.documents.length, complete: true });
-        processData(nextData.documents, nextData.entities, nextData.documentTypes);
+        const usableDocumentsCount = processData(nextData.documents, nextData.entities, nextData.documentTypes);
+        setSyncStats({ source: 'api', totalItems: usableDocumentsCount, complete: true });
         
         // Guardamos el snapshot validado
         if (!hasAdminRole(currentUser)) void saveControlDocSnapshotAsync(nextData, snapshotOwnerKey);
@@ -437,8 +443,8 @@ export const ViewInicio = ({
       if (isCancelled) return;
 
       if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
-        processData(snapshot.documents || [], snapshot.entities || [], snapshot.documentTypes || []);
-        setSyncStats({ source: 'cache', totalItems: (snapshot.documents || []).length, complete: true });
+        const usableDocumentsCount = processData(snapshot.documents || [], snapshot.entities || [], snapshot.documentTypes || []);
+        setSyncStats({ source: 'cache', totalItems: usableDocumentsCount, complete: true });
       }
 
       if (refreshToken === 0 && isControlDocSnapshotFresh(snapshot, SNAPSHOT_FRESH_MS, { requireComplete: hasAdminRole(currentUser) })) {

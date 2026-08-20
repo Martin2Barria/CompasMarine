@@ -7,7 +7,7 @@ import {
   getDocumentExpirationDate,
   getDocumentIssueDate,
   getDocumentRegistrationDate,
-  hasBlockedDocumentStatus,
+  filterOutBlockedDocuments,
   hasExpiredDocumentStatus,
   parseControlDocDate
 } from '../controldoc/fields';
@@ -80,7 +80,6 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityByRecordKey, entityById,
   const issueDateValue = getDocumentIssueDate(doc);
   const registrationDateValue = getDocumentRegistrationDate(doc);
 
-  const isBlocked = isRelevantBlockedDocument(doc);
   const hasExpiredStatus = hasExpiredDocumentStatus(doc);
 
   if (expirationDateValue) {
@@ -88,9 +87,6 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityByRecordKey, entityById,
 
     if (daysRemaining === null) {
       status = { label: 'Sin Fecha', bgClass: 'bg-gray-100 text-gray-600 border-2 border-gray-200' };
-    } else if (isBlocked) {
-      const blockedDays = daysRemaining > 0 ? daysRemaining : 0;
-      status = { label: `Bloqueado (${blockedDays} días)`, bgClass: 'severity-pill-red border-2' };
     } else if (daysRemaining > 60) {
       status = { label: `Vigente por ${daysRemaining} días`, bgClass: 'bg-green-50 text-green-700 border-2 border-green-200' };
     } else if (daysRemaining > 30) {
@@ -167,12 +163,6 @@ const ApiDocumentCard = ({ doc, documentTypeById, entityByRecordKey, entityById,
           {status.label}
         </div>
 
-        {isBlocked && doc.blocked_description && (
-          <div className="mt-3 bg-red-50 border border-red-200 p-2.5 rounded-xl flex items-start gap-2 animate-fade-in">
-            <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
-            <p className="text-[11px] text-red-700 font-medium leading-normal">{doc.blocked_description}</p>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -197,7 +187,7 @@ const toArray = (value, fallbackKeys = []) => {
 const normalizeApiData = (rawData) => {
   const raw = rawData || {};
   return {
-    documents: toArray(raw.documents, ['documents', 'items', 'data']),
+    documents: filterOutBlockedDocuments(toArray(raw.documents, ['documents', 'items', 'data'])),
     entities: toArray(raw.entities, ['entities', 'items', 'data']),
     documentTypes: toArray(raw.documentTypes || raw.document_types, ['documentTypes', 'document_types', 'items', 'data'])
   };
@@ -211,11 +201,6 @@ const getEntityRut = (entity) => (
   entity?.rut || entity?.run || entity?.identifier || entity?.numero_de_documento ||
   entity?.custom_fields?.rut || entity?.custom_fields?.run ||
   entity?.custom_fields?.numero_de_documento || entity?.custom_fields?.numero_documento || ''
-);
-
-const isRelevantBlockedDocument = (doc) => (
-  hasBlockedDocumentStatus(doc) &&
-  !doc?.blocked_description?.toString().toLowerCase().includes('cargo')
 );
 
 const getDocumentUrgencyValue = (days) => {
