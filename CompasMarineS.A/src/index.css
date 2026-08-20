@@ -22,6 +22,24 @@
   animation: fadeIn 0.3s ease-in-out;
 }
 
+@keyframes companySwitchProgress {
+  0% { width: 8%; opacity: 0.75; }
+  70% { width: 86%; opacity: 1; }
+  100% { width: 100%; opacity: 0; }
+}
+
+.company-switch-progress {
+  animation: companySwitchProgress 360ms ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .company-switch-progress {
+    animation: none;
+    width: 100%;
+    opacity: 0;
+  }
+}
+
 /* ── Header Responsivo ── */
 .header-nav {
   position: sticky;

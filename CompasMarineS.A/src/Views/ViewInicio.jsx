@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Search, User, Clock, PenTool, Globe, ShieldAlert, KeyRound, Eye, EyeOff, RotateCcw, FolderOpen } from 'lucide-react';
 import { getApiUrl } from '../config/api'; // <-- IMPORTACIÓN CORREGIDA
 import {
@@ -96,6 +96,74 @@ const getDocumentComplianceBucket = (doc) => {
   if (days !== null && days <= 60) return 'warning';
   if (days === null && !status) return 'nonCompliant';
   return 'healthy';
+};
+
+const calculateComplianceMetrics = ({ entities = [], documents = [] }) => {
+  const totalDocsCount = documents.length;
+  let docsAlDia = 0, docsCaducados = 0, docsEn30Dias = 0, docsEn3060Dias = 0;
+
+  const collaboratorStatusMap = new Map();
+  const collaboratorsByEntityId = new Map();
+
+  entities.forEach((entity, index) => {
+    const entityId = entity.id?.toString() || '';
+    const sourceId = getControlDocSourceId(entity);
+    const statusKey = `${sourceId || 'sin-empresa'}:${entityId || `sin-id-${index}`}:${index}`;
+    collaboratorStatusMap.set(statusKey, 'healthy');
+
+    if (entityId) {
+      const matches = collaboratorsByEntityId.get(entityId) || [];
+      matches.push({ sourceId, statusKey });
+      collaboratorsByEntityId.set(entityId, matches);
+    }
+  });
+
+  const statusPriority = { healthy: 0, warning: 1, critical: 2, caducado: 3 };
+  const updateCollaboratorStatus = (entityIds, sourceId, nextStatus) => {
+    entityIds.forEach((entityId) => {
+      const matches = collaboratorsByEntityId.get(entityId) || [];
+      matches.forEach((match) => {
+        if (sourceId && match.sourceId && sourceId !== match.sourceId) return;
+        const currentStatus = collaboratorStatusMap.get(match.statusKey);
+        if (statusPriority[nextStatus] > statusPriority[currentStatus]) {
+          collaboratorStatusMap.set(match.statusKey, nextStatus);
+        }
+      });
+    });
+  };
+
+  documents.forEach((doc) => {
+    const entityIds = getDocumentEntityIds(doc);
+    const bucket = getDocumentComplianceBucket(doc);
+    const sourceId = getControlDocSourceId(doc);
+
+    if (bucket === 'nonCompliant') {
+      docsCaducados++;
+      updateCollaboratorStatus(entityIds, sourceId, 'caducado');
+    } else if (bucket === 'critical') {
+      docsEn30Dias++;
+      updateCollaboratorStatus(entityIds, sourceId, 'critical');
+    } else if (bucket === 'warning') {
+      docsEn3060Dias++;
+      updateCollaboratorStatus(entityIds, sourceId, 'warning');
+    } else {
+      docsAlDia++;
+    }
+  });
+
+  let colabCaducados = 0, colabEn30Dias = 0, colabEn3060Dias = 0;
+  collaboratorStatusMap.forEach((status) => {
+    if (status === 'caducado') colabCaducados++;
+    else if (status === 'critical') colabEn30Dias++;
+    else if (status === 'warning') colabEn3060Dias++;
+  });
+
+  const totalColabs = entities.length;
+  const colabsAlDia = totalColabs - colabCaducados - colabEn30Dias - colabEn3060Dias;
+  const cumplimientoColaboradores = totalColabs > 0 ? Math.round((colabsAlDia / totalColabs) * 100) : null;
+  const cumplimientoDocumental = totalDocsCount > 0 ? Math.round((docsAlDia / totalDocsCount) * 100) : null;
+
+  return { totalColabs, cumplimientoColaboradores, colabsAlDia, colabCaducados, colabEn30Dias, colabEn3060Dias, totalDocsCount, cumplimientoDocumental, docsAlDia, docsCaducados, docsEn30Dias, docsEn3060Dias };
 };
 
 const normalizeText = normalizeSearchText;
@@ -226,6 +294,8 @@ export const ViewInicio = ({
   const [syncStats, setSyncStats] = useState(null);
   const [refreshToken, setRefreshToken] = useState(0);
   const [serverNotice, setServerNotice] = useState('');
+  const [isCompanyMetricsTransitioning, setIsCompanyMetricsTransitioning] = useState(false);
+  const companyMetricsTransitionTimer = useRef(null);
   
   // Modals auth
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
@@ -257,6 +327,12 @@ export const ViewInicio = ({
 
     navigator.serviceWorker.addEventListener('message', handlePushReceived);
     return () => navigator.serviceWorker.removeEventListener('message', handlePushReceived);
+  }, []);
+
+  useEffect(() => () => {
+    if (companyMetricsTransitionTimer.current) {
+      window.clearTimeout(companyMetricsTransitionTimer.current);
+    }
   }, []);
 
   const processData = useCallback((docs, entities, types) => {
@@ -463,76 +539,32 @@ export const ViewInicio = ({
     }
   }, [companyOptions, selectedCompanyKey]);
 
-  const complianceData = useMemo(
-    () => filterComplianceDataByCompany(allEntities, allDocs, selectedCompanyKey),
-    [allDocs, allEntities, selectedCompanyKey]
-  );
+  const companyMetricsByKey = useMemo(() => new Map(
+    companyOptions.map((company) => {
+      const scopedData = filterComplianceDataByCompany(allEntities, allDocs, company.key);
+      return [company.key, calculateComplianceMetrics(scopedData)];
+    })
+  ), [allDocs, allEntities, companyOptions]);
 
-  const globalMetrics = useMemo(() => {
-    const totalDocsCount = complianceData.documents.length;
-    let docsAlDia = 0, docsCaducados = 0, docsEn30Dias = 0, docsEn3060Dias = 0;
+  const globalMetrics = companyMetricsByKey.get(selectedCompanyKey)
+    || companyMetricsByKey.get(ALL_COMPANIES_KEY)
+    || calculateComplianceMetrics({});
 
-    const collaboratorStatusMap = new Map();
-    const collaboratorsByEntityId = new Map();
+  const handleCompanyMetricsChange = (event) => {
+    const nextCompanyKey = event.target.value;
+    if (nextCompanyKey === selectedCompanyKey) return;
 
-    complianceData.entities.forEach((entity, index) => {
-      const entityId = entity.id?.toString() || '';
-      const sourceId = getControlDocSourceId(entity);
-      const statusKey = `${sourceId || 'sin-empresa'}:${entityId || `sin-id-${index}`}:${index}`;
-      collaboratorStatusMap.set(statusKey, 'healthy');
+    if (companyMetricsTransitionTimer.current) {
+      window.clearTimeout(companyMetricsTransitionTimer.current);
+    }
 
-      if (entityId) {
-        const matches = collaboratorsByEntityId.get(entityId) || [];
-        matches.push({ sourceId, statusKey });
-        collaboratorsByEntityId.set(entityId, matches);
-      }
-    });
-
-    const statusPriority = { healthy: 0, warning: 1, critical: 2, caducado: 3 };
-    const updateCollaboratorStatus = (entityIds, sourceId, nextStatus) => {
-      entityIds.forEach((entityId) => {
-        const matches = collaboratorsByEntityId.get(entityId) || [];
-        matches.forEach((match) => {
-          if (sourceId && match.sourceId && sourceId !== match.sourceId) return;
-          const currentStatus = collaboratorStatusMap.get(match.statusKey);
-          if (statusPriority[nextStatus] > statusPriority[currentStatus]) {
-            collaboratorStatusMap.set(match.statusKey, nextStatus);
-          }
-        });
-      });
-    };
-
-    complianceData.documents.forEach((doc) => {
-      const entityIds = getDocumentEntityIds(doc);
-      const bucket = getDocumentComplianceBucket(doc);
-      const sourceId = getControlDocSourceId(doc);
-
-      if (bucket === 'nonCompliant') {
-        docsCaducados++;
-        updateCollaboratorStatus(entityIds, sourceId, 'caducado');
-      } else if (bucket === 'critical') {
-        docsEn30Dias++;
-        updateCollaboratorStatus(entityIds, sourceId, 'critical');
-      } else if (bucket === 'warning') {
-        docsEn3060Dias++;
-        updateCollaboratorStatus(entityIds, sourceId, 'warning');
-      } else { docsAlDia++; }
-    });
-
-    let colabCaducados = 0, colabEn30Dias = 0, colabEn3060Dias = 0;
-    collaboratorStatusMap.forEach((status) => {
-      if (status === 'caducado') colabCaducados++;
-      else if (status === 'critical') colabEn30Dias++;
-      else if (status === 'warning') colabEn3060Dias++;
-    });
-
-    const totalColabs = complianceData.entities.length;
-    const colabsAlDia = totalColabs - colabCaducados - colabEn30Dias - colabEn3060Dias;
-    const cumplimientoColaboradores = totalColabs > 0 ? Math.round((colabsAlDia / totalColabs) * 100) : null;
-    const cumplimientoDocumental = totalDocsCount > 0 ? Math.round((docsAlDia / totalDocsCount) * 100) : null;
-
-    return { totalColabs, cumplimientoColaboradores, colabsAlDia, colabCaducados, colabEn30Dias, colabEn3060Dias, totalDocsCount, cumplimientoDocumental, docsAlDia, docsCaducados, docsEn30Dias, docsEn3060Dias };
-  }, [complianceData]);
+    setIsCompanyMetricsTransitioning(true);
+    setSelectedCompanyKey(nextCompanyKey);
+    companyMetricsTransitionTimer.current = window.setTimeout(() => {
+      setIsCompanyMetricsTransitioning(false);
+      companyMetricsTransitionTimer.current = null;
+    }, 360);
+  };
 
   const searchSuggestions = useMemo(() => {
     const query = normalizeText(searchTerm);
@@ -754,7 +786,7 @@ export const ViewInicio = ({
                 <select
                   id="company-compliance-filter"
                   value={selectedCompanyKey}
-                  onChange={(event) => setSelectedCompanyKey(event.target.value)}
+                  onChange={handleCompanyMetricsChange}
                   className="w-full max-w-xs rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-2 text-xs font-semibold text-gray-600 focus:outline-none focus:ring-2 focus:ring-[#921E30]"
                 >
                   {companyOptions.map((company) => (
@@ -769,7 +801,16 @@ export const ViewInicio = ({
         <div className="px-4 sm:px-6 pb-4 pt-2 max-w-6xl mx-auto w-full">
           {isGlobalView ? (
             <div className="space-y-3 mt-2">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="relative">
+                {isCompanyMetricsTransitioning && (
+                  <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-1 overflow-hidden rounded-full bg-gray-100/80" aria-hidden="true">
+                    <div key={selectedCompanyKey} className="company-switch-progress h-full bg-[#921E30] shadow-[0_0_8px_rgba(146,30,48,0.35)]" />
+                  </div>
+                )}
+                <div
+                  className={`grid grid-cols-1 gap-4 transition-[opacity,transform] duration-300 ease-out md:grid-cols-2 ${isCompanyMetricsTransitioning ? 'scale-[0.997] opacity-60' : 'scale-100 opacity-100'}`}
+                  aria-busy={isCompanyMetricsTransitioning}
+                >
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
                   <div className="text-white p-6 text-center flex flex-col justify-center items-center flex-1 min-h-[160px]" style={{ backgroundColor: globalMetrics.cumplimientoColaboradores === null ? '#64748b' : getProgressColor(globalMetrics.cumplimientoColaboradores) }}>
                     <h4 className="text-sm font-semibold uppercase tracking-wider opacity-90">Cumplimiento Colaboradores</h4>
@@ -802,6 +843,7 @@ export const ViewInicio = ({
                       <div><p className="text-base font-bold text-green-600">{globalMetrics.docsAlDia}</p><p className="text-[10px] text-gray-400 leading-tight">Al<br/>día</p></div>
                     </div>
                   </div>
+                </div>
                 </div>
               </div>
               <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-500 flex flex-wrap items-center justify-between gap-2">
