@@ -751,11 +751,11 @@ export const ViewInicio = ({
                 )}
               </div>
               {isAutocompleteOpen && searchSuggestions.length > 0 && (
-                <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 max-h-60 overflow-y-auto">
+                <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white dark:bg-slate-900 rounded-xl shadow-lg border border-gray-100 dark:border-slate-700 max-h-60 overflow-y-auto">
                   {searchSuggestions.map((entity) => (
-                    <button key={getEntitySelectionKey(entity)} type="button" onClick={() => handleSelectSuggestion(entity)} className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-100 last:border-b-0">
-                      <p className="text-sm font-semibold text-[#394049]">{getEntityDisplayName(entity)}</p>
-                      <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-gray-500">
+                    <button key={getEntitySelectionKey(entity)} type="button" onClick={() => handleSelectSuggestion(entity)} className="w-full text-left px-4 py-3 hover:bg-gray-50 dark:hover:bg-slate-800 border-b border-gray-100 dark:border-slate-700 last:border-b-0">
+                      <p className="text-sm font-semibold text-[#394049] dark:text-slate-100">{getEntityDisplayName(entity)}</p>
+                      <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-gray-500 dark:text-slate-300">
                         <span className="font-semibold text-[#921E30]">RUT: {getEntityRut(entity) || 'Sin RUT'}</span>
                         <span>Email: {getEntityEmail(entity) || 'Sin email'}</span>
                       </div>
@@ -764,7 +764,7 @@ export const ViewInicio = ({
                 </div>
               )}
               {isAutocompleteOpen && searchTerm && searchSuggestions.length === 0 && (
-                <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 p-4 text-xs text-gray-500">
+                <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white dark:bg-slate-900 rounded-xl shadow-lg border border-gray-100 dark:border-slate-700 p-4 text-xs text-gray-500 dark:text-slate-300">
                   No se encontraron colaboradores con ese nombre o RUT.
                 </div>
               )}
