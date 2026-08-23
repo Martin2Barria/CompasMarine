@@ -2,7 +2,7 @@ import { useCallback, useState, useEffect } from 'react';
 import { ShieldAlert, Database, RefreshCw, Users, ServerCrash, CheckCircle2, Search, Key, UserCog, AlertTriangle } from 'lucide-react';
 import { getApiUrl } from '../config/api'; // <-- IMPORTACIÓN CORREGIDA
 
-export const ViewAdmin = ({ onLoadingProgress }) => {
+export const ViewAdmin = ({ onLoadingProgress, onOpenCollaborators }) => {
   const [activeTab, setActiveTab] = useState('sistema'); // 'sistema' o 'usuarios'
   const [syncStatus, setSyncStatus] = useState(null); // 'loading', 'success', 'error'
   const [dbStatus, setDbStatus] = useState(null);
@@ -290,9 +290,18 @@ export const ViewAdmin = ({ onLoadingProgress }) => {
           <p className="text-white/70 text-[10px] md:text-xs font-bold tracking-wider uppercase mb-0.5 flex items-center gap-1.5">
             {isSupremo ? 'Modo Superusuario' : 'Modo Gestor'}
           </p>
-          <h2 className="text-white text-xl md:text-2xl font-semibold tracking-wide truncate">
-            Panel Admin
-          </h2>
+          <div className="flex items-center justify-between gap-3 w-full">
+            <h2 className="text-white text-xl md:text-2xl font-semibold tracking-wide truncate">
+              Panel Admin
+            </h2>
+            <button
+              type="button"
+              onClick={onOpenCollaborators}
+              className="shrink-0 bg-white text-[#394049] hover:bg-gray-100 px-3 py-2 rounded-xl text-xs font-bold transition-colors"
+            >
+              Ver colaboradores
+            </button>
+          </div>
         </div>
       </div>
 

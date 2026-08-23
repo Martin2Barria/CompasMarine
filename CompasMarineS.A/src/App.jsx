@@ -14,6 +14,7 @@ import { SyncProgressOverlay } from './Components/SyncProgressOverlay';
 import { ViewInicio } from './Views/ViewInicio';
 import { ViewDocumentos } from './Views/ViewDocumentos';
 import { ViewNotificaciones } from './Views/ViewNotificaciones';
+import { ViewColaboradores } from './Views/ViewColaboradores';
 import { ViewAdmin } from './Views/ViewPanelAdmin';
 import { isAdminUser } from './auth/userScope';
 import { disablePushNotifications, enablePushNotifications } from './pwa/pushNotifications';
@@ -28,7 +29,11 @@ const getInitialDarkMode = () => {
   return window.matchMedia('(prefers-color-scheme: dark)').matches;
 };
 
-const getViewFromPath = (pathname = '') => pathname.startsWith('/documentos') ? 'documentos' : 'inicio';
+const getViewFromPath = (pathname = '') => {
+  if (pathname.startsWith('/documentos')) return 'documentos';
+  if (pathname.startsWith('/colaboradores')) return 'colaboradores';
+  return 'inicio';
+};
 
 export default function App() {
   const [currentView, setCurrentView] = useState(() => getViewFromPath(window.location.pathname));
@@ -166,7 +171,11 @@ export default function App() {
       return;
     }
 
-    const nextPath = nextView === 'documentos' ? '/documentos' : '/';
+    const nextPath = nextView === 'documentos'
+      ? '/documentos'
+      : nextView === 'colaboradores'
+        ? '/colaboradores'
+        : '/';
     if (window.location.pathname !== nextPath) {
       window.history.replaceState({}, '', nextPath);
     }
@@ -258,6 +267,12 @@ export default function App() {
             </div>
           )}
 
+          {visitedViews.has('colaboradores') && isAdminUser(currentUser) && (
+            <div className={currentView === 'colaboradores' ? 'flex flex-col flex-1 min-h-0 w-full' : 'hidden'}>
+              <ViewColaboradores setView={handleViewChange} />
+            </div>
+          )}
+
           {!isAdminUser(currentUser) && visitedViews.has('notificaciones') && (
             <div className={currentView === 'notificaciones' ? 'flex flex-col flex-1 min-h-0 w-full' : 'hidden'}>
               <ViewNotificaciones setView={handleViewChange} currentUser={currentUser} onLoadingProgress={reportLoadingProgress} />
@@ -266,7 +281,7 @@ export default function App() {
 
           {visitedViews.has('admin') && (
             <div className={currentView === 'admin' ? 'flex flex-col flex-1 min-h-0 w-full' : 'hidden'}>
-              <ViewAdmin onLoadingProgress={reportLoadingProgress} />
+              <ViewAdmin onLoadingProgress={reportLoadingProgress} onOpenCollaborators={() => handleViewChange('colaboradores')} />
             </div>
           )}
         </div>
