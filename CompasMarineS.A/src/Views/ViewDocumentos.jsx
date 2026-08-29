@@ -658,17 +658,17 @@ export const ViewDocumentos = ({ currentUser, focusedCollaborator = null, onColl
                         {searchTerm && (<button type="button" onClick={handleClearSelection} className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 font-bold text-xs">✕</button>)}
                       </div>
                       {isAutocompleteOpen && searchSuggestions.length > 0 && (
-                        <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 max-h-60 overflow-y-auto">
+                        <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white dark:bg-slate-900 rounded-xl shadow-lg border border-gray-100 dark:border-slate-700 max-h-60 overflow-y-auto">
                           {searchSuggestions.map((entity) => (
-                            <button key={getEntityRecordKey(entity)} type="button" onClick={() => handleSelectSuggestion(entity)} className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-50 last:border-b-0">
-                              <p className="text-sm font-semibold text-gray-700 truncate">{getEntityDisplayName(entity)}</p>
+                            <button key={getEntityRecordKey(entity)} type="button" onClick={() => handleSelectSuggestion(entity)} className="w-full text-left px-4 py-3 hover:bg-gray-50 dark:hover:bg-slate-800 border-b border-gray-50 dark:border-slate-700 last:border-b-0">
+                              <p className="text-sm font-semibold text-gray-700 dark:text-slate-100 truncate">{getEntityDisplayName(entity)}</p>
                               <p className="text-[11px] text-[#921E30] mt-0.5">RUT: {getEntityRut(entity) || 'Sin RUT'}</p>
                             </button>
                           ))}
                         </div>
                       )}
                       {isAutocompleteOpen && searchTerm.trim() && searchSuggestions.length === 0 && (
-                        <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-100 p-4 text-xs text-gray-500">
+                        <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white dark:bg-slate-900 rounded-xl shadow-lg border border-gray-100 dark:border-slate-700 p-4 text-xs text-gray-500 dark:text-slate-300">
                           No se encontraron colaboradores con ese nombre o RUT en esta empresa.
                         </div>
                       )}
